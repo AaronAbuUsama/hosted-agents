@@ -38,6 +38,8 @@
     "format": "vp fmt",
     "staged": "vp staged",
     "hooks:setup": "vp config",
+    "dev:localhost": "bun scripts/dev-localhost.mjs",
+    "dev:github-webhooks": "bun scripts/dev-localhost.mjs --no-web",
     "dev:web": "vp run --filter web dev",
     "dev:server": "vp run --filter server dev",
     "db:push": "vp run --filter @hosted-agents/db db:push",
