@@ -6,8 +6,8 @@
     "build": "flue build --target node",
     "check-types": "tsc -b",
     "compile": "bun build --compile --minify --sourcemap --bytecode ./src/index.ts --outfile server",
-    "dev": "flue dev --target node --port 3000",
-    "start": "node dist/server.mjs"
+    "dev": "NODE_OPTIONS='--import braintrust/hook.mjs' flue dev --target node --port 3000",
+    "start": "node --import braintrust/hook.mjs dist/server.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.3",
@@ -21,7 +21,7 @@
     "@orpc/zod": "catalog:",
     "@sentry/node": "^10.53.1",
     "better-auth": "catalog:",
-    "braintrust": "3.17.0",
+    "braintrust": "3.20.0",
     "dotenv": "catalog:",
     "drizzle-orm": "^0.45.2",
     "hono": "catalog:",

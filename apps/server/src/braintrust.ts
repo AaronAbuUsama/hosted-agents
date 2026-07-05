@@ -1,6 +1,5 @@
-import { observe, type FlueEvent } from "@flue/runtime";
-import { env } from "@hosted-agents/env/server";
-import { braintrustFlueObserver, initLogger, setMaskingFunction } from "braintrust";
+import { instrument } from "@flue/runtime";
+import { braintrustFlueInstrumentation, initLogger, setMaskingFunction } from "braintrust";
 
 const REDACTED = "[redacted]";
 const SENSITIVE_KEY_PATTERN =
@@ -11,11 +10,6 @@ const SENSITIVE_STRING_PATTERNS = [
   /\bgh[opusr]_[A-Za-z0-9_]{12,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi,
 ];
-
-type BraintrustFlueEvent = Parameters<typeof braintrustFlueObserver>[0];
-type BraintrustFlueContext = Parameters<typeof braintrustFlueObserver>[1];
-
-const observedRunStarts = new Set<string>();
 
 function maskString(value: string) {
   return SENSITIVE_STRING_PATTERNS.reduce(
@@ -55,55 +49,6 @@ function maskBraintrustValue(value: unknown, seen = new WeakSet<object>()): unkn
   );
 }
 
-function compatibleEvent(event: FlueEvent): BraintrustFlueEvent | null {
-  const record = event as FlueEvent & Record<string, unknown>;
-
-  if (event.type === "run_start") {
-    observedRunStarts.add(event.runId);
-    return {
-      ...record,
-      payload: record.input,
-    } as BraintrustFlueEvent;
-  }
-
-  if (event.type === "run_resume") {
-    if (observedRunStarts.has(event.runId)) {
-      return null;
-    }
-
-    observedRunStarts.add(event.runId);
-    return {
-      ...record,
-      type: "run_start",
-    } as BraintrustFlueEvent;
-  }
-
-  if (event.type === "run_end") {
-    observedRunStarts.delete(event.runId);
-  }
-
-  if (event.type === "tool") {
-    return {
-      ...record,
-      type: "tool_call",
-    } as BraintrustFlueEvent;
-  }
-
-  return record as BraintrustFlueEvent;
-}
-
-if (env.BRAINTRUST_API_KEY) {
-  setMaskingFunction(maskBraintrustValue);
-  initLogger({
-    projectName: env.BRAINTRUST_PROJECT_NAME ?? "hosted-agents",
-    apiKey: env.BRAINTRUST_API_KEY,
-  });
-
-  observe((event, ctx) => {
-    const compatible = compatibleEvent(event);
-
-    if (compatible) {
-      braintrustFlueObserver(compatible, ctx as BraintrustFlueContext);
-    }
-  });
-}
+setMaskingFunction(maskBraintrustValue);
+initLogger({ projectName: "hosted-agents" });
+instrument(braintrustFlueInstrumentation());
