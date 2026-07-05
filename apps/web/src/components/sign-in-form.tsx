@@ -16,13 +16,13 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
 
   const form = useForm({
     defaultValues: {
-      email: "",
+      username: "",
       password: "",
     },
     onSubmit: async ({ value }) => {
-      await authClient.signIn.email(
+      await authClient.signIn.username(
         {
-          email: value.email,
+          username: value.username,
           password: value.password,
         },
         {
@@ -38,7 +38,7 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
     },
     validators: {
       onSubmit: z.object({
-        email: z.email("Invalid email address"),
+        username: z.string().min(3, "Username must be at least 3 characters"),
         password: z.string().min(8, "Password must be at least 8 characters"),
       }),
     },
@@ -61,14 +61,14 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
         className="space-y-4"
       >
         <div>
-          <form.Field name="email">
+          <form.Field name="username">
             {(field) => (
               <div className="space-y-2">
-                <Label htmlFor={field.name}>Email</Label>
+                <Label htmlFor={field.name}>Username</Label>
                 <Input
                   id={field.name}
                   name={field.name}
-                  type="email"
+                  autoComplete="username"
                   value={field.state.value}
                   onBlur={field.handleBlur}
                   onChange={(e) => field.handleChange(e.target.value)}
@@ -91,6 +91,7 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
                 <Input
                   id={field.name}
                   name={field.name}
+                  autoComplete="current-password"
                   type="password"
                   value={field.state.value}
                   onBlur={field.handleBlur}

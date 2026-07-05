@@ -11,6 +11,7 @@
   },
   "scripts": {},
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.80.3",
     "@hosted-agents/auth": "workspace:*",
     "@hosted-agents/db": "workspace:*",
     "@hosted-agents/env": "workspace:*",
@@ -19,6 +20,7 @@
     "@orpc/server": "catalog:",
     "@orpc/zod": "catalog:",
     "dotenv": "catalog:",
+    "drizzle-orm": "^0.45.2",
     "zod": "catalog:"
   },
   "devDependencies": {
