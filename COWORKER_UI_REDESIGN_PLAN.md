@@ -105,14 +105,8 @@ Proposed route structure:
     - identity
     - installed GitHub app
     - repos
-    - rules
+    - rules/triggers owned by this coworker
     - recent runs
-
-/app/rules
-  Automation rules
-
-/app/rules/new
-  Create rule
 
 /app/settings
   Organization settings
@@ -142,7 +136,7 @@ GitHub install
    ↓
 Choose coworkers
    ↓
-Rules
+Starter coworker rules
    ↓
 Dashboard
    ↓
@@ -288,10 +282,10 @@ Primary nav:
 ```txt
 Runs
 Coworkers
-Rules
-GitHub
 Settings
 ```
+
+Rules are configured from each coworker profile, not from a standalone top-level nav item.
 
 Not “Dashboard / Agents / Jobs / Config.”
 
@@ -442,13 +436,15 @@ Important distinction:
 - Rules define when they act.
 - Runs are what they actually did.
 
-### H. Rules
+### H. Coworker rules
 
-Use `settings-sidebar` for the settings/rules style.
+Rules define when a named coworker acts. They are not a standalone top-level app section.
 
 Rule model in UI:
 
 ```txt
+Coworker: Abu Bakr / Umar
+
 When this happens:
   GitHub event / command / schedule
 
@@ -457,9 +453,6 @@ In these repositories:
 
 For these branches:
   branch selector
-
-Ask this coworker:
-  Abu Bakr / Umar
 
 To do this:
   Review PR / Implement issue / Respond to feedback
@@ -471,20 +464,26 @@ With these constraints:
   approval required
 ```
 
+Rules should appear inside:
+
+```txt
+/app/coworkers/[coworkerId]
+```
+
 Example rules:
 
 ```txt
-Review every pull request
-Coworker: Abu Bakr
-Repos: all production repos
-Branches: main, develop
-Action: review diff and post required check
+Abu Bakr
+  Review every pull request
+  Repos: all production repos
+  Branches: main, develop
+  Action: review diff and post required check
 
-Implement assigned issues
-Coworker: Umar
-Repos: selected repos
-Trigger: issue assigned to Umar
-Action: create branch and open PR
+Umar
+  Implement assigned issues
+  Repos: selected repos
+  Trigger: issue assigned to Umar
+  Action: create branch and open PR
 ```
 
 ## 3. Astryx template usage
@@ -518,7 +517,7 @@ Template usage:
 | `shell-nav` | Main `/app` layout |
 | `login-card` | `/login`, `/signup`, provider/GitHub auth cards |
 | `table-grouped` | `/app/runs` |
-| `settings-sidebar` | `/app/settings`, `/app/rules` |
+| `settings-sidebar` | `/app/settings`, coworker rule sections inside `/app/coworkers/[coworkerId]` |
 | `ai-chat` | `/app/runs/[runId]` transcript/live run |
 | `kanban-board` | Maybe later for run pipeline or issue queue; not first unless it clearly earns its place |
 
@@ -593,7 +592,6 @@ Desktop app shell:
 │               │ ┌─────────────────────────────────────────┐ │
 │ Runs          │ │ Primary content                         │ │
 │ Coworkers     │ │                                         │ │
-│ Rules         │ │                                         │ │
 │ GitHub        │ └─────────────────────────────────────────┘ │
 │ Settings      │                                             │
 └───────────────┴─────────────────────────────────────────────┘
@@ -715,7 +713,7 @@ Create real routes with static fixture data:
   provider
   github
   coworkers
-  rules
+  coworker-owned starter rules
 
 /app/*
   dashboard
@@ -723,7 +721,6 @@ Create real routes with static fixture data:
   runs/[runId]
   coworkers
   coworkers/[coworkerId]
-  rules
   settings
 ```
 
@@ -805,10 +802,9 @@ Order matters.
 8. **Coworkers**
    - roster
    - detail pages
-   - rules/recent runs
-9. **Rules/settings**
-   - settings-sidebar pattern
-   - rule forms
+   - coworker-owned rules/recent runs
+9. **Settings**
+   - organization/provider/GitHub settings
 
 ## 6. Visual verification
 
@@ -840,8 +836,8 @@ Minimum visual checkpoints:
 /app/coworkers
   Coworker roster
 
-/app/rules
-  Rules/settings
+/app/coworkers/[coworkerId]
+  Coworker rules/settings
 ```
 
 Check:
@@ -888,7 +884,7 @@ Acceptance criteria for that first pass:
 - `/app/runs` shows realistic grouped runs.
 - `/app/runs/[id]` shows chat/timeline/live run detail.
 - `/app/coworkers` shows Abu Bakr and Umar as named coworkers.
-- `/app/rules` lets the user understand how triggers will work.
+- `/app/coworkers/[coworkerId]` lets the user understand how triggers/rules work for that coworker.
 - Astryx CSS is wired.
 - App visually inspected in browser.
 - No route dead-ends in the primary flow.
@@ -910,14 +906,13 @@ Phase 2: Generate/read Astryx templates
   - ai-chat
   - kanban-board, only as reference
 
-Phase 3: Define fixtures/domain vocabulary
-  - coworkers
-  - orgs
-  - installations
-  - provider status
-  - rules
-  - runs
-  - run timeline/messages
+Phase 3: Data-first IA and TanStack DB contracts
+  - screen data needs
+  - server/client rendering boundaries
+  - TanStack DB collections
+  - coworker-owned rules
+  - live queries and mutations
+  - loading/empty/error/optimistic states
 
 Phase 4: Wire Astryx foundation
   - CSS imports
@@ -932,7 +927,8 @@ Phase 5: Build routes
   - runs
   - run detail
   - coworkers
-  - rules/settings
+  - coworker detail rules
+  - settings
 
 Phase 6: Browser review
   - inspect every key screen
@@ -947,3 +943,53 @@ Phase 7: Cleanup
 ```
 
 This is a product redesign, not a component swap.
+
+
+## 10. Phase 3: data-first IA and TanStack DB contracts
+
+Phase 3 corrects the IA from page-first to data-first. The app should be designed from the data each screen needs, the collection that owns that data, and the rendering boundary that keeps server/static work separate from client-live TanStack DB work.
+
+### Phase 3 decisions
+
+- **Rules are coworker-owned.** There is no top-level `/app/rules` product section. Rule coverage can appear on the dashboard, but editing/understanding rules happens inside `/app/coworkers/[coworkerId]`.
+- **TanStack DB is the client-live data layer.** Screens that read collections should be client data islands or client pages. Server-rendered routes should avoid direct collection access.
+- **The app shell can be server/static in concept, but route selection and live data are client concerns.**
+- **Visual redesign waits until the screen data contracts are clear.** Loading, empty, error, optimistic, and live states should shape the UI.
+
+### Canonical collections
+
+```txt
+organizations
+providerAccounts
+githubInstallations
+repositories
+coworkers
+coworkerRules
+runs
+runEvents
+runMessages
+```
+
+The source-of-truth Phase 3 contract lives in:
+
+```txt
+apps/web/src/lib/coworker-ia-contracts.ts
+```
+
+### Screen contract checklist
+
+Each app screen should declare:
+
+```txt
+route
+job-to-be-done
+render boundary
+collections read
+live queries
+mutations
+loading states
+empty states
+error states
+optimistic states
+notes for future backend/API shape
+```

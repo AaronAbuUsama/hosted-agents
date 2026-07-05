@@ -14,8 +14,8 @@ export default function RulesStepPage() {
       body="Rules decide which GitHub events wake each coworker, where they can act, and what guardrails they must respect."
       primaryHref="/app"
       primaryLabel="Go to dashboard"
-      secondaryHref="/app/rules"
-      secondaryLabel="Review rules"
+      secondaryHref="/app/coworkers"
+      secondaryLabel="Review coworkers"
     >
       <VStack gap={4}>
         {rules.map((rule) => (

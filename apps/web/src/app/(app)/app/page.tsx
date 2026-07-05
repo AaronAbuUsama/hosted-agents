@@ -49,8 +49,9 @@ export default function AppOverviewPage() {
           </Card>
           <Card padding={5}>
             <VStack gap={2}>
-              <Text type="label">Rules</Text>
+              <Text type="label">Coworker rules</Text>
               <Text type="display-3">{rules.length}</Text>
+              <Text type="supporting">Configured inside coworker profiles.</Text>
             </VStack>
           </Card>
           <Card padding={5}>

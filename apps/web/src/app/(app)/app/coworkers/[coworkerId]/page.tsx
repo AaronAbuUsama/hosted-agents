@@ -67,15 +67,33 @@ export default async function CoworkerProfilePage({ params }: CoworkerProfilePag
           <VStack gap={4}>
             <Card padding={6}>
               <VStack gap={4}>
-                <Heading level={2}>Rules</Heading>
+                <VStack gap={1}>
+                  <Heading level={2}>Rules for {coworker.name}</Heading>
+                  <Text type="supporting" as="p">
+                    Rules define when this coworker wakes up, which repositories are in scope, and what guardrails apply.
+                  </Text>
+                </VStack>
                 {coworkerRules.map((rule) => (
                   <Card key={rule.id} variant="muted" padding={4}>
-                    <VStack gap={2}>
+                    <VStack gap={3}>
                       <HStack hAlign="between">
                         <Text weight="semibold">{rule.name}</Text>
                         <Badge variant={ruleStatusBadgeVariants[rule.status]} label={rule.status} />
                       </HStack>
-                      <Text type="supporting" as="p">{rule.trigger}</Text>
+                      <section className="grid gap-3 md:grid-cols-3">
+                        <VStack gap={1}>
+                          <Text type="label">When</Text>
+                          <Text type="supporting" as="p">{rule.trigger}</Text>
+                        </VStack>
+                        <VStack gap={1}>
+                          <Text type="label">Where</Text>
+                          <Text type="supporting" as="p">{rule.scope}</Text>
+                        </VStack>
+                        <VStack gap={1}>
+                          <Text type="label">Guardrail</Text>
+                          <Text type="supporting" as="p">{rule.guardrail}</Text>
+                        </VStack>
+                      </section>
                       <Text as="p">{rule.action}</Text>
                     </VStack>
                   </Card>

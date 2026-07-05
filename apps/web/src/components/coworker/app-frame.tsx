@@ -9,7 +9,6 @@ import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TopNav } from "@astryxdesign/core/TopNav";
 import {
-  BoltIcon,
   ChartBarSquareIcon,
   Cog6ToothIcon,
   CommandLineIcon,
@@ -28,15 +27,18 @@ type NavItem = {
   count?: number;
 };
 
+type AppFrameProps = {
+  children: React.ReactNode;
+};
+
 const navItems: NavItem[] = [
   { href: "/app", label: "Overview", icon: ChartBarSquareIcon },
   { href: "/app/runs", label: "Runs", icon: PlayCircleIcon, count: runs.length },
   { href: "/app/coworkers", label: "Coworkers", icon: UserGroupIcon, count: coworkers.length },
-  { href: "/app/rules", label: "Rules", icon: BoltIcon },
   { href: "/app/settings", label: "Settings", icon: Cog6ToothIcon },
 ];
 
-export default function AppFrame({ children }: { children: React.ReactNode }) {
+export default function AppFrame({ children }: AppFrameProps) {
   const pathname = usePathname();
 
   return (
@@ -86,16 +88,22 @@ export default function AppFrame({ children }: { children: React.ReactNode }) {
           collapsible={{ defaultIsCollapsed: false }}
         >
           <SideNavSection title="Operate">
-            {navItems.map((item) => (
-              <SideNavItem
-                key={item.href}
-                label={item.label}
-                href={item.href}
-                icon={item.icon}
-                isSelected={pathname === item.href || (item.href !== "/app" && pathname.startsWith(`${item.href}/`))}
-                endContent={item.count ? <Badge label={item.count} /> : undefined}
-              />
-            ))}
+            {navItems.map((item) => {
+              const isSelected =
+                pathname === item.href ||
+                (item.href !== "/app" && pathname.startsWith(`${item.href}/`));
+
+              return (
+                <SideNavItem
+                  key={item.href}
+                  label={item.label}
+                  href={item.href}
+                  icon={item.icon}
+                  isSelected={isSelected}
+                  endContent={item.count ? <Badge label={item.count} /> : undefined}
+                />
+              );
+            })}
           </SideNavSection>
           <SideNavSection title="Connections">
             <SideNavItem label="GitHub Apps" href="/app/settings" icon={ServerStackIcon} />
