@@ -120,6 +120,11 @@ This is different from:
 Save the app settings, then retry `Continue with GitHub` from
 `http://localhost:3001/login`.
 
+If GitHub sign-in completes but lands on `http://localhost:3000/dashboard` with
+`404 Not Found`, the web client is sending a relative social callback URL. The
+client should pass `http://localhost:3001/dashboard` as the social
+`callbackURL`.
+
 ## Start Locally
 
 Run:

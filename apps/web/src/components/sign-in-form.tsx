@@ -18,7 +18,7 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
     await authClient.signIn.social(
       {
         provider: "github",
-        callbackURL: "/dashboard",
+        callbackURL: `${window.location.origin}/dashboard`,
       },
       {
         onError: (error) => {
