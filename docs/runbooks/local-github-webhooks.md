@@ -64,8 +64,12 @@ For the dev GitHub App:
 - Webhook URL: `https://smee.io/PC7aK4wjTehMZYZp`
 - Webhook secret: the value of `GITHUB_WEBHOOK_SECRET`
 - SSL verification: enabled
-- Request user authorization during installation: enabled
+- Request user authorization during installation: disabled
 - Redirect on update: enabled
+
+OAuth sign-in and GitHub App installation are separate flows. The callback URL is
+for `Continue with GitHub`; App installation completion should go to the setup
+URL.
 
 The local server receives forwarded webhooks at:
 

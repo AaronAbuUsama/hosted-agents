@@ -64,9 +64,13 @@ In GitHub Developer Settings, configure the local app with:
 - Setup URL: `http://localhost:3001/dashboard/github/setup`
 - Webhook URL: `https://smee.io/PC7aK4wjTehMZYZp`
 - Webhook secret: the value from `apps/server/.env`
-- Request user authorization during installation: enabled
+- Request user authorization during installation: disabled
 - Redirect on update: enabled
 - SSL verification: enabled
+
+OAuth sign-in and GitHub App installation are separate flows. The callback URL is
+for `Continue with GitHub`; App installation completion should go to the setup
+URL.
 
 Copy the local webhook secret with:
 
@@ -124,6 +128,12 @@ If GitHub sign-in completes but lands on `http://localhost:3000/dashboard` with
 `404 Not Found`, the web client is sending a relative social callback URL. The
 client should pass `http://localhost:3001/dashboard` as the social
 `callbackURL`.
+
+If GitHub App installation lands on
+`http://localhost:3000/api/auth/error?error=state_mismatch`, then GitHub sent an
+installation completion callback to Better Auth. Disable `Request user
+authorization during installation` in the GitHub App settings and retry the
+install/update flow.
 
 ## Start Locally
 

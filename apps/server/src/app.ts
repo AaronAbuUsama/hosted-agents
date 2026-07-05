@@ -69,6 +69,27 @@ app.use(
   }),
 );
 
+app.get("/api/auth/callback/github", async (c, next) => {
+  const installationId = c.req.query("installation_id");
+  const setupAction = c.req.query("setup_action");
+
+  if (!installationId || !setupAction) {
+    await next();
+    return;
+  }
+
+  const setupUrl = new URL("/dashboard/github/setup", env.CORS_ORIGIN);
+  setupUrl.searchParams.set("installation_id", installationId);
+  setupUrl.searchParams.set("setup_action", setupAction);
+
+  const state = c.req.query("state");
+  if (state) {
+    setupUrl.searchParams.set("state", state);
+  }
+
+  return c.redirect(setupUrl.toString());
+});
+
 app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
 app.get("/api/github/webhook", (c) => {
