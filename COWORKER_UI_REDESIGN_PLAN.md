@@ -889,57 +889,71 @@ Acceptance criteria for that first pass:
 - App visually inspected in browser.
 - No route dead-ends in the primary flow.
 
-## 9. Recommended execution plan
+## 9. Current execution status
 
 ```txt
 Phase 1: Inspect current app
-  - route map
-  - layout/app entry
-  - auth flow
-  - existing components
+  Status: done
+  Result:
+    - route map
+    - layout/app entry
+    - auth flow
+    - reusable component inventory
 
-Phase 2: Generate/read Astryx templates
-  - shell-nav
-  - login-card
-  - table-grouped
-  - settings-sidebar
-  - ai-chat
-  - kanban-board, only as reference
+Phase 2: Product shell and Astryx foundation
+  Status: done
+  Result:
+    - Astryx CSS/theme/provider wiring
+    - app shell
+    - marketing/auth/onboarding/app routes
+    - local auth review setup
 
 Phase 3: Data-first IA and TanStack DB contracts
-  - screen data needs
-  - server/client rendering boundaries
-  - TanStack DB collections
-  - coworker-owned rules
-  - live queries and mutations
-  - loading/empty/error/optimistic states
+  Status: done
+  Result:
+    - screen data needs
+    - server/client rendering boundaries
+    - canonical TanStack DB collections
+    - coworker-owned rules
+    - live query and mutation inventory
+    - loading/empty/error/optimistic state inventory
 
-Phase 4: Wire Astryx foundation
-  - CSS imports
-  - theme setup if required
-  - app shell base
+Phase 4: Data-flow implementation contracts
+  Status: in progress
+  Result:
+    - collection query keys
+    - planned ORPC source procedures
+    - mutation behavior and rollback rules
+    - route-level client data islands
+    - implementation order before visual redesign
 
-Phase 5: Build routes
-  - marketing
-  - auth
-  - onboarding
-  - dashboard
-  - runs
-  - run detail
-  - coworkers
-  - coworker detail rules
-  - settings
+Phase 5: Real visual redesign
+  Status: not started
+  Scope:
+    - marketing
+    - auth
+    - onboarding
+    - dashboard
+    - runs
+    - run detail cockpit
+    - coworkers
+    - coworker detail rules
+    - settings
 
 Phase 6: Browser review
-  - inspect every key screen
-  - screenshot
-  - fix obvious layout/design issues
+  Status: not started
+  Scope:
+    - inspect every key screen
+    - screenshot
+    - fix obvious layout/design issues
 
 Phase 7: Cleanup
-  - remove dead old UI
-  - keep fixtures organized
-  - ensure route links work
-  - run focused verification
+  Status: not started
+  Scope:
+    - remove dead old UI
+    - keep fixtures organized
+    - ensure route links work
+    - run focused verification
 ```
 
 This is a product redesign, not a component swap.
@@ -993,3 +1007,77 @@ error states
 optimistic states
 notes for future backend/API shape
 ```
+
+## 11. Phase 4: data-flow implementation contracts
+
+Phase 4 turns the Phase 3 IA into implementation contracts without pretending the backend is already finished. The source of truth is `apps/web/src/lib/coworker-data-flow-contracts.ts`.
+
+### Phase 4 decisions
+
+- **No fake TanStack DB adapters yet.** Collection modules should only be created when they can call real ORPC procedures or explicitly named fixture-preview endpoints.
+- **ORPC is the planned server source for app data.** Better Auth still owns auth/session. GitHub App callbacks/webhooks refresh installation, repository, and run data.
+- **Collection query keys are part of the UI contract.** Every screen should know which collection query it depends on before visual redesign starts.
+- **Mutation behavior is part of the IA.** Each mutation declares whether it is optimistic, pessimistic, or server-confirmed, plus rollback and invalidation behavior.
+- **App routes should become server shells plus client data islands.** Server routes own metadata, params, and auth gates. Client islands own TanStack DB collections and `useLiveQuery`.
+
+### Contract inventory
+
+`collectionDataFlowContracts` defines collection query seams, planned sources, invalidation, and first consumer routes for all nine canonical collections:
+
+```txt
+organizations
+providerAccounts
+githubInstallations
+repositories
+coworkers
+coworkerRules
+runs
+runEvents
+runMessages
+```
+
+Each collection entry declares `queryKey`, `syncDriver`, `plannedSource`, `ownerKey`, `stalePolicy`, `optimisticWrites`, `invalidates`, `firstConsumerRoutes`, and `implementationNotes`.
+
+`mutationContracts` defines mutation, rollback, and invalidation behavior for:
+
+```txt
+createOrganization
+connectProviderAccount
+installGithubApp
+installCoworker
+assignCoworkerRepositories
+createCoworkerRule
+updateCoworkerRule
+triggerRun
+cancelRun
+sendRunMessage
+```
+
+Each mutation entry declares `callerRoutes`, `mode`, `optimisticEffect`, `serverCommit`, `rollback`, and `invalidates`.
+
+`screenDataIslandContracts` maps every major route-level data island:
+
+```txt
+/
+/login and /signup
+/onboarding/*
+/app
+/app/coworkers
+/app/coworkers/[coworkerId]
+/app/runs
+/app/runs/[runId]
+/app/settings
+```
+
+Each route entry separates server responsibilities from client collections, live queries, allowed mutations, UI states, and visual-redesign notes.
+
+`phaseFourImplementationOrder` sequences:
+
+```txt
+server-read-model-contracts
+client-collection-modules
+route-data-islands
+visual-readiness-review
+```
+
+The result is the checklist Phase 5 must satisfy before any screen can be considered visually complete.
