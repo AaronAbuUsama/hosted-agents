@@ -18,7 +18,21 @@ import "./sentry";
 import codeReviewWorkflow from "./workflows/code-review";
 import { registerPiOpenAICodexProvider } from "./lib/pi-auth";
 
-await registerPiOpenAICodexProvider();
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+async function registerOptionalPiOpenAICodexProvider() {
+  try {
+    await registerPiOpenAICodexProvider();
+  } catch (error) {
+    console.warn(
+      `[pi-auth] Skipped optional openai-codex provider registration: ${errorMessage(error)}`,
+    );
+  }
+}
+
+await registerOptionalPiOpenAICodexProvider();
 
 const app = new Hono();
 

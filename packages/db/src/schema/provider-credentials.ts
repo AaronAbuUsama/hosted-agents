@@ -1,7 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-import { organization, user } from "./auth";
+import { organization, user } from "@hosted-agents/db/schema/auth";
 
 export const agentProviderCredential = sqliteTable(
   "agent_provider_credential",

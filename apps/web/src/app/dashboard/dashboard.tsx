@@ -89,13 +89,19 @@ export default function Dashboard({ session }: { session: typeof authClient.$Inf
 
   const createReviewRun = useMutation(
     orpc.createReviewRun.mutationOptions({
-      onSuccess: async () => {
+      onSuccess: async (run) => {
+        await queryClient.invalidateQueries({ queryKey: orpc.reviewRuns.key() });
+
+        if (run.status !== "queued" && run.status !== "running") {
+          toast.error(run.errorMessage || "Review run failed to start");
+          return;
+        }
+
         setRepositoryUrl("");
         setRepositoryOwner("");
         setRepositoryName("");
         setBranch("");
         setReviewContext("");
-        await queryClient.invalidateQueries({ queryKey: orpc.reviewRuns.key() });
         toast.success("Review run started");
       },
       onError: (error) => {
