@@ -89,6 +89,37 @@ Subscribe to these events:
 - Installation
 - Installation repositories
 
+## GitHub OAuth Sign-In Troubleshooting
+
+If GitHub shows this error when clicking `Continue with GitHub`:
+
+```text
+This GitHub App must be configured with a callback URL
+```
+
+then the app's OAuth callback field is empty in GitHub.
+
+Open:
+
+```text
+GitHub -> Settings -> Developer settings -> GitHub Apps -> [LOCALHOST]: Abu Bakr at Coworker
+```
+
+In `Identifying and authorizing users`, set:
+
+```text
+Callback URL: http://localhost:3000/api/auth/callback/github
+```
+
+This is different from:
+
+- Homepage URL: `http://localhost:3001`
+- Setup URL: `http://localhost:3001/dashboard/github/setup`
+- Webhook URL: `https://smee.io/PC7aK4wjTehMZYZp`
+
+Save the app settings, then retry `Continue with GitHub` from
+`http://localhost:3001/login`.
+
 ## Start Locally
 
 Run:
