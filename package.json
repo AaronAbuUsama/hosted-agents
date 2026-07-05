@@ -51,11 +51,14 @@
     "docker:logs": "docker compose logs -f"
   },
   "dependencies": {
+    "@astryxdesign/core": "^0.1.3",
+    "@astryxdesign/theme-neutral": "^0.1.3",
     "@hosted-agents/env": "workspace:*",
     "dotenv": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@astryxdesign/cli": "^0.1.3",
     "@hosted-agents/config": "workspace:*",
     "@types/bun": "catalog:",
     "oxfmt": "^0.57.0",
