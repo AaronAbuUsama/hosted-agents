@@ -6,12 +6,12 @@ Most structural/query commands print JSON; mutation commands often print nothing
 
 ## Selecting the target session
 
-| Form | Effect |
-|---|---|
-| `herdr --session <name> <cmd>` | run a command against a named session |
-| `HERDR_SESSION=<name> herdr <cmd>` | same, via env |
-| `HERDR_SOCKET_PATH=<path> herdr <cmd>` | low-level: target a specific socket |
-| (none) | default session |
+| Form                                   | Effect                                |
+| -------------------------------------- | ------------------------------------- |
+| `herdr --session <name> <cmd>`         | run a command against a named session |
+| `HERDR_SESSION=<name> herdr <cmd>`     | same, via env                         |
+| `HERDR_SOCKET_PATH=<path> herdr <cmd>` | low-level: target a specific socket   |
+| (none)                                 | default session                       |
 
 Resolution order: `--session` > `HERDR_SOCKET_PATH` > `HERDR_SESSION` > default.
 
@@ -23,6 +23,7 @@ herdr session attach <name>
 herdr session stop  <name> [--json]      # stops server + all its panes
 herdr session delete <name> [--json]
 ```
+
 Use `default` as `<name>` to target the default session for `stop`.
 
 ## workspace — project containers
@@ -35,6 +36,7 @@ herdr workspace focus  <workspace_id>
 herdr workspace rename <workspace_id> <label>
 herdr workspace close  <workspace_id>    # drops herdr state only (not git checkouts)
 ```
+
 `create` returns `result.workspace`, `result.tab`, `result.root_pane`.
 
 ## tab — layouts inside a workspace
@@ -47,6 +49,7 @@ herdr tab focus  <tab_id>
 herdr tab rename <tab_id> <label>
 herdr tab close  <tab_id>
 ```
+
 `create` returns `result.tab`, `result.root_pane`.
 
 ## pane — terminals (where agents run)
@@ -64,6 +67,7 @@ herdr pane run    <pane_id> <command>     # text + Enter atomically — preferre
 herdr pane report-agent    <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--custom-status TEXT] [--seq N]
 herdr pane report-metadata <pane_id> --source ID [--title TEXT] [--display-agent TEXT] [--custom-status TEXT] [--state-label STATUS=TEXT] [--ttl-ms N]
 ```
+
 **read sources:** `visible` = viewport · `recent` = rendered scrollback · `recent-unwrapped` = soft-wraps joined (best for logs and for inspecting what `wait output` matched) · `detection` = the snapshot used for agent detection (docs; via socket).
 **[socket-only here]:** `pane swap`, `pane move`, `pane zoom`, `pane resize`, `pane neighbor`, `pane layout`, `pane process_info` — use the socket API (`socket-api.md`).
 
@@ -80,6 +84,7 @@ herdr agent wait   <target> --status idle|working|blocked|unknown [--timeout MS]
 herdr agent attach <target> [--takeover]
 herdr agent start  <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env K=V] [--focus|--no-focus] -- <argv...>
 ```
+
 - **target** = terminal id, unique agent name, detected/reported label, or pane id. `get`/`focus`/`wait`/`attach` need an agent identity — a bare shell pane has none (rename it first, or use `pane`/`terminal` commands).
 - `agent start` requires the launch command after a literal `--`. Everything after `--` is run as the agent process.
 - **[socket-only here]:** `agent explain` (detection diagnostics) — `agent.explain` over the socket, or `herdr agent explain --json` on newer builds.
@@ -89,6 +94,7 @@ herdr agent start  <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split righ
 ```
 herdr terminal attach <terminal_id> [--takeover]
 ```
+
 Streams a single server-owned terminal without the full UI. Detach: `ctrl+b q`. Send a literal `ctrl+b`: `ctrl+b ctrl+b`. Only one writable client owns input; `--takeover` seizes it.
 
 ## wait — blocking coordination (exit code 1 on timeout)
@@ -97,6 +103,7 @@ Streams a single server-owned terminal without the full UI. Detach: `ctrl+b q`. 
 herdr wait output       <pane_id> --match <text> [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--regex] [--raw]
 herdr wait agent-status <pane_id> --status idle|working|blocked|done|unknown [--timeout MS]
 ```
+
 `wait agent-status` accepts **`done`** (the `agent wait` subcommand does not). `--timeout 0` waits indefinitely. `wait output --source recent` matches **unwrapped** text, so wrapping never breaks a match.
 
 ## worktree — git worktrees as workspaces
@@ -115,6 +122,7 @@ herdr integration install   <agent>     # pi omp claude codex copilot devin droi
 herdr integration uninstall <agent>
 herdr integration status [--outdated-only]
 ```
+
 See `agents-and-state.md` for which integrations give authoritative live state vs only session-resume.
 
 ## server / status / channel / config
@@ -127,6 +135,7 @@ herdr config reset-keys
 herdr --remote <host> [--session NAME] [--handoff] [--remote-keybindings local|server]
 herdr --no-session                      # escape hatch: no server/client split (no persistence/remote)
 ```
+
 **[socket-only here]:** `notification show`, `events subscribe` — no CLI subcommand on 0.6.8; use the socket API.
 
 ## Env vars herdr injects into every managed pane
@@ -135,12 +144,12 @@ herdr --no-session                      # escape hatch: no server/client split (
 
 ## ID forms (both accepted by the CLI)
 
-| Level | Compact | Long (returned in JSON) |
-|---|---|---|
-| workspace | `1` | `w654ac167ce9b11` |
-| tab | `1:1` | `w654ac167ce9b11:1` |
-| pane | `1-1` | `w654ac167ce9b11-1` |
-| terminal | — | `term_654ac167ce9ab2` |
+| Level     | Compact | Long (returned in JSON) |
+| --------- | ------- | ----------------------- |
+| workspace | `1`     | `w654ac167ce9b11`       |
+| tab       | `1:1`   | `w654ac167ce9b11:1`     |
+| pane      | `1-1`   | `w654ac167ce9b11-1`     |
+| terminal  | —       | `term_654ac167ce9ab2`   |
 
 JSON always returns the long form plus a `number`. IDs compact on close — re-read them; never cache across a close.
 

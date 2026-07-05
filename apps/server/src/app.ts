@@ -12,6 +12,7 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import "./braintrust";
 import "./sentry";
@@ -36,6 +37,27 @@ await registerOptionalPiOpenAICodexProvider();
 
 const app = new Hono();
 
+function verifyGitHubWebhookSignature(payload: string, signature: string | undefined) {
+  if (!env.GITHUB_WEBHOOK_SECRET) {
+    return false;
+  }
+
+  if (!signature?.startsWith("sha256=")) {
+    return false;
+  }
+
+  const expected = `sha256=${createHmac("sha256", env.GITHUB_WEBHOOK_SECRET)
+    .update(payload)
+    .digest("hex")}`;
+  const signatureBuffer = Buffer.from(signature, "utf8");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+
+  return (
+    signatureBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(signatureBuffer, expectedBuffer)
+  );
+}
+
 app.use(logger());
 app.use(
   "/*",
@@ -48,6 +70,48 @@ app.use(
 );
 
 app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+
+app.get("/api/github/webhook", (c) => {
+  return c.json({ ok: true, endpoint: "github-webhook" });
+});
+
+app.post("/api/github/webhook", async (c) => {
+  const payload = await c.req.text();
+  const signature = c.req.header("x-hub-signature-256");
+
+  if (!env.GITHUB_WEBHOOK_SECRET) {
+    return c.json({ error: "GitHub webhook secret is not configured." }, 500);
+  }
+
+  if (!verifyGitHubWebhookSignature(payload, signature)) {
+    return c.json({ error: "Invalid GitHub webhook signature." }, 401);
+  }
+
+  const event = c.req.header("x-github-event") ?? "unknown";
+  const delivery = c.req.header("x-github-delivery") ?? "unknown";
+  let action: string | undefined;
+  let installationId: number | undefined;
+
+  try {
+    const json = JSON.parse(payload) as {
+      action?: string;
+      installation?: { id?: number };
+    };
+    action = json.action;
+    installationId = json.installation?.id;
+  } catch {
+    return c.json({ error: "Invalid GitHub webhook JSON payload." }, 400);
+  }
+
+  console.info("[github-webhook] accepted", {
+    event,
+    action,
+    delivery,
+    installationId,
+  });
+
+  return c.json({ ok: true, event, action, delivery }, 202);
+});
 
 export const apiHandler = new OpenAPIHandler(appRouter, {
   plugins: [

@@ -14,6 +14,7 @@ export const env = createEnv({
     SENTRY_RELEASE: z.string().optional(),
     BRAINTRUST_API_KEY: z.string().min(1).optional(),
     BRAINTRUST_PROJECT_NAME: z.string().min(1).optional(),
+    GITHUB_WEBHOOK_SECRET: z.string().min(16).optional(),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   runtimeEnv: process.env,

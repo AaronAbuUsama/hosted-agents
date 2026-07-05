@@ -32,11 +32,11 @@ for p in json.load(sys.stdin)["result"]["panes"]:
 
 ---
 
-## Pattern: spawn one sub-agent and hand it a task  (TESTED end-to-end)
+## Pattern: spawn one sub-agent and hand it a task (TESTED end-to-end)
 
 The trap: an interactive TUI agent (Claude Code, etc.) takes ~1-3s to boot, and herdr
 **false-detects the agent from the literal command word** — so `wait agent-status idle`
-returns "ready" *before the TUI can accept input*. **Do not trust agent-status for readiness.**
+returns "ready" _before the TUI can accept input_. **Do not trust agent-status for readiness.**
 Wait for the agent's real on-screen ready marker instead.
 
 ```bash
@@ -67,7 +67,7 @@ herdr agent start reviewer --cwd /repo --split right --no-focus -- claude
 
 `--cwd`, `--workspace <id>`, `--tab <id>`, `--split right|down`, `--env K=V`, `--focus|--no-focus` all control placement. Name the agent (`agent start <name>` or `agent rename <pane> <name>`) so you can target it by name later instead of by fragile ID.
 
-> **`done` is transient.** Verified live: status goes `working → done → idle`, and `done` lasts only ~1s before flipping to `idle` (it clears once "seen"). Catch it on the `wait agent-status done` edge or via a socket event — never poll for it to persist. If you might miss the edge, wait for `idle` after a known `working`, or use an output sentinel that only your agent's *answer* contains.
+> **`done` is transient.** Verified live: status goes `working → done → idle`, and `done` lasts only ~1s before flipping to `idle` (it clears once "seen"). Catch it on the `wait agent-status done` edge or via a socket event — never poll for it to persist. If you might miss the edge, wait for `idle` after a known `working`, or use an output sentinel that only your agent's _answer_ contains.
 
 ---
 
@@ -104,15 +104,16 @@ echo "done: ${done_ok[*]:-none} | timed out: ${timed_out[*]:-none}"
 ```
 
 Notes:
+
 - `wait agent-status ... --status done` catches the **edge** when each agent finishes; reading the pane clears `done` → `idle`, so read immediately after the wait returns.
-- Waiting sequentially still parallelizes the *work* — every agent runs concurrently; you just collect in order. Total wall-clock ≈ the slowest agent.
-- For true push-based joining (react the moment *any* agent finishes or blocks), use the event loop below.
+- Waiting sequentially still parallelizes the _work_ — every agent runs concurrently; you just collect in order. Total wall-clock ≈ the slowest agent.
+- For true push-based joining (react the moment _any_ agent finishes or blocks), use the event loop below.
 
 ---
 
 ## Pattern: fleet topology — workers in their own windows, ≤4 per window (TESTED)
 
-Put workers in **dedicated workspaces** (their own "windows" in the sidebar), never the controller's, and cap each window at **4 agents** as a 2×2 grid. **Verified:** 4+ agents *stacked as splits in one pane* shrink to ~1/8 height, and a TUI agent in a too-small pane silently never receives the dispatched task (it never goes `working`). A 2×2 grid gives half-height panes, which works. So scale with **more windows, not more splits**.
+Put workers in **dedicated workspaces** (their own "windows" in the sidebar), never the controller's, and cap each window at **4 agents** as a 2×2 grid. **Verified:** 4+ agents _stacked as splits in one pane_ shrink to ~1/8 height, and a TUI agent in a too-small pane silently never receives the dispatched task (it never goes `working`). A 2×2 grid gives half-height panes, which works. So scale with **more windows, not more splits**.
 
 ```bash
 jq_pane() { python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["pane"]["pane_id"])'; }
@@ -205,7 +206,7 @@ herdr worktree remove --workspace "$WS"      # runs real `git worktree remove`; 
 
 A named session is an independent server (own panes, own socket; shared global config). Use one session for the controller and another (or several) for workers, or one fleet per project.
 
-**Creating a new session non-interactively (TESTED).** There is no `herdr session create`. `herdr session attach <name>` is the *interactive* TUI path, and you cannot launch the TUI from inside a pane (`HERDR_ENV=1` blocks nested launches). The orchestrator's move is the **headless server**, which is allowed from inside a pane:
+**Creating a new session non-interactively (TESTED).** There is no `herdr session create`. `herdr session attach <name>` is the _interactive_ TUI path, and you cannot launch the TUI from inside a pane (`HERDR_ENV=1` blocks nested launches). The orchestrator's move is the **headless server**, which is allowed from inside a pane:
 
 ```bash
 # start an independent named-session server in the background (no TUI, no nested-launch block)
@@ -223,7 +224,7 @@ herdr --session fleet-a pane list
 herdr session stop fleet-a            # tears down the whole fleet (kills its panes)
 ```
 
-Note: touching a *stopped* named session with socket commands fails (`status` shows `server: not_running`; `workspace list` errors `NotFound`) — the server must be running first. Manage existing sessions:
+Note: touching a _stopped_ named session with socket commands fails (`status` shows `server: not_running`; `workspace list` errors `NotFound`) — the server must be running first. Manage existing sessions:
 
 ```bash
 herdr session list --json                              # enumerate (shows running: true/false)
@@ -241,12 +242,12 @@ Socket selection order: `--session <name>` > `HERDR_SOCKET_PATH` > `HERDR_SESSIO
 
 What survives depends on how the session ends — know this before relying on a long-running fleet:
 
-| Event | Processes | Layout | Screen | Agent conversation |
-|---|---|---|---|---|
-| Detach (`ctrl+b q`) + reattach (`herdr`) | **kept running** | yes | live | never stopped |
-| `herdr server stop` then restart | **killed** (panes restart as shells) | yes | only if pane-history on | only with native resume |
-| `herdr update --handoff` | best-effort kept | yes | kept if handoff ok | kept if handoff ok |
-| `herdr update` (no handoff) | killed | yes | as restart | as restart |
+| Event                                    | Processes                            | Layout | Screen                  | Agent conversation      |
+| ---------------------------------------- | ------------------------------------ | ------ | ----------------------- | ----------------------- |
+| Detach (`ctrl+b q`) + reattach (`herdr`) | **kept running**                     | yes    | live                    | never stopped           |
+| `herdr server stop` then restart         | **killed** (panes restart as shells) | yes    | only if pane-history on | only with native resume |
+| `herdr update --handoff`                 | best-effort kept                     | yes    | kept if handoff ok      | kept if handoff ok      |
+| `herdr update` (no handoff)              | killed                               | yes    | as restart              | as restart              |
 
 - **Native agent session resume** is ON by default (`[session] resume_agents_on_restore = true`) — supported agents resume their conversation after a restart **if** the official integration is installed at a high-enough version (e.g. Claude Code needs integration v6). Verify with `herdr integration status`.
 - **Pane history replay** (recent screen contents after restart) is OFF by default (can leak secrets); enable with `[experimental] pane_history = true`.
@@ -267,8 +268,9 @@ ssh you@server herdr                            # alternative: run entirely on t
 ```
 
 Headless caveats for unattended controllers:
+
 - A **non-interactive** remote run **fails** if `herdr` isn't already on the remote host — pre-install it (e.g. to `~/.local/bin/herdr`, ensure it's on `PATH`). Override the pushed binary with `HERDR_REMOTE_BINARY`.
-- Remote keybindings default to a **snapshot of local** bindings at attach time; local *command* keybindings are not forwarded (they'd run on the remote host). Use `--remote-keybindings server` for server config.
+- Remote keybindings default to a **snapshot of local** bindings at attach time; local _command_ keybindings are not forwarded (they'd run on the remote host). Use `--remote-keybindings server` for server config.
 - Remote attach is Linux/macOS (x86_64/aarch64). On the server, the same CLI/socket orchestration applies — nothing here is tied to any cloud provider.
 
 ---

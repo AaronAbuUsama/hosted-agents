@@ -16,6 +16,7 @@ The CLI is the default control layer. Use the raw socket when you need **event s
 ~/.config/herdr/herdr.sock                       # default session
 ~/.config/herdr/sessions/<name>/herdr.sock       # named session
 ```
+
 Inside a pane, read it from `$HERDR_SOCKET_PATH`. Resolution order matches the CLI: `--session` > `HERDR_SOCKET_PATH` > `HERDR_SESSION` > default.
 
 ### Talking to it
@@ -25,36 +26,44 @@ Inside a pane, read it from `$HERDR_SOCKET_PATH`. Resolution order matches the C
 printf '%s\n' '{"id":"1","method":"ping","params":{}}' | nc -U "$HERDR_SOCKET_PATH"
 # -> {"id":"1","result":{"type":"pong"}}
 ```
+
 `nc -U` (or `socat - UNIX-CONNECT:$HERDR_SOCKET_PATH`, or any language's unix-socket client) works. For event streams, keep the connection open and read line by line.
 
 ## Method map (dot notation)
 
-| Area | Methods |
-|---|---|
-| Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests` |
-| Notification | `notification.show` |
-| Client | `client.window_title.set`, `client.window_title.clear` |
-| Workspace | `workspace.create`, `.list`, `.get`, `.focus`, `.rename`, `.close` |
-| Worktree | `worktree.list`, `.create`, `.open`, `.remove` |
-| Tab | `tab.create`, `.list`, `.get`, `.focus`, `.rename`, `.close` |
-| Pane | `pane.split`, `.swap`, `.move`, `.zoom`, `.layout`, `.process_info`, `.neighbor`, `.edges`, `.focus_direction`, `.resize`, `.list`, `.current`, `.get`, `.rename`, `.send_text`, `.send_keys`, `.send_input`, `.read`, `.report_agent`, `.report_agent_session`, `.report_metadata`, `.clear_agent_authority`, `.release_agent`, `.close`, `.wait_for_output` |
-| Layout | `layout.export`, `layout.apply` |
-| Agent | `agent.list`, `.get`, `.read`, `.explain`, `.send`, `.rename`, `.focus`, `.start` |
-| Events | `events.subscribe`, `events.wait` |
-| Integrations | `integration.install`, `integration.uninstall` |
-| Plugins | `plugin.link`, `.list`, `.unlink`, `.enable`, `.disable`, `.action.list`, `.action.invoke`, `.log.list`, `.pane.open`, `.pane.focus`, `.pane.close` |
+| Area         | Methods                                                                                                                                                                                                                                                                                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server       | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests`                                                                                                                                                                                                                                                      |
+| Notification | `notification.show`                                                                                                                                                                                                                                                                                                                                           |
+| Client       | `client.window_title.set`, `client.window_title.clear`                                                                                                                                                                                                                                                                                                        |
+| Workspace    | `workspace.create`, `.list`, `.get`, `.focus`, `.rename`, `.close`                                                                                                                                                                                                                                                                                            |
+| Worktree     | `worktree.list`, `.create`, `.open`, `.remove`                                                                                                                                                                                                                                                                                                                |
+| Tab          | `tab.create`, `.list`, `.get`, `.focus`, `.rename`, `.close`                                                                                                                                                                                                                                                                                                  |
+| Pane         | `pane.split`, `.swap`, `.move`, `.zoom`, `.layout`, `.process_info`, `.neighbor`, `.edges`, `.focus_direction`, `.resize`, `.list`, `.current`, `.get`, `.rename`, `.send_text`, `.send_keys`, `.send_input`, `.read`, `.report_agent`, `.report_agent_session`, `.report_metadata`, `.clear_agent_authority`, `.release_agent`, `.close`, `.wait_for_output` |
+| Layout       | `layout.export`, `layout.apply`                                                                                                                                                                                                                                                                                                                               |
+| Agent        | `agent.list`, `.get`, `.read`, `.explain`, `.send`, `.rename`, `.focus`, `.start`                                                                                                                                                                                                                                                                             |
+| Events       | `events.subscribe`, `events.wait`                                                                                                                                                                                                                                                                                                                             |
+| Integrations | `integration.install`, `integration.uninstall`                                                                                                                                                                                                                                                                                                                |
+| Plugins      | `plugin.link`, `.list`, `.unlink`, `.enable`, `.disable`, `.action.list`, `.action.invoke`, `.log.list`, `.pane.open`, `.pane.focus`, `.pane.close`                                                                                                                                                                                                           |
 
 Pane methods take public ids (`w1:p1`). Where `pane_id` is optional, the server's focused pane is used; `pane.move` always requires the source `pane_id`. **Raw socket `cwd`/`path` values must be absolute** (the CLI expands relatives for you).
 
 ## Events (push-based monitoring)
 
 ```json
-{"id":"sub_1","method":"events.subscribe","params":{"subscriptions":[
-  {"type":"pane.created"},
-  {"type":"pane.exited"},
-  {"type":"pane.agent_status_changed","pane_id":"w1:p1"}
-]}}
+{
+  "id": "sub_1",
+  "method": "events.subscribe",
+  "params": {
+    "subscriptions": [
+      { "type": "pane.created" },
+      { "type": "pane.exited" },
+      { "type": "pane.agent_status_changed", "pane_id": "w1:p1" }
+    ]
+  }
+}
 ```
+
 The first line is the ack: `{"id":"sub_1","result":{"type":"subscription_started"}}`. Subsequent lines are pushed events with the shape **`{"event":"<type>","data":{...}}`** (TESTED), e.g.
 `{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent":"claude","agent_status":"done","workspace_id":"w1"}}`.
 
@@ -62,7 +71,7 @@ The first line is the ack: `{"id":"sub_1","result":{"type":"subscription_started
 - **Workspace:** `workspace.created`, `.updated`, `.renamed`, `.closed`, `.focused`
 - **Worktree:** `worktree.created`, `.opened`, `.removed`
 
-> **TESTED filtering rule:** `pane.agent_status_changed` (and `pane.output_matched`) **require a `pane_id`** in the subscription — omitting it errors with `invalid_request: missing field 'pane_id'`. The lifecycle events (`pane.created`/`closed`/`exited`/`agent_detected`) accept **no** `pane_id` and stream for *all* panes. So fleet monitoring = one global lifecycle subscription (catch new/dead panes) + one `agent_status_changed` subscription **per pane** you track. Add `agent_status` to a subscription to narrow it to one state.
+> **TESTED filtering rule:** `pane.agent_status_changed` (and `pane.output_matched`) **require a `pane_id`** in the subscription — omitting it errors with `invalid_request: missing field 'pane_id'`. The lifecycle events (`pane.created`/`closed`/`exited`/`agent_detected`) accept **no** `pane_id` and stream for _all_ panes. So fleet monitoring = one global lifecycle subscription (catch new/dead panes) + one `agent_status_changed` subscription **per pane** you track. Add `agent_status` to a subscription to narrow it to one state.
 
 This is the right tool for supervising a large fleet: subscribe to `pane.agent_status_changed` per worker and act on `blocked`/`done` the instant they happen, instead of N polling loops. `done` is transient (~1s before it flips to `idle`), so an event subscription is more reliable than polling for catching it.
 
@@ -84,8 +93,19 @@ This is the right tool for supervising a large fleet: subscribe to `pane.agent_s
 If you build your own worker wrapper, report its lifecycle so herdr's waits/rollups see it:
 
 ```json
-{"id":"r","method":"pane.report_agent","params":{"pane_id":"w1:p1","source":"custom:worker","agent":"worker","state":"working","custom_status":"step 2/5"}}
+{
+  "id": "r",
+  "method": "pane.report_agent",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "custom:worker",
+    "agent": "worker",
+    "state": "working",
+    "custom_status": "step 2/5"
+  }
+}
 ```
+
 - `state` is **semantic** (drives waits/notifications/rollups): `idle|working|blocked|done|unknown`.
 - `custom_status` is **display-only**. Use `pane.report_metadata` for display overrides (title/label) that must **not** seize state authority. Use `seq` to drop out-of-order updates; `ttl_ms` (1..86400000) to expire metadata.
 
