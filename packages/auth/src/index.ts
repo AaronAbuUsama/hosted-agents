@@ -8,6 +8,15 @@ import { username } from "better-auth/plugins/username";
 
 export function createAuth() {
   const db = createDb();
+  const socialProviders =
+    env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET
+      ? {
+          github: {
+            clientId: env.GITHUB_CLIENT_ID,
+            clientSecret: env.GITHUB_CLIENT_SECRET,
+          },
+        }
+      : undefined;
 
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -15,6 +24,7 @@ export function createAuth() {
 
       schema: schema,
     }),
+    ...(socialProviders ? { socialProviders } : {}),
     trustedOrigins: [env.CORS_ORIGIN],
     emailAndPassword: {
       enabled: true,

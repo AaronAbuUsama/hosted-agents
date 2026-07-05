@@ -33,6 +33,19 @@ GITHUB_WEBHOOK_PROXY_URL=https://smee.io/PC7aK4wjTehMZYZp
 GITHUB_WEBHOOK_SECRET=generated_or_pasted_secret
 ```
 
+Required for local GitHub App OAuth, installation validation, and installation tokens:
+
+```env
+GITHUB_APP_ID=4223358
+GITHUB_APP_SLUG=localhost-abu-bakr-at-coworker
+GITHUB_APP_PRIVATE_KEY_PATH=/Users/abuusama/Downloads/localhost-abu-bakr-at-coworker.2026-07-05.private-key.pem
+GITHUB_CLIENT_ID=Iv23lijISDNLQhWZFgIL
+GITHUB_CLIENT_SECRET=local_client_secret
+```
+
+Use `GITHUB_APP_PRIVATE_KEY` instead of `GITHUB_APP_PRIVATE_KEY_PATH` in deployed
+environments.
+
 If `GITHUB_WEBHOOK_SECRET` is missing, `bun run dev:localhost` generates one and appends it to `apps/server/.env`. It does not print the secret.
 
 To copy the secret for the GitHub App form:
@@ -45,9 +58,14 @@ grep '^GITHUB_WEBHOOK_SECRET=' apps/server/.env | sed 's/^GITHUB_WEBHOOK_SECRET=
 
 For the dev GitHub App:
 
+- Homepage URL: `http://localhost:3001`
+- Callback URL: `http://localhost:3000/api/auth/callback/github`
+- Setup URL: `http://localhost:3001/dashboard/github/setup`
 - Webhook URL: `https://smee.io/PC7aK4wjTehMZYZp`
 - Webhook secret: the value of `GITHUB_WEBHOOK_SECRET`
 - SSL verification: enabled
+- Request user authorization during installation: enabled
+- Redirect on update: enabled
 
 The local server receives forwarded webhooks at:
 
@@ -65,7 +83,11 @@ Minimum repository permissions for the code review agent:
 - Checks: Read and write
 - Commit statuses: Read and write
 
-Use no organization or account permissions for the local dev app.
+Account permissions:
+
+- Email addresses: Read-only
+
+Use no organization permissions for the local dev app.
 
 Subscribe to these webhook events:
 
@@ -79,4 +101,10 @@ Subscribe to these webhook events:
 
 The local endpoint verifies `x-hub-signature-256`, logs the GitHub event, action, delivery id, and installation id, then returns `202`.
 
-The next product slice turns accepted `pull_request` events into `review_run` records.
+The dashboard GitHub App card generates an install URL with the active organization
+id in `state`. After GitHub redirects to the setup URL, the setup page claims the
+`installation_id`, validates it with the GitHub App private key, stores the
+installation on the organization, and syncs the selected repositories.
+
+The next product slice turns accepted `pull_request` events into `review_run`
+records.

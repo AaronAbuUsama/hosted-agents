@@ -2,6 +2,7 @@ import { Button } from "@hosted-agents/ui/components/button";
 import { Input } from "@hosted-agents/ui/components/input";
 import { Label } from "@hosted-agents/ui/components/label";
 import { useForm } from "@tanstack/react-form";
+import { GitPullRequest } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import z from "zod";
@@ -13,6 +14,19 @@ import Loader from "./loader";
 export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () => void }) {
   const router = useRouter();
   const { isPending } = authClient.useSession();
+  const signInWithGitHub = async () => {
+    await authClient.signIn.social(
+      {
+        provider: "github",
+        callbackURL: "/dashboard",
+      },
+      {
+        onError: (error) => {
+          toast.error(error.error.message || error.error.statusText);
+        },
+      },
+    );
+  };
 
   const form = useForm({
     defaultValues: {
@@ -61,6 +75,11 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
   return (
     <div className="mx-auto w-full mt-10 max-w-md p-6">
       <h1 className="mb-6 text-center text-3xl font-bold">Create Account</h1>
+
+      <Button type="button" variant="outline" className="mb-4 w-full" onClick={signInWithGitHub}>
+        <GitPullRequest data-icon="inline-start" />
+        Continue with GitHub
+      </Button>
 
       <form
         onSubmit={(e) => {

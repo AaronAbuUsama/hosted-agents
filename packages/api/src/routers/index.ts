@@ -7,12 +7,18 @@ import {
 } from "@earendil-works/pi-ai/oauth";
 import { db } from "@hosted-agents/db";
 import { member } from "@hosted-agents/db/schema/auth";
+import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
 import { agentProviderCredential } from "@hosted-agents/db/schema/provider-credentials";
 import { reviewRun } from "@hosted-agents/db/schema/reviews";
 import { env } from "@hosted-agents/env/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
+import {
+  claimGitHubInstallation,
+  createGitHubAppInstallUrl,
+  isGitHubAppConfigured,
+} from "../github-app";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
 
@@ -58,6 +64,13 @@ const organizationScopedInput = z
 
 const credentialConnectionInput = z.object({
   connectionId: z.string(),
+});
+
+const claimGitHubInstallationInput = z.object({
+  installationId: z.string().regex(/^\d+$/, "GitHub installation id must be numeric."),
+  organizationId: z.string().optional(),
+  setupAction: z.string().optional(),
+  state: z.string().optional(),
 });
 
 const revokeProviderCredentialInput = z.object({
@@ -124,6 +137,42 @@ function mapProviderCredential(row: typeof agentProviderCredential.$inferSelect)
     expiresAt: toIsoString(row.expiresAt),
     lastError: row.lastError,
     lastUsedAt: toIsoString(row.lastUsedAt),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function mapGitHubInstallation(
+  row: typeof githubInstallation.$inferSelect,
+  repositories: (typeof githubRepository.$inferSelect)[],
+) {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    installationId: row.installationId,
+    appSlug: row.appSlug,
+    accountId: row.accountId,
+    accountLogin: row.accountLogin,
+    accountType: row.accountType,
+    repositorySelection: row.repositorySelection,
+    status: row.status,
+    setupAction: row.setupAction,
+    installedByUserId: row.installedByUserId,
+    suspendedAt: toIsoString(row.suspendedAt),
+    repositoryCount: repositories.length,
+    repositories: repositories.map((repository) => ({
+      id: repository.id,
+      githubRepositoryId: repository.githubRepositoryId,
+      owner: repository.owner,
+      name: repository.name,
+      fullName: repository.fullName,
+      htmlUrl: repository.htmlUrl,
+      defaultBranch: repository.defaultBranch,
+      private: repository.private,
+      selected: repository.selected,
+      createdAt: repository.createdAt.toISOString(),
+      updatedAt: repository.updatedAt.toISOString(),
+    })),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -356,6 +405,104 @@ export const appRouter = {
         .orderBy(desc(agentProviderCredential.updatedAt));
 
       return rows.map(mapProviderCredential);
+    }),
+  githubAppInstallUrl: protectedProcedure
+    .input(organizationScopedInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+        ?.activeOrganizationId;
+      const organizationId = await resolveOrganizationId(
+        userId,
+        input?.organizationId ?? activeOrganizationId ?? undefined,
+      );
+
+      if (!organizationId) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Create or select an organization before installing the GitHub App.",
+        });
+      }
+
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      if (!isGitHubAppConfigured()) {
+        return {
+          configured: false,
+          installUrl: null,
+        };
+      }
+
+      return {
+        configured: true,
+        installUrl: createGitHubAppInstallUrl(organizationId),
+      };
+    }),
+  githubInstallations: protectedProcedure
+    .input(organizationScopedInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+        ?.activeOrganizationId;
+      const organizationId = await resolveOrganizationId(
+        userId,
+        input?.organizationId ?? activeOrganizationId ?? undefined,
+      );
+
+      if (!organizationId) {
+        return [];
+      }
+
+      const rows = await db
+        .select()
+        .from(githubInstallation)
+        .where(eq(githubInstallation.organizationId, organizationId))
+        .orderBy(desc(githubInstallation.updatedAt));
+      const installationIds = rows.map((row) => row.id);
+      const repositoryRows = installationIds.length
+        ? await db
+            .select()
+            .from(githubRepository)
+            .where(inArray(githubRepository.installationId, installationIds))
+        : [];
+
+      return rows.map((row) =>
+        mapGitHubInstallation(
+          row,
+          repositoryRows.filter((repository) => repository.installationId === row.id),
+        ),
+      );
+    }),
+  claimGitHubInstallation: protectedProcedure
+    .input(claimGitHubInstallationInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+        ?.activeOrganizationId;
+      const organizationId = await resolveOrganizationId(
+        userId,
+        input.organizationId ?? input.state ?? activeOrganizationId ?? undefined,
+      );
+
+      if (!organizationId) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Create or select an organization before linking a GitHub installation.",
+        });
+      }
+
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      try {
+        return await claimGitHubInstallation({
+          organizationId,
+          userId,
+          installationId: input.installationId,
+          setupAction: input.setupAction,
+        });
+      } catch (error) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: error instanceof Error ? error.message : "Failed to claim GitHub installation.",
+        });
+      }
     }),
   startOpenAICodexCredentialConnection: protectedProcedure
     .input(organizationScopedInput)

@@ -6,6 +6,7 @@ import { Input } from "@hosted-agents/ui/components/input";
 import { Label } from "@hosted-agents/ui/components/label";
 import { Textarea } from "@hosted-agents/ui/components/textarea";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, GitPullRequest, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -37,8 +38,23 @@ export default function Dashboard({ session }: { session: typeof authClient.$Inf
       enabled: !!selectedOrganizationId,
     }),
   );
+  const githubInstallations = useQuery(
+    orpc.githubInstallations.queryOptions({
+      input: selectedOrganizationId ? { organizationId: selectedOrganizationId } : {},
+      enabled: !!selectedOrganizationId,
+    }),
+  );
+  const githubAppInstallUrl = useQuery(
+    orpc.githubAppInstallUrl.queryOptions({
+      input: selectedOrganizationId ? { organizationId: selectedOrganizationId } : {},
+      enabled: !!selectedOrganizationId,
+    }),
+  );
   const openAICodexCredential = providerCredentials.data?.find(
     (credential) => credential.provider === "openai-codex" && credential.status === "connected",
+  );
+  const connectedGitHubInstallation = githubInstallations.data?.find(
+    (installation) => installation.status === "connected",
   );
   const [credentialConnectionId, setCredentialConnectionId] = useState("");
   const credentialConnection = useQuery({
@@ -283,6 +299,80 @@ export default function Dashboard({ session }: { session: typeof authClient.$Inf
     </Card>
   );
 
+  const githubAppCard = (
+    <Card>
+      <CardHeader>
+        <CardTitle>GitHub App</CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div className="grid gap-1">
+          <div className="flex items-center justify-between gap-3">
+            <span>Abu Bakr</span>
+            <span className="text-muted-foreground">
+              {connectedGitHubInstallation ? "Installed" : "Not installed"}
+            </span>
+          </div>
+          {connectedGitHubInstallation ? (
+            <span className="text-muted-foreground">
+              {connectedGitHubInstallation.accountLogin} ·{" "}
+              {connectedGitHubInstallation.repositoryCount} repos
+            </span>
+          ) : null}
+        </div>
+
+        {githubInstallations.data?.length ? (
+          <div className="grid gap-2 border border-border p-3 text-xs">
+            {githubInstallations.data.map((installation) => (
+              <div key={installation.id} className="grid gap-1">
+                <div className="flex items-center justify-between gap-3">
+                  <span>{installation.accountLogin ?? installation.installationId}</span>
+                  <span className="capitalize text-muted-foreground">{installation.status}</span>
+                </div>
+                <div className="text-muted-foreground">
+                  {installation.repositorySelection ?? "repositories"} ·{" "}
+                  {installation.repositoryCount} repos
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            disabled={!githubAppInstallUrl.data?.installUrl}
+            onClick={() => {
+              const installUrl = githubAppInstallUrl.data?.installUrl;
+              if (installUrl) {
+                window.location.href = installUrl;
+              }
+            }}
+          >
+            <GitPullRequest data-icon="inline-start" />
+            {connectedGitHubInstallation ? "Update Install" : "Install"}
+            <ExternalLink data-icon="inline-end" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Refresh GitHub installations"
+            disabled={githubInstallations.isFetching}
+            onClick={() => {
+              void githubInstallations.refetch();
+            }}
+          >
+            <RefreshCw />
+          </Button>
+        </div>
+
+        {githubAppInstallUrl.data && !githubAppInstallUrl.data.configured ? (
+          <p className="text-muted-foreground">GitHub App config is missing on the local server.</p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+
   if (!organizations.isPending && organizationList.length === 0) {
     return <div className="grid gap-4 lg:grid-cols-[22rem]">{organizationCard}</div>;
   }
@@ -387,6 +477,7 @@ export default function Dashboard({ session }: { session: typeof authClient.$Inf
 
         <div className="grid gap-4">
           {organizationCard}
+          {githubAppCard}
           {providerConnectionsCard}
         </div>
       </div>
