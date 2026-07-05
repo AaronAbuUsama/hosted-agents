@@ -1,0 +1,3 @@
+{
+  "extends": "@hosted-agents/config/tsconfig.base.json"
+}
