@@ -1,117 +1,157 @@
 "use client";
 
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+
 import { AppShell } from "@astryxdesign/core/AppShell";
-import { Badge } from "@astryxdesign/core/Badge";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import type { IconType } from "@astryxdesign/core/Icon";
-import { Link } from "@astryxdesign/core/Link";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
-import { HStack, VStack } from "@astryxdesign/core/Stack";
+import { VStack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
-import { TopNav } from "@astryxdesign/core/TopNav";
 import {
+  ArrowLeftIcon,
   ChartBarSquareIcon,
   Cog6ToothIcon,
-  CommandLineIcon,
+  FolderIcon,
   PlayCircleIcon,
   ServerStackIcon,
+  ShieldCheckIcon,
   UserGroupIcon,
 } from "@heroicons/react/24/outline";
 import { usePathname } from "next/navigation";
 
-import { coworkers, runs } from "@/lib/coworker-data";
+import { coworkers, projects, runs } from "@/lib/coworker-data";
 
-type NavItem = {
+type WorkspaceNavItem = {
   href: string;
   label: string;
   icon: IconType;
   count?: number;
+  match?: "exact" | "prefix";
+};
+
+type SettingsNavItem = {
+  section: string;
+  label: string;
+  icon: IconType;
 };
 
 type AppFrameProps = {
-  children: React.ReactNode;
+  children: ReactNode;
 };
 
-const navItems: NavItem[] = [
-  { href: "/app", label: "Overview", icon: ChartBarSquareIcon },
+const workspaceNavItems: WorkspaceNavItem[] = [
+  { href: "/app", label: "Overview", icon: ChartBarSquareIcon, match: "exact" },
+  { href: "/app/projects", label: "Projects", icon: FolderIcon, count: projects.length },
   { href: "/app/runs", label: "Runs", icon: PlayCircleIcon, count: runs.length },
   { href: "/app/coworkers", label: "Coworkers", icon: UserGroupIcon, count: coworkers.length },
-  { href: "/app/settings", label: "Settings", icon: Cog6ToothIcon },
 ];
 
-export default function AppFrame({ children }: AppFrameProps) {
-  const pathname = usePathname();
+const settingsNavItem: WorkspaceNavItem = { href: "/app/settings", label: "Settings", icon: Cog6ToothIcon };
 
+const settingsNavItems = [
+  { section: "organization", label: "Organization", icon: ChartBarSquareIcon },
+  { section: "provider-account", label: "Provider account", icon: ServerStackIcon },
+  { section: "github-apps", label: "GitHub Apps", icon: FolderIcon },
+  { section: "repositories", label: "Repositories", icon: FolderIcon },
+  { section: "billing", label: "Billing", icon: Cog6ToothIcon },
+  { section: "security", label: "Security", icon: ShieldCheckIcon },
+] as const satisfies readonly SettingsNavItem[];
+
+type SettingsSectionSlug = (typeof settingsNavItems)[number]["section"];
+
+const defaultSettingsSection: SettingsSectionSlug = "organization";
+
+function isWorkspaceItemSelected(item: WorkspaceNavItem, pathname: string): boolean {
+  if (item.match === "exact") {
+    return pathname === item.href;
+  }
+
+  return pathname === item.href || pathname.startsWith(`${item.href}/`);
+}
+
+export default function AppFrame({ children }: AppFrameProps): ReactElement {
+  const pathname = usePathname();
+  const isSettingsRoute = pathname === "/app/settings";
+  const runningRuns = runs.filter((run) => run.status === "Running").length;
+  const [selectedSettingsSection, setSelectedSettingsSection] = useState<string>(defaultSettingsSection);
+
+  useEffect(() => {
+    const section = new URLSearchParams(window.location.search).get("section");
+    setSelectedSettingsSection(section ?? defaultSettingsSection);
+  }, [isSettingsRoute]);
   return (
     <AppShell
-      variant="elevated"
       contentPadding={0}
-      topNav={
-        <TopNav
-          label="Coworker workspace navigation"
-          heading={
-            <Link href="/" isStandalone>
-              Coworker
-            </Link>
-          }
-          endContent={
-            <HStack gap={4} vAlign="center">
-              <Text type="supporting">Capxul Alpha</Text>
-              <Badge variant="green" label="Provider pending" />
-              <Link href="/login" isStandalone>
-                Sign in
-              </Link>
-            </HStack>
-          }
-        />
-      }
       sideNav={
         <SideNav
-          header={
-            <SideNavHeading
-              heading="coworker.tech"
-              superheading="Workspace"
-              subheading="Named AI coworkers"
-              headingHref="/app"
-            />
-          }
+          header={<SideNavHeading heading="Capxul Alpha" headingHref="/app" subheading="Coworker workspace" />}
           footer={
-            <VStack gap={2}>
-              <HStack gap={2} vAlign="center">
-                <CommandLineIcon width={16} height={16} />
-                <Text type="label">Sandbox runner</Text>
-              </HStack>
-              <Text type="supporting" as="p">
-                Runs execute in isolated sandboxes before posting back to GitHub.
+            <VStack gap={1}>
+              <Text type="label">Sync healthy</Text>
+              <Text type="supporting" color="secondary">
+                {projects.length} projects · {runningRuns} active runs
               </Text>
             </VStack>
           }
           collapsible={{ defaultIsCollapsed: false }}
         >
-          <SideNavSection title="Operate">
-            {navItems.map((item) => {
-              const isSelected =
-                pathname === item.href ||
-                (item.href !== "/app" && pathname.startsWith(`${item.href}/`));
-
-              return (
+          {isSettingsRoute ? (
+            <SideNavSection title="Settings">
+              <SideNavItem
+                label="Back to workspace"
+                href="/app"
+                icon={ArrowLeftIcon}
+                isSelected={false}
+              />
+              {settingsNavItems.map((item) => (
                 <SideNavItem
-                  key={item.href}
+                  key={item.section}
                   label={item.label}
-                  href={item.href}
+                  href={`/app/settings?section=${item.section}`}
                   icon={item.icon}
-                  isSelected={isSelected}
-                  endContent={item.count ? <Badge label={item.count} /> : undefined}
+                  isSelected={item.section === selectedSettingsSection}
+                  onClick={() => setSelectedSettingsSection(item.section)}
                 />
-              );
-            })}
-          </SideNavSection>
-          <SideNavSection title="Connections">
-            <SideNavItem label="GitHub Apps" href="/app/settings" icon={ServerStackIcon} />
-          </SideNavSection>
+              ))}
+            </SideNavSection>
+          ) : (
+            <>
+              <SideNavSection title="Workspace">
+                {workspaceNavItems.map((item) => (
+                  <SideNavItem
+                    key={item.href}
+                    label={item.label}
+                    href={item.href}
+                    icon={item.icon}
+                    isSelected={isWorkspaceItemSelected(item, pathname)}
+                    endContent={item.count ? item.count : undefined}
+                  />
+                ))}
+              </SideNavSection>
+              <SideNavSection title="Configure">
+                <SideNavItem
+                  label={settingsNavItem.label}
+                  href={settingsNavItem.href}
+                  icon={settingsNavItem.icon}
+                  isSelected={isWorkspaceItemSelected(settingsNavItem, pathname)}
+                />
+              </SideNavSection>
+            </>
+          )}
         </SideNav>
       }
     >
-      {children}
+      <Layout
+        height="fill"
+        content={
+          <LayoutContent padding={0}>
+            <div data-coworker-app-outlet className="h-full min-h-0 overflow-hidden">
+              {children}
+            </div>
+          </LayoutContent>
+        }
+      />
     </AppShell>
   );
 }

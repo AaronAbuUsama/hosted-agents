@@ -5,6 +5,7 @@ import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Text, Heading } from "@astryxdesign/core/Text";
 import { notFound } from "next/navigation";
 
+import CoworkerPage from "@/components/coworker/coworker-page";
 import {
   coworkerStatusBadgeVariants,
   coworkers,
@@ -30,8 +31,7 @@ export default async function CoworkerProfilePage({ params }: CoworkerProfilePag
   const coworkerRules = rules.filter((rule) => rule.coworkerId === coworker.id);
 
   return (
-    <main className="min-h-full bg-body p-6 text-primary">
-      <VStack gap={6}>
+    <CoworkerPage>
         <HStack hAlign="between" vAlign="start">
           <VStack gap={2}>
             <Link href="/app/coworkers" isStandalone>
@@ -116,7 +116,6 @@ export default async function CoworkerProfilePage({ params }: CoworkerProfilePag
             </Card>
           </VStack>
         </section>
-      </VStack>
-    </main>
+    </CoworkerPage>
   );
 }

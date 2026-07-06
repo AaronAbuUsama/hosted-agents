@@ -3,13 +3,13 @@ import { Card } from "@astryxdesign/core/Card";
 import { Link } from "@astryxdesign/core/Link";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Text, Heading } from "@astryxdesign/core/Text";
+import CoworkerPage from "@/components/coworker/coworker-page";
 
 import { coworkerStatusBadgeVariants, coworkers, runs } from "@/lib/coworker-data";
 
 export default function CoworkersPage() {
   return (
-    <main className="min-h-full bg-body p-6 text-primary">
-      <VStack gap={6}>
+    <CoworkerPage>
         <VStack gap={2}>
           <Text type="label" color="accent">
             Coworkers
@@ -65,7 +65,6 @@ export default function CoworkersPage() {
             );
           })}
         </section>
-      </VStack>
-    </main>
+    </CoworkerPage>
   );
 }
