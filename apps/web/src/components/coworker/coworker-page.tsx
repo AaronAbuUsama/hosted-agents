@@ -1,6 +1,13 @@
 import type { ReactElement, ReactNode } from "react";
 
-import { HStack, VStack } from "@astryxdesign/core/Stack";
+import {
+  HStack,
+  Layout,
+  LayoutContent,
+  LayoutHeader,
+  StackItem,
+  VStack,
+} from "@astryxdesign/core/Layout";
 import { Heading, Text } from "@astryxdesign/core/Text";
 
 type CoworkerPageVariant = "document" | "workspace";
@@ -16,10 +23,9 @@ type CoworkerPageProps = {
   width?: CoworkerPageWidth;
 };
 
-const contentWidthClasses: Record<CoworkerPageWidth, string> = {
-  default: "mx-auto w-full max-w-6xl px-6 py-6",
-  wide: "mx-auto w-full max-w-7xl px-6 py-6",
-  full: "w-full px-6 py-6",
+const contentWidths: Record<Exclude<CoworkerPageWidth, "full">, number> = {
+  default: 960,
+  wide: 1180,
 };
 
 export default function CoworkerPage({
@@ -32,41 +38,56 @@ export default function CoworkerPage({
   width = "wide",
 }: CoworkerPageProps): ReactElement {
   const header = title ? (
-    <HStack hAlign="between" vAlign="start">
-      <VStack gap={1}>
-        {eyebrow ? (
-          <Text type="label" color="accent">
-            {eyebrow}
-          </Text>
-        ) : null}
-        <Heading level={1}>{title}</Heading>
-        {description ? (
-          <Text type="supporting" color="secondary" as="p">
-            {description}
-          </Text>
-        ) : null}
-      </VStack>
+    <HStack hAlign="between" vAlign="start" gap={4} wrap="wrap">
+      <StackItem size="fill">
+        <VStack gap={1}>
+          {eyebrow ? (
+            <Text type="label" color="accent">
+              {eyebrow}
+            </Text>
+          ) : null}
+          <Heading level={1}>{title}</Heading>
+          {description ? (
+            <Text type="supporting" color="secondary" as="p">
+              {description}
+            </Text>
+          ) : null}
+        </VStack>
+      </StackItem>
       {actions}
     </HStack>
   ) : null;
 
   if (variant === "workspace") {
     return (
-      <main data-coworker-page="workspace" className="flex h-full min-h-0 flex-col bg-body text-primary">
-        {header ? <div className="shrink-0 border-b border-border px-6 py-4">{header}</div> : null}
-        <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
-      </main>
+      <Layout
+        data-coworker-page="workspace"
+        height="fill"
+        header={
+          header ? (
+            <LayoutHeader hasDivider padding={4}>
+              {header}
+            </LayoutHeader>
+          ) : undefined
+        }
+        content={<LayoutContent padding={0}>{children}</LayoutContent>}
+      />
     );
   }
 
   return (
-    <main data-coworker-page="document" className="h-full overflow-y-auto bg-body text-primary">
-      <div className={contentWidthClasses[width]}>
-        <VStack gap={6}>
-          {header}
-          {children}
-        </VStack>
-      </div>
-    </main>
+    <Layout
+      data-coworker-page="document"
+      height="fill"
+      contentWidth={width === "full" ? undefined : contentWidths[width]}
+      content={
+        <LayoutContent isScrollable padding={6}>
+          <VStack gap={6}>
+            {header}
+            {children}
+          </VStack>
+        </LayoutContent>
+      }
+    />
   );
 }

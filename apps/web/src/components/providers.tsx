@@ -14,8 +14,14 @@ import { ThemeProvider } from "./theme-provider";
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <AstryxTheme theme={neutralTheme}>
+    <ThemeProvider
+      attribute="class"
+      defaultTheme="dark"
+      forcedTheme="dark"
+      enableSystem={false}
+      disableTransitionOnChange
+    >
+      <AstryxTheme theme={neutralTheme} mode="dark">
         <LinkProvider component={Link}>
           <QueryClientProvider client={queryClient}>
             {children}

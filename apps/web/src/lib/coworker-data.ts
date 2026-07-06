@@ -65,6 +65,10 @@ export type ProjectIssue = {
   status: ProjectIssueStatus;
   labels: string[];
   assignee: string;
+  comments: number;
+  updated: string;
+  githubUrl: string;
+  lastComment: string;
   linkedRunId?: string;
 };
 
@@ -187,7 +191,8 @@ export const projects: Project[] = [
     syncedIssues: 128,
     activeRuns: 2,
     lastSync: "2 min ago",
-    summary: "Full project setup with Abu Bakr reviewing PRs and Umar available for issue-board work.",
+    summary:
+      "Full project setup with Abu Bakr reviewing PRs and Umar available for issue-board work.",
   },
   {
     id: "coworker-api",
@@ -230,6 +235,11 @@ export const projectIssues: ProjectIssue[] = [
     status: "In progress",
     labels: ["coworker:in-progress", "backend", "provider"],
     assignee: "Umar",
+    comments: 12,
+    updated: "8 min ago",
+    githubUrl: "https://github.com/coworker/web/issues/117",
+    lastComment:
+      "Umar opened a draft PR and asked whether per-coworker overrides belong in this slice.",
     linkedRunId: "implement-issue-117",
   },
   {
@@ -240,6 +250,11 @@ export const projectIssues: ProjectIssue[] = [
     status: "Ready",
     labels: ["coworker:ready", "frontend"],
     assignee: "Unassigned",
+    comments: 4,
+    updated: "21 min ago",
+    githubUrl: "https://github.com/coworker/web/issues/130",
+    lastComment:
+      "Product asked for copy that names the provider account before sandbox work can start.",
   },
   {
     id: "issue-482",
@@ -249,6 +264,11 @@ export const projectIssues: ProjectIssue[] = [
     status: "In review",
     labels: ["coworker:review", "pull-request"],
     assignee: "Abu Bakr",
+    comments: 18,
+    updated: "4 min ago",
+    githubUrl: "https://github.com/coworker/web/issues/482",
+    lastComment:
+      "Abu Bakr is writing inline comments and holding the final check until CI completes.",
     linkedRunId: "review-pr-482",
   },
   {
@@ -259,6 +279,10 @@ export const projectIssues: ProjectIssue[] = [
     status: "Done",
     labels: ["coworker:done", "docs"],
     assignee: "Human",
+    comments: 7,
+    updated: "Yesterday",
+    githubUrl: "https://github.com/coworker/web/issues/101",
+    lastComment: "The branch-scope note was merged into the setup runbook.",
   },
 ];
 
@@ -433,7 +457,8 @@ export const setupSteps: SetupStep[] = [
   {
     title: "Projects",
     status: "Partial",
-    detail: "Three repositories are linked. coworker/api is reviewer-only; coworker/web has the issue board enabled.",
+    detail:
+      "Three repositories are linked. coworker/api is reviewer-only; coworker/web has the issue board enabled.",
   },
   {
     title: "Provider account",
@@ -443,7 +468,7 @@ export const setupSteps: SetupStep[] = [
   {
     title: "GitHub Apps",
     status: "Partial",
-    detail: "Abu Bakr is installed for PR review. Umar is enabled only where project issue boards are active.",
+    detail:
+      "Abu Bakr is installed for PR review. Umar is enabled only where project issue boards are active.",
   },
 ];
-

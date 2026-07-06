@@ -1,11 +1,23 @@
+import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
-import { Card } from "@astryxdesign/core/Card";
 import { Link } from "@astryxdesign/core/Link";
-import { HStack, VStack } from "@astryxdesign/core/Stack";
-import { Text, Heading } from "@astryxdesign/core/Text";
+import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
+import {
+  Table,
+  TableCell,
+  TableRow,
+  pixel,
+  proportional,
+  resolveColumnWidths,
+} from "@astryxdesign/core/Table";
+import type { TableColumn } from "@astryxdesign/core/Table";
+import { Heading, Text } from "@astryxdesign/core/Text";
 import { notFound } from "next/navigation";
+import type { ReactElement } from "react";
 
 import CoworkerPage from "@/components/coworker/coworker-page";
+import { ConfigureButton } from "@/components/coworker/header-actions";
 import {
   coworkerStatusBadgeVariants,
   coworkers,
@@ -13,13 +25,34 @@ import {
   ruleStatusBadgeVariants,
   runs,
   summaryRunStatusBadgeVariants,
+  type Rule,
+  type Run,
 } from "@/lib/coworker-data";
 
 type CoworkerProfilePageProps = {
   params: Promise<{ coworkerId: string }>;
 };
 
-export default async function CoworkerProfilePage({ params }: CoworkerProfilePageProps) {
+const ruleColumns: TableColumn<Rule>[] = [
+  { key: "rule", header: "Rule", width: proportional(1) },
+  { key: "trigger", header: "Trigger", width: pixel(220) },
+  { key: "guardrail", header: "Guardrail", width: pixel(240) },
+  { key: "status", header: "Status", width: pixel(120) },
+];
+
+const runColumns: TableColumn<Run>[] = [
+  { key: "run", header: "Run", width: proportional(1) },
+  { key: "repo", header: "Repository", width: pixel(180) },
+  { key: "status", header: "Status", width: pixel(132) },
+  { key: "duration", header: "Duration", width: pixel(92) },
+];
+
+const ruleColumnWidths = resolveColumnWidths(ruleColumns);
+const runColumnWidths = resolveColumnWidths(runColumns);
+
+export default async function CoworkerProfilePage({
+  params,
+}: CoworkerProfilePageProps): Promise<ReactElement> {
   const { coworkerId } = await params;
   const coworker = coworkers.find((item) => item.id === coworkerId);
 
@@ -31,91 +64,129 @@ export default async function CoworkerProfilePage({ params }: CoworkerProfilePag
   const coworkerRules = rules.filter((rule) => rule.coworkerId === coworker.id);
 
   return (
-    <CoworkerPage>
-        <HStack hAlign="between" vAlign="start">
-          <VStack gap={2}>
-            <Link href="/app/coworkers" isStandalone>
-              Back to coworkers
-            </Link>
-            <Heading level={1}>{coworker.name}</Heading>
-            <Text type="label">{coworker.role}</Text>
-            <Text type="supporting">{coworker.email} / {coworker.githubAppName}</Text>
-          </VStack>
+    <CoworkerPage
+      title={coworker.name}
+      eyebrow={coworker.role}
+      description={`${coworker.email} / ${coworker.githubAppName}`}
+      actions={
+        <HStack gap={2} wrap="wrap" vAlign="center">
           <Badge variant={coworkerStatusBadgeVariants[coworker.status]} label={coworker.status} />
+          <ConfigureButton />
         </HStack>
-
-        <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
-          <Card padding={6}>
-            <VStack gap={4}>
+      }
+    >
+      <HStack gap={6} vAlign="start">
+        <VStack gap={4}>
+          <HStack gap={3} vAlign="center">
+            <Avatar name={coworker.name} size="large" />
+            <VStack gap={1}>
               <Heading level={2}>Identity</Heading>
-              <Text as="p">{coworker.purpose}</Text>
-              <VStack gap={2}>
-                <Text type="supporting">GitHub App</Text>
-                <Text>{coworker.githubAppName}</Text>
-              </VStack>
-              <VStack gap={2}>
-                <Text type="supporting">Installed repositories</Text>
-                <Text>{coworker.repos}</Text>
-              </VStack>
-              <VStack gap={2}>
-                <Text type="supporting">Runs this week</Text>
-                <Text>{coworker.runsThisWeek}</Text>
-              </VStack>
+              <Text type="supporting" color="secondary">
+                {coworker.purpose}
+              </Text>
             </VStack>
-          </Card>
-
-          <VStack gap={4}>
-            <Card padding={6}>
-              <VStack gap={4}>
-                <VStack gap={1}>
-                  <Heading level={2}>Rules for {coworker.name}</Heading>
-                  <Text type="supporting" as="p">
-                    Rules define when this coworker wakes up, which repositories are in scope, and what guardrails apply.
-                  </Text>
-                </VStack>
-                {coworkerRules.map((rule) => (
-                  <Card key={rule.id} variant="muted" padding={4}>
-                    <VStack gap={3}>
-                      <HStack hAlign="between">
-                        <Text weight="semibold">{rule.name}</Text>
+          </HStack>
+          <MetadataList label={{ position: "start" }}>
+            <MetadataListItem label="GitHub App">{coworker.githubAppName}</MetadataListItem>
+            <MetadataListItem label="Repositories">{coworker.repos}</MetadataListItem>
+            <MetadataListItem label="Runs this week">{coworker.runsThisWeek}</MetadataListItem>
+          </MetadataList>
+        </VStack>
+        <StackItem size="fill">
+          <VStack gap={5}>
+            <VStack gap={3}>
+              <Heading level={2}>Rules</Heading>
+              <Table
+                columns={ruleColumns}
+                density="balanced"
+                dividers="rows"
+                textOverflow="truncate"
+                hasHover
+              >
+                <colgroup>
+                  {ruleColumns.map((column) => (
+                    <col key={column.key} style={ruleColumnWidths.columns.get(column.key)?.style} />
+                  ))}
+                </colgroup>
+                <tbody>
+                  {coworkerRules.map((rule) => (
+                    <TableRow key={rule.id}>
+                      <TableCell>
+                        <VStack gap={1}>
+                          <Text weight="semibold">{rule.name}</Text>
+                          <Text type="supporting" color="secondary" maxLines={1}>
+                            {rule.action}
+                          </Text>
+                        </VStack>
+                      </TableCell>
+                      <TableCell>
+                        <Text type="supporting" maxLines={2}>
+                          {rule.trigger}
+                        </Text>
+                      </TableCell>
+                      <TableCell>
+                        <Text type="supporting" maxLines={2}>
+                          {rule.guardrail}
+                        </Text>
+                      </TableCell>
+                      <TableCell>
                         <Badge variant={ruleStatusBadgeVariants[rule.status]} label={rule.status} />
-                      </HStack>
-                      <section className="grid gap-3 md:grid-cols-3">
-                        <VStack gap={1}>
-                          <Text type="label">When</Text>
-                          <Text type="supporting" as="p">{rule.trigger}</Text>
-                        </VStack>
-                        <VStack gap={1}>
-                          <Text type="label">Where</Text>
-                          <Text type="supporting" as="p">{rule.scope}</Text>
-                        </VStack>
-                        <VStack gap={1}>
-                          <Text type="label">Guardrail</Text>
-                          <Text type="supporting" as="p">{rule.guardrail}</Text>
-                        </VStack>
-                      </section>
-                      <Text as="p">{rule.action}</Text>
-                    </VStack>
-                  </Card>
-                ))}
-              </VStack>
-            </Card>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </tbody>
+              </Table>
+            </VStack>
 
-            <Card padding={6}>
-              <VStack gap={4}>
-                <Heading level={2}>Recent runs</Heading>
-                {coworkerRuns.map((run) => (
-                  <HStack key={run.id} hAlign="between" vAlign="center">
-                    <Link href={`/app/runs/${run.id}`} isStandalone>
-                      {run.title}
-                    </Link>
-                    <Badge variant={summaryRunStatusBadgeVariants[run.status]} label={run.status} />
-                  </HStack>
-                ))}
-              </VStack>
-            </Card>
+            <VStack gap={3}>
+              <Heading level={2}>Recent runs</Heading>
+              <Table
+                columns={runColumns}
+                density="balanced"
+                dividers="rows"
+                textOverflow="truncate"
+                hasHover
+              >
+                <colgroup>
+                  {runColumns.map((column) => (
+                    <col key={column.key} style={runColumnWidths.columns.get(column.key)?.style} />
+                  ))}
+                </colgroup>
+                <tbody>
+                  {coworkerRuns.map((run) => (
+                    <TableRow key={run.id}>
+                      <TableCell>
+                        <VStack gap={1}>
+                          <Link href={`/app/runs/${run.id}`} isStandalone>
+                            {run.title}
+                          </Link>
+                          <Text type="supporting" color="secondary" maxLines={1}>
+                            {run.trigger} / {run.result}
+                          </Text>
+                        </VStack>
+                      </TableCell>
+                      <TableCell>
+                        <Text type="supporting">{run.repo}</Text>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={summaryRunStatusBadgeVariants[run.status]}
+                          label={run.status}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Text type="supporting" hasTabularNumbers>
+                          {run.duration}
+                        </Text>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </tbody>
+              </Table>
+            </VStack>
           </VStack>
-        </section>
+        </StackItem>
+      </HStack>
     </CoworkerPage>
   );
 }

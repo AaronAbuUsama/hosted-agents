@@ -1,70 +1,91 @@
+import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
-import { Card } from "@astryxdesign/core/Card";
 import { Link } from "@astryxdesign/core/Link";
-import { HStack, VStack } from "@astryxdesign/core/Stack";
-import { Text, Heading } from "@astryxdesign/core/Text";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
+import {
+  Table,
+  TableCell,
+  TableRow,
+  pixel,
+  proportional,
+  resolveColumnWidths,
+} from "@astryxdesign/core/Table";
+import type { TableColumn } from "@astryxdesign/core/Table";
+import { Text } from "@astryxdesign/core/Text";
+import type { ReactElement } from "react";
+
 import CoworkerPage from "@/components/coworker/coworker-page";
+import { AddCoworkerButton } from "@/components/coworker/header-actions";
+import { coworkerStatusBadgeVariants, coworkers, runs, type Coworker } from "@/lib/coworker-data";
 
-import { coworkerStatusBadgeVariants, coworkers, runs } from "@/lib/coworker-data";
+const columns: TableColumn<Coworker>[] = [
+  { key: "coworker", header: "Coworker", width: proportional(1) },
+  { key: "github", header: "GitHub App", width: pixel(240) },
+  { key: "repos", header: "Repos", width: pixel(92) },
+  { key: "runs", header: "Runs", width: pixel(116) },
+  { key: "status", header: "Status", width: pixel(132) },
+];
 
-export default function CoworkersPage() {
+const resolvedColumnWidths = resolveColumnWidths(columns);
+
+export default function CoworkersPage(): ReactElement {
   return (
-    <CoworkerPage>
-        <VStack gap={2}>
-          <Text type="label" color="accent">
-            Coworkers
-          </Text>
-          <Heading level={1}>Named people, GitHub identities, real jobs</Heading>
-          <Text type="supporting" as="p">
-            Customers hire named coworkers from coworker.tech. Each one can have a distinct GitHub App, avatar, check name, rules, and run history.
-          </Text>
-        </VStack>
-
-        <section className="grid gap-4 lg:grid-cols-2">
+    <CoworkerPage
+      title="Coworkers"
+      description="Named engineering coworkers with distinct GitHub Apps, rules, provider access, and run history."
+      actions={<AddCoworkerButton />}
+    >
+      <Table columns={columns} density="balanced" dividers="rows" textOverflow="truncate" hasHover>
+        <colgroup>
+          {columns.map((column) => (
+            <col key={column.key} style={resolvedColumnWidths.columns.get(column.key)?.style} />
+          ))}
+        </colgroup>
+        <tbody>
           {coworkers.map((coworker) => {
             const coworkerRuns = runs.filter((run) => run.coworkerId === coworker.id);
+
             return (
-              <Card key={coworker.id} padding={6}>
-                <VStack gap={5}>
-                  <HStack hAlign="between" vAlign="start">
-                    <VStack gap={2}>
-                      <Heading level={2}>{coworker.name}</Heading>
-                      <Text type="label">{coworker.role}</Text>
-                      <Text type="supporting">{coworker.email}</Text>
+              <TableRow key={coworker.id}>
+                <TableCell>
+                  <HStack gap={3} vAlign="center">
+                    <Avatar name={coworker.name} size="small" />
+                    <VStack gap={1}>
+                      <Link href={`/app/coworkers/${coworker.id}`} isStandalone>
+                        {coworker.name}
+                      </Link>
+                      <Text type="supporting" color="secondary" maxLines={1}>
+                        {coworker.role} / {coworker.purpose}
+                      </Text>
                     </VStack>
-                    <Badge variant={coworkerStatusBadgeVariants[coworker.status]} label={coworker.status} />
                   </HStack>
-                  <Text as="p">{coworker.purpose}</Text>
-                  <section className="grid gap-3 md:grid-cols-3">
-                    <VStack gap={1}>
-                      <Text type="supporting">Repos</Text>
-                      <Text type="display-3">{coworker.repos}</Text>
-                    </VStack>
-                    <VStack gap={1}>
-                      <Text type="supporting">Runs this week</Text>
-                      <Text type="display-3">{coworker.runsThisWeek}</Text>
-                    </VStack>
-                    <VStack gap={1}>
-                      <Text type="supporting">Recent runs</Text>
-                      <Text type="display-3">{coworkerRuns.length}</Text>
-                    </VStack>
-                  </section>
-                  <VStack gap={2}>
-                    <Text type="label">Default triggers</Text>
-                    <HStack gap={2} wrap="wrap">
-                      {coworker.triggers.map((trigger) => (
-                        <Badge key={trigger} variant="neutral" label={trigger} />
-                      ))}
-                    </HStack>
-                  </VStack>
-                  <Link href={`/app/coworkers/${coworker.id}`} isStandalone>
-                    Open {coworker.name}'s profile
-                  </Link>
-                </VStack>
-              </Card>
+                </TableCell>
+                <TableCell>
+                  <Text type="body" maxLines={1}>
+                    {coworker.githubAppName}
+                  </Text>
+                </TableCell>
+                <TableCell>
+                  <Text type="supporting" hasTabularNumbers>
+                    {coworker.repos}
+                  </Text>
+                </TableCell>
+                <TableCell>
+                  <Text type="supporting" hasTabularNumbers>
+                    {coworkerRuns.length} recent / {coworker.runsThisWeek} weekly
+                  </Text>
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    variant={coworkerStatusBadgeVariants[coworker.status]}
+                    label={coworker.status}
+                  />
+                </TableCell>
+              </TableRow>
             );
           })}
-        </section>
+        </tbody>
+      </Table>
     </CoworkerPage>
   );
 }

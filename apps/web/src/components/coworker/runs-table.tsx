@@ -21,7 +21,14 @@ import {
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { ResizeHandle, useResizable, type ResizableProps } from "@astryxdesign/core/Resizable";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
-import { Table, TableCell, TableRow, pixel, proportional, resolveColumnWidths } from "@astryxdesign/core/Table";
+import {
+  Table,
+  TableCell,
+  TableRow,
+  pixel,
+  proportional,
+  resolveColumnWidths,
+} from "@astryxdesign/core/Table";
 import type { TableColumn } from "@astryxdesign/core/Table";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -51,10 +58,10 @@ type RowsByStatus = Record<RunStatus, RunRow[]>;
 
 const statusOrder: RunStatus[] = ["Running", "Needs review", "Blocked", "Completed"];
 
-const statusDotVariants: Record<RunStatus, "accent" | "warning" | "success"> = {
+const statusDotVariants: Record<RunStatus, "accent" | "warning" | "success" | "error"> = {
   Running: "accent",
   "Needs review": "warning",
-  Blocked: "warning",
+  Blocked: "error",
   Completed: "success",
 };
 
@@ -149,13 +156,14 @@ export default function RunsTable(): ReactElement {
             <HStack gap={3} vAlign="center">
               <StackItem size="fill">
                 <VStack gap={1}>
-                  <Heading level={1}>All runs</Heading>
+                  <Heading level={1}>Runs</Heading>
                   <Text type="supporting" color="secondary">
-                    Every coworker invocation across linked projects, pull requests, and optional project boards.
+                    Every coworker invocation across GitHub issues, pull requests, checks, and
+                    sandboxed code changes.
                   </Text>
                 </VStack>
               </StackItem>
-              <Button label="New run" variant="primary" size="lg" />
+              <Button label="Kick off run" variant="primary" size="lg" />
             </HStack>
             <TextInput
               label="Filter runs"
@@ -169,7 +177,13 @@ export default function RunsTable(): ReactElement {
       }
       content={
         <LayoutContent role="main" padding={0}>
-          <Table columns={columns} density="balanced" dividers="rows" textOverflow="truncate" hasHover>
+          <Table
+            columns={columns}
+            density="balanced"
+            dividers="rows"
+            textOverflow="truncate"
+            hasHover
+          >
             <colgroup>
               {columns.map((column) => (
                 <col key={column.key} style={resolvedColumnWidths.columns.get(column.key)?.style} />
@@ -199,7 +213,11 @@ export default function RunsTable(): ReactElement {
                     >
                       <TableCell colSpan={columns.length} style={groupHeaderCell}>
                         <HStack gap={2} vAlign="center">
-                          <Icon icon={isExpanded ? ChevronDownIcon : ChevronRightIcon} size="sm" color="secondary" />
+                          <Icon
+                            icon={isExpanded ? ChevronDownIcon : ChevronRightIcon}
+                            size="sm"
+                            color="secondary"
+                          />
                           <Text type="body" weight="bold">
                             {status}
                           </Text>
@@ -212,13 +230,20 @@ export default function RunsTable(): ReactElement {
                         <TableRow key={run.id} onClick={() => setSelectedRun(run)}>
                           <TableCell>
                             <Center axis="horizontal">
-                              <StatusDot variant={statusDotVariants[run.status]} label={run.status} />
+                              <StatusDot
+                                variant={statusDotVariants[run.status]}
+                                label={run.status}
+                              />
                             </Center>
                           </TableCell>
                           <TableCell>
                             <HStack gap={3} vAlign="center">
                               <Icon
-                                icon={run.status === "Blocked" ? ExclamationTriangleIcon : PlayCircleIcon}
+                                icon={
+                                  run.status === "Blocked"
+                                    ? ExclamationTriangleIcon
+                                    : PlayCircleIcon
+                                }
                                 size="sm"
                                 color="secondary"
                               />
@@ -277,9 +302,17 @@ export default function RunsTable(): ReactElement {
                                   icon: ArrowTopRightOnSquareIcon,
                                   onClick: () => router.push(`/app/runs/${run.id}`),
                                 },
-                                { label: "Open in GitHub", icon: ArrowTopRightOnSquareIcon, onClick: () => {} },
+                                {
+                                  label: "Open in GitHub",
+                                  icon: ArrowTopRightOnSquareIcon,
+                                  onClick: () => {},
+                                },
                                 { type: "divider" as const },
-                                { label: "Cancel run", icon: ExclamationTriangleIcon, onClick: () => {} },
+                                {
+                                  label: "Cancel run",
+                                  icon: ExclamationTriangleIcon,
+                                  onClick: () => {},
+                                },
                               ]}
                             />
                           </TableCell>
@@ -296,7 +329,11 @@ export default function RunsTable(): ReactElement {
         selectedRun && (
           <>
             <ResizeHandle resizable={detailPanel.props} isReversed isAlwaysVisible={false} />
-            <RunDetailPanel run={selectedRun} onClose={() => setSelectedRun(null)} resizable={detailPanel.props} />
+            <RunDetailPanel
+              run={selectedRun}
+              onClose={() => setSelectedRun(null)}
+              resizable={detailPanel.props}
+            />
           </>
         )
       }
@@ -308,7 +345,13 @@ function RunDetailPanel({ run, onClose, resizable }: RunDetailPanelProps): React
   const router = useRouter();
 
   return (
-    <LayoutPanel hasDivider resizable={resizable} padding={4} role="complementary" label="Run details">
+    <LayoutPanel
+      hasDivider
+      resizable={resizable}
+      padding={4}
+      role="complementary"
+      label="Run details"
+    >
       <VStack gap={4}>
         <HStack gap={2} vAlign="center">
           <StackItem size="fill">
@@ -339,7 +382,9 @@ function RunDetailPanel({ run, onClose, resizable }: RunDetailPanelProps): React
               <Text type="body">{run.coworkerName}</Text>
             </HStack>
           </MetadataListItem>
-          <MetadataListItem label="Project">{projectNameByRepo[run.repo] ?? run.repo}</MetadataListItem>
+          <MetadataListItem label="Project">
+            {projectNameByRepo[run.repo] ?? run.repo}
+          </MetadataListItem>
           <MetadataListItem label="Branch">{run.branch}</MetadataListItem>
           <MetadataListItem label="Trigger">{run.trigger}</MetadataListItem>
           <MetadataListItem label="Started">{run.started}</MetadataListItem>
@@ -349,7 +394,12 @@ function RunDetailPanel({ run, onClose, resizable }: RunDetailPanelProps): React
         <Divider />
 
         <HStack gap={2}>
-          <Button label="Open run" variant="primary" size="md" onClick={() => router.push(`/app/runs/${run.id}`)} />
+          <Button
+            label="Open run"
+            variant="primary"
+            size="md"
+            onClick={() => router.push(`/app/runs/${run.id}`)}
+          />
           <Button label="Open GitHub" variant="secondary" size="md" />
         </HStack>
       </VStack>

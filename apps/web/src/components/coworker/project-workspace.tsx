@@ -1,17 +1,61 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { Fragment, useMemo, useState, type CSSProperties, type ReactElement } from "react";
+
+import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { Center } from "@astryxdesign/core/Center";
+import { Divider } from "@astryxdesign/core/Divider";
+import { Icon } from "@astryxdesign/core/Icon";
 import { Link } from "@astryxdesign/core/Link";
-import { HStack, VStack } from "@astryxdesign/core/Stack";
-import { Table, TableCell, TableRow, pixel, proportional, resolveColumnWidths } from "@astryxdesign/core/Table";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
+import {
+  HStack,
+  Layout,
+  LayoutContent,
+  LayoutHeader,
+  LayoutPanel,
+  Stack,
+  StackItem,
+  VStack,
+} from "@astryxdesign/core/Layout";
+import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
+import { ResizeHandle, useResizable, type ResizableProps } from "@astryxdesign/core/Resizable";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
+import {
+  Table,
+  TableCell,
+  TableRow,
+  pixel,
+  proportional,
+  resolveColumnWidths,
+} from "@astryxdesign/core/Table";
 import type { TableColumn } from "@astryxdesign/core/Table";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import {
+  ArrowTopRightOnSquareIcon,
+  ChatBubbleLeftRightIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CodeBracketIcon,
+  ExclamationTriangleIcon,
+} from "@heroicons/react/24/outline";
+import { useRouter } from "next/navigation";
 
-import type { ProjectIssue, PullRequestReview, Run } from "@/lib/coworker-data";
+import type {
+  Project,
+  ProjectIssue,
+  ProjectIssueStatus,
+  PullRequestReview,
+  Run,
+} from "@/lib/coworker-data";
 
 type ProjectWorkspaceProps = {
+  project: Project;
   issues: ProjectIssue[];
   reviews: PullRequestReview[];
   runs: Run[];
@@ -19,10 +63,8 @@ type ProjectWorkspaceProps = {
 };
 
 type ProjectWorkspaceView = "table" | "board";
-
 type WorkItemKind = "Issue" | "Pull request";
-
-type WorkItemStatus = "Backlog" | "Ready" | "In progress" | "In review" | "Done";
+type WorkItemStatus = ProjectIssueStatus;
 
 type WorkItem = {
   id: string;
@@ -31,47 +73,49 @@ type WorkItem = {
   title: string;
   status: WorkItemStatus;
   owner: string;
-  branch: string;
+  source: string;
   labels: string[];
+  comments: number;
+  updated: string;
+  githubUrl: string;
+  lastComment: string;
   runId?: string;
 };
 
 type WorkItemsProps = {
   workItems: WorkItem[];
+  selectedItemId?: string;
+  onSelectItem: (item: WorkItem) => void;
+  isCompact?: boolean;
 };
 
-type ProjectWorkContentProps = WorkItemsProps & {
-  view: ProjectWorkspaceView;
+type WorkItemDetailPanelProps = {
+  item: WorkItem;
+  onClose: () => void;
+  resizable: ResizableProps;
 };
 
-const columns: TableColumn<WorkItem>[] = [
-  { key: "item", header: "Item", width: proportional(1) },
-  { key: "status", header: "Status", width: pixel(132) },
-  { key: "owner", header: "Coworker", width: pixel(128) },
-  { key: "source", header: "Source", width: pixel(220) },
-  { key: "run", header: "Run", width: pixel(112) },
-];
+const statusOrder: WorkItemStatus[] = ["Ready", "In progress", "In review", "Done", "Backlog"];
 
-const resolvedColumnWidths = resolveColumnWidths(columns);
+const statusLabels: Record<WorkItemStatus, string> = {
+  Backlog: "Backlog",
+  Ready: "Ready",
+  "In progress": "In progress",
+  "In review": "In review",
+  Done: "Done",
+};
 
-const boardStatuses: WorkItemStatus[] = ["Backlog", "Ready", "In progress", "In review", "Done"];
-
-const statusBadgeVariants: Record<WorkItemStatus, "green" | "neutral" | "yellow" | "blue"> = {
+const statusDotVariants: Record<WorkItemStatus, "neutral" | "accent" | "warning" | "success"> = {
   Backlog: "neutral",
-  Ready: "blue",
-  "In progress": "yellow",
-  "In review": "yellow",
-  Done: "green",
+  Ready: "accent",
+  "In progress": "warning",
+  "In review": "warning",
+  Done: "success",
 };
 
 const kindBadgeVariants: Record<WorkItemKind, "blue" | "neutral"> = {
   Issue: "neutral",
   "Pull request": "blue",
-};
-
-const kindDotClasses: Record<WorkItemKind, string> = {
-  Issue: "bg-muted-foreground",
-  "Pull request": "bg-chart-2",
 };
 
 const reviewStatusToBoardStatus: Record<PullRequestReview["status"], WorkItemStatus> = {
@@ -80,192 +124,644 @@ const reviewStatusToBoardStatus: Record<PullRequestReview["status"], WorkItemSta
   Approved: "Done",
 };
 
-function getWorkItems(issues: ProjectIssue[], reviews: PullRequestReview[], runs: Run[]): WorkItem[] {
-  const issueItems = issues.map((issue): WorkItem => ({
-    id: issue.id,
-    kind: "Issue",
-    number: issue.number,
-    title: issue.title,
-    status: issue.status,
-    owner: issue.assignee,
-    branch: "GitHub issue sync",
-    labels: issue.labels,
-    runId: issue.linkedRunId,
-  }));
+const columns: TableColumn<WorkItem>[] = [
+  { key: "status", header: "", width: pixel(44) },
+  { key: "item", header: "Issue", width: proportional(1) },
+  { key: "owner", header: "Coworker", width: pixel(140) },
+  { key: "comments", header: "Comments", width: pixel(116) },
+  { key: "updated", header: "Updated", width: pixel(110) },
+  { key: "run", header: "Run", width: pixel(112) },
+  { key: "actions", header: "", width: pixel(56) },
+];
 
-  const reviewItems = reviews.map((review): WorkItem => ({
-    id: review.id,
-    kind: "Pull request",
-    number: review.number,
-    title: review.title,
-    status: reviewStatusToBoardStatus[review.status],
-    owner: "Abu Bakr",
-    branch: review.branch,
-    labels: [review.status],
-    runId: runs.find((run) => run.branch === review.branch)?.id,
-  }));
+const resolvedColumnWidths = resolveColumnWidths(columns);
+
+const compactColumns: TableColumn<WorkItem>[] = [
+  { key: "status", header: "", width: pixel(36) },
+  { key: "item", header: "Issue", width: proportional(1) },
+  { key: "actions", header: "", width: pixel(48) },
+];
+
+const resolvedCompactColumnWidths = resolveColumnWidths(compactColumns);
+
+const groupHeaderCell: CSSProperties = {
+  cursor: "pointer",
+  backgroundColor: "var(--color-background-muted)",
+  padding: "var(--spacing-3) var(--spacing-4)",
+};
+
+const workspaceContentStyle: CSSProperties = {
+  minWidth: 0,
+  overflow: "hidden",
+};
+
+const tableShellStyle: CSSProperties = {
+  height: "100%",
+  minWidth: 0,
+  overflow: "auto",
+};
+
+const boardShellStyle: CSSProperties = {
+  height: "100%",
+  minWidth: 0,
+  overflowX: "auto",
+  overflowY: "hidden",
+  padding: "var(--spacing-3)",
+};
+
+const boardColumnStyle: CSSProperties = {
+  flex: "0 0 280px",
+  height: "100%",
+};
+
+const boardCardStyle: CSSProperties = {
+  borderRadius: "var(--radius-element)",
+};
+
+function getWorkItems(
+  issues: ProjectIssue[],
+  reviews: PullRequestReview[],
+  runs: Run[],
+): WorkItem[] {
+  const issueItems = issues.map(
+    (issue): WorkItem => ({
+      id: issue.id,
+      kind: "Issue",
+      number: issue.number,
+      title: issue.title,
+      status: issue.status,
+      owner: issue.assignee,
+      source: "GitHub issue",
+      labels: issue.labels,
+      comments: issue.comments,
+      updated: issue.updated,
+      githubUrl: issue.githubUrl,
+      lastComment: issue.lastComment,
+      runId: issue.linkedRunId,
+    }),
+  );
+
+  const reviewItems = reviews.map((review): WorkItem => {
+    const run = runs.find((candidate) => candidate.branch === review.branch);
+
+    return {
+      id: review.id,
+      kind: "Pull request",
+      number: review.number,
+      title: review.title,
+      status: reviewStatusToBoardStatus[review.status],
+      owner: "Abu Bakr",
+      source: review.branch,
+      labels: [review.status],
+      comments: review.status === "Approved" ? 3 : 8,
+      updated: run?.started ?? "Earlier today",
+      githubUrl: `https://github.com/coworker/web/pull/${review.number}`,
+      lastComment: run?.result ?? "Pull request review is attached to a coworker run.",
+      runId: run?.id,
+    };
+  });
 
   return [...issueItems, ...reviewItems];
 }
 
-function ProjectWorkContent({ view, workItems }: ProjectWorkContentProps): ReactElement {
-  if (workItems.length === 0) {
-    return (
-      <div className="rounded-lg border border-border bg-muted/30 p-5">
-        <Text type="supporting">No issues or pull requests are currently tracked for this project.</Text>
-      </div>
-    );
+function filterWorkItems(workItems: WorkItem[], query: string): WorkItem[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return workItems;
   }
 
-  if (view === "table") {
-    return <ProjectWorkTable workItems={workItems} />;
-  }
-
-  return <ProjectWorkBoard workItems={workItems} />;
-}
-
-function ProjectWorkTable({ workItems }: WorkItemsProps): ReactElement {
-  return (
-    <Table columns={columns} density="balanced" dividers="rows" textOverflow="truncate" hasHover>
-      <colgroup>
-        {columns.map((column) => (
-          <col key={column.key} style={resolvedColumnWidths.columns.get(column.key)?.style} />
-        ))}
-      </colgroup>
-      <tbody>
-        {workItems.map((item) => (
-          <TableRow key={item.id}>
-            <TableCell>
-              <HStack gap={2} vAlign="start">
-                <span className={`mt-2 h-2 w-2 shrink-0 rounded-full ${kindDotClasses[item.kind]}`} />
-                <VStack gap={1}>
-                  <HStack gap={1} wrap="wrap" vAlign="center">
-                    <Text weight="semibold" hasTabularNumbers>
-                      #{item.number}
-                    </Text>
-                    <Text>{item.title}</Text>
-                  </HStack>
-                  <HStack gap={1} wrap="wrap">
-                    <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
-                    {item.labels.map((label) => (
-                      <Badge key={label} variant="neutral" label={label} />
-                    ))}
-                  </HStack>
-                </VStack>
-              </HStack>
-            </TableCell>
-            <TableCell>
-              <Badge variant={statusBadgeVariants[item.status]} label={item.status} />
-            </TableCell>
-            <TableCell>
-              <Text type="supporting">{item.owner}</Text>
-            </TableCell>
-            <TableCell>
-              <Text type="supporting" maxLines={1}>
-                {item.branch}
-              </Text>
-            </TableCell>
-            <TableCell>
-              {item.runId ? (
-                <Link href={`/app/runs/${item.runId}`} isStandalone>
-                  Open run
-                </Link>
-              ) : (
-                <Text type="supporting">—</Text>
-              )}
-            </TableCell>
-          </TableRow>
-        ))}
-      </tbody>
-    </Table>
+  return workItems.filter((item) =>
+    [
+      item.number,
+      item.title,
+      item.status,
+      item.owner,
+      item.source,
+      item.labels.join(" "),
+      item.lastComment,
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedQuery),
   );
 }
 
-function ProjectWorkBoard({ workItems }: WorkItemsProps): ReactElement {
-  return (
-    <section className="grid gap-3 xl:grid-cols-5" aria-label="Project work board">
-      {boardStatuses.map((status) => {
-        const columnItems = workItems.filter((item) => item.status === status);
-
-        return (
-          <section key={status} className="rounded-lg border border-border bg-muted/20 p-3">
-            <VStack gap={3}>
-              <HStack hAlign="between" vAlign="center">
-                <Text weight="semibold">{status}</Text>
-                <Badge variant="neutral" label={columnItems.length} />
-              </HStack>
-              {columnItems.length > 0 ? (
-                columnItems.map((item) => (
-                  <article key={item.id} className="rounded-md border border-border bg-background p-3">
-                    <VStack gap={2}>
-                      <HStack gap={1} vAlign="center">
-                        <span className={`h-2 w-2 shrink-0 rounded-full ${kindDotClasses[item.kind]}`} />
-                        <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
-                      </HStack>
-                      <Text weight="semibold">
-                        #{item.number} {item.title}
-                      </Text>
-                      <Text type="supporting">{item.owner}</Text>
-                    </VStack>
-                  </article>
-                ))
-              ) : (
-                <Text type="supporting">No items</Text>
-              )}
-            </VStack>
-          </section>
-        );
-      })}
-    </section>
-  );
+function groupWorkItems(workItems: WorkItem[]): Record<WorkItemStatus, WorkItem[]> {
+  return {
+    Backlog: workItems.filter((item) => item.status === "Backlog"),
+    Ready: workItems.filter((item) => item.status === "Ready"),
+    "In progress": workItems.filter((item) => item.status === "In progress"),
+    "In review": workItems.filter((item) => item.status === "In review"),
+    Done: workItems.filter((item) => item.status === "Done"),
+  };
 }
 
 export default function ProjectWorkspace({
+  project,
   issues,
   reviews,
   runs,
   hasIssueSync,
 }: ProjectWorkspaceProps): ReactElement {
-  const [view, setView] = useState<ProjectWorkspaceView>("table");
-  const workItems = getWorkItems(issues, reviews, runs);
+  const [view, setView] = useState<ProjectWorkspaceView>(hasIssueSync ? "board" : "table");
+  const [query, setQuery] = useState("");
+  const workItems = useMemo(() => getWorkItems(issues, reviews, runs), [issues, reviews, runs]);
+  const filteredItems = useMemo(() => filterWorkItems(workItems, query), [workItems, query]);
+  const [selectedItem, setSelectedItem] = useState<WorkItem | null>(() => workItems[0] ?? null);
+  const isCompactWorkspace = useMediaQuery("(max-width: 1360px)");
+  const detailPanel = useResizable({
+    defaultSize: 340,
+    minSizePx: 300,
+    maxSizePx: 460,
+  });
   const activeCount = workItems.filter((item) => item.status !== "Done").length;
-  const reviewCount = workItems.filter((item) => item.status === "In review").length;
+  const commentCount = workItems.reduce((total, item) => total + item.comments, 0);
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card" aria-labelledby="project-work-title">
-      <div className="border-b border-border px-5 py-4">
-        <HStack hAlign="between" vAlign="start">
-          <VStack gap={1}>
-            <Heading level={2} id="project-work-title">
-              Project work
-            </Heading>
-            <Text type="supporting" as="p">
-              Issues and pull requests stay in one workflow. Runs attach to the issue or pull request that started them.
-            </Text>
+    <Layout
+      height="fill"
+      header={
+        <LayoutHeader hasDivider padding={4}>
+          <VStack gap={4}>
+            <HStack hAlign="between" vAlign="center" gap={4} wrap="wrap">
+              <StackItem size="fill">
+                <VStack gap={1}>
+                  <Heading level={2}>GitHub issues and pull requests</Heading>
+                  <Text type="supporting" color="secondary" as="p">
+                    {project.repo} work that can start a coworker run, collect GitHub comments, or
+                    wait for human review.
+                  </Text>
+                </VStack>
+              </StackItem>
+              <HStack gap={3} vAlign="center" wrap="wrap">
+                <Text type="supporting" hasTabularNumbers>
+                  {activeCount} active / {commentCount} comments
+                </Text>
+                <TabList
+                  value={view}
+                  onChange={(nextView) => setView(nextView as ProjectWorkspaceView)}
+                >
+                  <Tab value="board" label="Board" />
+                  <Tab value="table" label="Table" />
+                </TabList>
+              </HStack>
+            </HStack>
+            <TextInput
+              label="Filter issues"
+              isLabelHidden
+              placeholder="Filter by issue, coworker, label, branch, comment, or status..."
+              value={query}
+              onChange={setQuery}
+            />
+            {!hasIssueSync ? (
+              <HStack gap={2} vAlign="center">
+                <Icon icon={ExclamationTriangleIcon} size="sm" color="secondary" />
+                <Text type="supporting" color="secondary">
+                  Issue sync is not enabled for this project. Pull request reviews still appear here
+                  when Abu Bakr runs.
+                </Text>
+              </HStack>
+            ) : null}
           </VStack>
-          <HStack gap={3} vAlign="center">
-            <Text type="supporting" hasTabularNumbers>
-              {activeCount} active · {reviewCount} in review
+        </LayoutHeader>
+      }
+      content={
+        <LayoutContent padding={0} style={workspaceContentStyle}>
+          {view === "table" ? (
+            <ProjectWorkTable
+              workItems={filteredItems}
+              selectedItemId={selectedItem?.id}
+              onSelectItem={setSelectedItem}
+              isCompact={isCompactWorkspace}
+            />
+          ) : (
+            <ProjectWorkBoard
+              workItems={filteredItems}
+              selectedItemId={selectedItem?.id}
+              onSelectItem={setSelectedItem}
+            />
+          )}
+        </LayoutContent>
+      }
+      end={
+        selectedItem && !isCompactWorkspace ? (
+          <>
+            <ResizeHandle resizable={detailPanel.props} isReversed isAlwaysVisible={false} />
+            <WorkItemDetailPanel
+              item={selectedItem}
+              onClose={() => setSelectedItem(null)}
+              resizable={detailPanel.props}
+            />
+          </>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function ProjectWorkTable({
+  workItems,
+  selectedItemId,
+  onSelectItem,
+  isCompact = false,
+}: WorkItemsProps): ReactElement {
+  const [expandedGroups, setExpandedGroups] = useState<Set<WorkItemStatus>>(
+    () => new Set(statusOrder),
+  );
+  const groupedItems = groupWorkItems(workItems);
+  const activeColumns = isCompact ? compactColumns : columns;
+  const activeColumnWidths = isCompact ? resolvedCompactColumnWidths : resolvedColumnWidths;
+
+  function toggleGroup(status: WorkItemStatus): void {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(status)) {
+        next.delete(status);
+      } else {
+        next.add(status);
+      }
+      return next;
+    });
+  }
+
+  return (
+    <Stack style={tableShellStyle}>
+      <Table
+        columns={activeColumns}
+        density="balanced"
+        dividers="rows"
+        textOverflow="truncate"
+        hasHover
+      >
+        <colgroup>
+          {activeColumns.map((column) => (
+            <col key={column.key} style={activeColumnWidths.columns.get(column.key)?.style} />
+          ))}
+        </colgroup>
+        <tbody>
+          {statusOrder.map((status) => {
+            const itemsForStatus = groupedItems[status];
+            const isExpanded = expandedGroups.has(status);
+
+            if (itemsForStatus.length === 0) {
+              return null;
+            }
+
+            return (
+              <Fragment key={status}>
+                <TableRow
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleGroup(status)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleGroup(status);
+                    }
+                  }}
+                >
+                  <TableCell colSpan={activeColumns.length} style={groupHeaderCell}>
+                    <HStack gap={2} vAlign="center">
+                      <Icon
+                        icon={isExpanded ? ChevronDownIcon : ChevronRightIcon}
+                        size="sm"
+                        color="secondary"
+                      />
+                      <StatusDot variant={statusDotVariants[status]} label={status} />
+                      <Text type="body" weight="bold">
+                        {statusLabels[status]}
+                      </Text>
+                      <Badge variant="neutral" label={String(itemsForStatus.length)} />
+                    </HStack>
+                  </TableCell>
+                </TableRow>
+                {isExpanded
+                  ? itemsForStatus.map((item) => (
+                      <Fragment key={item.id}>
+                        {isCompact ? (
+                          <ProjectWorkCompactTableRow
+                            item={item}
+                            isSelected={item.id === selectedItemId}
+                            onSelectItem={onSelectItem}
+                          />
+                        ) : (
+                          <ProjectWorkTableRow
+                            item={item}
+                            isSelected={item.id === selectedItemId}
+                            onSelectItem={onSelectItem}
+                          />
+                        )}
+                      </Fragment>
+                    ))
+                  : null}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </Table>
+    </Stack>
+  );
+}
+
+function ProjectWorkCompactTableRow({
+  item,
+  isSelected,
+  onSelectItem,
+}: {
+  item: WorkItem;
+  isSelected: boolean;
+  onSelectItem: (item: WorkItem) => void;
+}): ReactElement {
+  return (
+    <TableRow aria-selected={isSelected} onClick={() => onSelectItem(item)}>
+      <TableCell>
+        <Center axis="horizontal">
+          <StatusDot variant={statusDotVariants[item.status]} label={item.status} />
+        </Center>
+      </TableCell>
+      <TableCell>
+        <VStack gap={1}>
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
+            <Text type="supporting" color="secondary" hasTabularNumbers>
+              #{item.number}
             </Text>
-            <TabList value={view} onChange={(nextView) => setView(nextView as ProjectWorkspaceView)}>
-              <Tab value="table" label="Table" />
-              <Tab value="board" label="Board" />
-            </TabList>
+            <Text type="body" maxLines={1}>
+              {item.title}
+            </Text>
           </HStack>
-        </HStack>
-      </div>
+          <HStack gap={3} vAlign="center" wrap="wrap">
+            <HStack gap={1} vAlign="center">
+              <Avatar name={item.owner} size="xsmall" />
+              <Text type="supporting" maxLines={1}>
+                {item.owner}
+              </Text>
+            </HStack>
+            <HStack gap={1} vAlign="center">
+              <Icon icon={ChatBubbleLeftRightIcon} size="sm" color="secondary" />
+              <Text type="supporting" hasTabularNumbers>
+                {item.comments}
+              </Text>
+            </HStack>
+            <Text type="supporting">{item.updated}</Text>
+            {item.runId ? (
+              <Link href={`/app/runs/${item.runId}`} isStandalone>
+                Open run
+              </Link>
+            ) : null}
+          </HStack>
+          {item.labels.length > 0 ? (
+            <HStack gap={1} wrap="wrap">
+              {item.labels.map((label) => (
+                <Badge key={label} variant="neutral" label={label} />
+              ))}
+            </HStack>
+          ) : null}
+        </VStack>
+      </TableCell>
+      <TableCell>
+        <Button
+          label="Open GitHub"
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
+          onClick={() => window.open(item.githubUrl, "_blank", "noopener,noreferrer")}
+        />
+      </TableCell>
+    </TableRow>
+  );
+}
 
-      {!hasIssueSync && (
-        <div className="border-b border-border bg-muted/30 px-5 py-3">
-          <Text type="supporting" as="p">
-            Issue sync is not enabled for this project. Pull requests still appear here when Abu Bakr reviews them.
+function ProjectWorkTableRow({
+  item,
+  isSelected,
+  onSelectItem,
+}: {
+  item: WorkItem;
+  isSelected: boolean;
+  onSelectItem: (item: WorkItem) => void;
+}): ReactElement {
+  return (
+    <TableRow aria-selected={isSelected} onClick={() => onSelectItem(item)}>
+      <TableCell>
+        <Center axis="horizontal">
+          <StatusDot variant={statusDotVariants[item.status]} label={item.status} />
+        </Center>
+      </TableCell>
+      <TableCell>
+        <VStack gap={1}>
+          <HStack gap={2} vAlign="center">
+            <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
+            <Text type="supporting" color="secondary" hasTabularNumbers>
+              #{item.number}
+            </Text>
+            <Text type="body" maxLines={1}>
+              {item.title}
+            </Text>
+          </HStack>
+          <HStack gap={1} wrap="wrap">
+            {item.labels.map((label) => (
+              <Badge key={label} variant="neutral" label={label} />
+            ))}
+          </HStack>
+        </VStack>
+      </TableCell>
+      <TableCell>
+        <HStack gap={2} vAlign="center">
+          <Avatar name={item.owner} size="xsmall" />
+          <Text type="body" maxLines={1}>
+            {item.owner}
           </Text>
-        </div>
-      )}
+        </HStack>
+      </TableCell>
+      <TableCell>
+        <HStack gap={1} vAlign="center">
+          <Icon icon={ChatBubbleLeftRightIcon} size="sm" color="secondary" />
+          <Text type="supporting" hasTabularNumbers>
+            {item.comments}
+          </Text>
+        </HStack>
+      </TableCell>
+      <TableCell>
+        <Text type="supporting">{item.updated}</Text>
+      </TableCell>
+      <TableCell>
+        {item.runId ? (
+          <Link href={`/app/runs/${item.runId}`} isStandalone>
+            Open run
+          </Link>
+        ) : (
+          <Text type="supporting" color="secondary">
+            -
+          </Text>
+        )}
+      </TableCell>
+      <TableCell>
+        <Button
+          label="Open GitHub"
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
+          onClick={() => window.open(item.githubUrl, "_blank", "noopener,noreferrer")}
+        />
+      </TableCell>
+    </TableRow>
+  );
+}
 
-      <div className={view === "table" ? "" : "p-4"}>
-        <ProjectWorkContent view={view} workItems={workItems} />
-      </div>
-    </section>
+function ProjectWorkBoard({
+  workItems,
+  selectedItemId,
+  onSelectItem,
+}: WorkItemsProps): ReactElement {
+  const groupedItems = groupWorkItems(workItems);
+
+  return (
+    <HStack gap={4} style={boardShellStyle}>
+      {statusOrder.map((status) => {
+        const columnItems = groupedItems[status];
+
+        return (
+          <VStack key={status} gap={3} style={boardColumnStyle}>
+            <HStack hAlign="between" vAlign="center">
+              <HStack gap={2} vAlign="center">
+                <StatusDot variant={statusDotVariants[status]} label={status} />
+                <Text weight="semibold">{statusLabels[status]}</Text>
+              </HStack>
+              <Badge variant="neutral" label={String(columnItems.length)} />
+            </HStack>
+            <VStack gap={3}>
+              {columnItems.length > 0 ? (
+                columnItems.map((item) => (
+                  <Card
+                    key={item.id}
+                    padding={4}
+                    style={boardCardStyle}
+                    variant={item.id === selectedItemId ? "muted" : undefined}
+                    onClick={() => onSelectItem(item)}
+                  >
+                    <VStack gap={3}>
+                      <HStack hAlign="between" vAlign="center">
+                        <HStack gap={1} vAlign="center">
+                          <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
+                          <Text type="supporting" hasTabularNumbers>
+                            #{item.number}
+                          </Text>
+                        </HStack>
+                        <HStack gap={1} vAlign="center">
+                          <Icon icon={ChatBubbleLeftRightIcon} size="sm" color="secondary" />
+                          <Text type="supporting" hasTabularNumbers>
+                            {item.comments}
+                          </Text>
+                        </HStack>
+                      </HStack>
+                      <Text weight="semibold" maxLines={2}>
+                        {item.title}
+                      </Text>
+                      <Text type="supporting" color="secondary" maxLines={2}>
+                        {item.lastComment}
+                      </Text>
+                      <Divider />
+                      <HStack hAlign="between" vAlign="center">
+                        <HStack gap={2} vAlign="center">
+                          <Avatar name={item.owner} size="xsmall" />
+                          <Text type="supporting" maxLines={1}>
+                            {item.owner}
+                          </Text>
+                        </HStack>
+                        <Text type="supporting">{item.updated}</Text>
+                      </HStack>
+                    </VStack>
+                  </Card>
+                ))
+              ) : (
+                <Card padding={4} variant="muted" style={boardCardStyle}>
+                  <Text type="supporting" color="secondary">
+                    No items
+                  </Text>
+                </Card>
+              )}
+            </VStack>
+          </VStack>
+        );
+      })}
+    </HStack>
+  );
+}
+
+function WorkItemDetailPanel({ item, onClose, resizable }: WorkItemDetailPanelProps): ReactElement {
+  const router = useRouter();
+
+  return (
+    <LayoutPanel
+      hasDivider
+      resizable={resizable}
+      padding={4}
+      role="complementary"
+      label="Issue details"
+    >
+      <VStack gap={4}>
+        <HStack hAlign="between" vAlign="center">
+          <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
+          <Button label="Close" variant="ghost" size="sm" onClick={onClose} />
+        </HStack>
+        <VStack gap={1}>
+          <Text type="supporting" color="secondary" hasTabularNumbers>
+            #{item.number}
+          </Text>
+          <Heading level={3}>{item.title}</Heading>
+          <Text type="supporting" color="secondary">
+            {item.source}
+          </Text>
+        </VStack>
+        <MetadataList label={{ position: "start" }}>
+          <MetadataListItem label="Status">
+            <HStack gap={2} vAlign="center">
+              <StatusDot variant={statusDotVariants[item.status]} label={item.status} />
+              <Text>{item.status}</Text>
+            </HStack>
+          </MetadataListItem>
+          <MetadataListItem label="Coworker">{item.owner}</MetadataListItem>
+          <MetadataListItem label="Comments">{item.comments}</MetadataListItem>
+          <MetadataListItem label="Updated">{item.updated}</MetadataListItem>
+        </MetadataList>
+        <Divider />
+        <VStack gap={2}>
+          <Text type="label">Latest comment</Text>
+          <Text type="body" color="secondary" as="p">
+            {item.lastComment}
+          </Text>
+        </VStack>
+        <VStack gap={2}>
+          <Text type="label">Labels</Text>
+          <HStack gap={1} wrap="wrap">
+            {item.labels.map((label) => (
+              <Badge key={label} variant="neutral" label={label} />
+            ))}
+          </HStack>
+        </VStack>
+        <Divider />
+        <HStack gap={2} wrap="wrap">
+          <Button
+            label="Open GitHub"
+            variant="primary"
+            size="md"
+            icon={<Icon icon={ArrowTopRightOnSquareIcon} />}
+            onClick={() => window.open(item.githubUrl, "_blank", "noopener,noreferrer")}
+          />
+          {item.runId ? (
+            <Button
+              label="Open run"
+              variant="secondary"
+              size="md"
+              icon={<Icon icon={CodeBracketIcon} />}
+              onClick={() => router.push(`/app/runs/${item.runId}`)}
+            />
+          ) : null}
+        </HStack>
+      </VStack>
+    </LayoutPanel>
   );
 }

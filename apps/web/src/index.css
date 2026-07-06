@@ -5,3 +5,8 @@
 @import "@astryxdesign/theme-neutral/theme.css";
 @import "@astryxdesign/core/tailwind-theme.css";
 @import "@hosted-agents/ui/globals.css";
+
+html,
+body {
+  background: var(--color-background-body);
+}
