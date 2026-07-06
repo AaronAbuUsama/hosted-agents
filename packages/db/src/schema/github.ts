@@ -70,6 +70,33 @@ export const githubRepository = sqliteTable(
   ],
 );
 
+export const githubWebhookDelivery = sqliteTable(
+  "github_webhook_delivery",
+  {
+    id: text("id").primaryKey(),
+    event: text("event").notNull(),
+    action: text("action"),
+    installationId: text("installation_id"),
+    repositoryFullName: text("repository_full_name"),
+    pullRequestNumber: integer("pull_request_number"),
+    status: text("status").default("claimed").notNull(),
+    reviewRunId: text("review_run_id"),
+    receivedAt: integer("received_at", { mode: "timestamp_ms" })
+      .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("github_webhook_delivery_event_idx").on(table.event),
+    index("github_webhook_delivery_installationId_idx").on(table.installationId),
+    index("github_webhook_delivery_status_idx").on(table.status),
+    index("github_webhook_delivery_reviewRunId_idx").on(table.reviewRunId),
+  ],
+);
+
 export const githubInstallationRelations = relations(githubInstallation, ({ many, one }) => ({
   organization: one(organization, {
     fields: [githubInstallation.organizationId],

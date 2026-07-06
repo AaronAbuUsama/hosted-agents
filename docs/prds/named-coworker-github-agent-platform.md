@@ -93,7 +93,7 @@ Telemetry setup is part of the foundation. Before the first real Abu Bakr GitHub
 - Add run events as an append-only timeline. Use them for webhook received, trigger matched, queued, sandbox started, model call started, GitHub post attempted, completed, and failed transitions.
 - Add run artifacts for durable outputs. Artifacts should store review summaries, findings, normalized GitHub posting payloads, logs, and any future patch output from implementation coworkers.
 - Add a sandbox runner interface. The control plane should enqueue a run and receive status/results. It should not clone repositories or execute repository commands itself.
-- Start with a Docker-based sandbox per run. Each run gets a fresh workspace, scoped secrets, resource limits, and cleanup behavior.
+- Start with an application-owned Daytona sandbox per run. Each run gets a fresh managed Linux workspace, scoped secrets, provider-owned lifecycle controls, and cleanup behavior. Docker remains only the deployment packaging for the Hono/web service on Dokploy; agent execution must not run inside that service container.
 - Separate agent/model credentials from repository command execution. The agent runtime may use the organization-scoped Codex credential, but untrusted repo commands should not receive model credentials or long-lived GitHub credentials in their environment.
 - Use short-lived GitHub installation tokens for repository fetch and GitHub posting. Tokens should be minted per run and scoped to the named coworker's installation.
 - The sandbox should receive only the minimal data needed for the run: repository identity, pull request refs, installation token, model credential handle or resolved ephemeral auth, and run id.
@@ -125,9 +125,8 @@ Telemetry setup is part of the foundation. Before the first real Abu Bakr GitHub
 - Add unit tests for blocking policy. Findings at different severities should map to pass, neutral, or fail check conclusions according to configured thresholds.
 - Add integration tests for GitHub webhook ingestion. The server should verify signatures, reject invalid payloads, resolve installations, and create queued runs.
 - Add integration tests for run lifecycle. A queued run should transition through running to completed or failed with append-only run events.
-- Add integration tests for sandbox runner contract using a fake runner. The Hono/API layer should not need a real Docker container to prove enqueue and callback behavior.
-- Add integration tests for GitHub posting using a fake GitHub client. Review comments, check runs, and fallback comments should be verified by request shape.
-- Add a real local smoke test for the sandbox runner once Docker wiring exists. The smoke should prove a run gets a fresh workspace and cannot read control-plane secrets.
+- Add integration tests for sandbox runner contract using a fake runner. The Hono/API layer should not need a real Daytona sandbox to prove enqueue and callback behavior.
+- Add a real local smoke test for the Daytona sandbox runner once Daytona wiring exists. The smoke should prove a run gets a fresh workspace and cannot read control-plane secrets.
 - Add a browser smoke test for the rough dashboard. It should prove no-org gating, connected provider visibility, named coworker installation visibility, and run list/detail visibility.
 - Add regression coverage for the existing self-review or unanchored-comment fallback behavior. GitHub can reject some review actions, and the workflow must still produce useful output.
 - Add Sentry verification. Trigger one failed workflow and one explicit error log, then confirm the Sentry event has the expected run correlation fields and no prompt/model/repository content beyond the explicit error context.
@@ -159,7 +158,7 @@ The implementation should proceed in vertical slices:
 5. Add trigger rule matching for pull request events and branch wildcards.
 6. Add the Abu Bakr webhook endpoint and signature verification.
 7. Add the sandbox runner interface with a fake runner for tests.
-8. Add the Docker sandbox runner for local proof.
+8. Add the Daytona sandbox runner for local proof.
 9. Move Abu Bakr review execution into the sandbox-backed worker path.
 10. Add GitHub check run posting and PR review/comment posting.
 11. Prove a real GitHub PR review end to end.

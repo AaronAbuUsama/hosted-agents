@@ -2,13 +2,19 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 const root = process.cwd();
 const args = new Set(process.argv.slice(2));
 const serverEnvPath = resolve(root, "apps/server/.env");
 const braintrustEnvPath = resolve(root, ".env.braintrust");
+const localSecretsEnvPath = resolve(homedir(), ".config/hosted-agents/secrets.env");
 const children = new Set();
+const daytonaEnvAliases = [
+  ["DAYTONA_API_KEY", "DATONA_API_KEY"],
+  ["DAYTONA_API_URL", "DATONA_API_URL"],
+];
 
 function parseEnvFile(path) {
   if (!existsSync(path)) {
@@ -27,6 +33,18 @@ function parseEnvFile(path) {
         return [key, value];
       }),
   );
+}
+
+function applyDaytonaEnvAliases(env) {
+  const merged = { ...env };
+
+  for (const [currentName, legacyName] of daytonaEnvAliases) {
+    if (!merged[currentName] && merged[legacyName]) {
+      merged[currentName] = merged[legacyName];
+    }
+  }
+
+  return merged;
 }
 
 function ensureServerEnv() {
@@ -99,11 +117,12 @@ function shutdown(code = 0) {
 }
 
 const serverEnv = ensureServerEnv();
-const mergedEnv = {
+const mergedEnv = applyDaytonaEnvAliases({
   ...process.env,
+  ...parseEnvFile(localSecretsEnvPath),
   ...serverEnv,
   ...parseEnvFile(braintrustEnvPath),
-};
+});
 const smeeUrl = mergedEnv.GITHUB_WEBHOOK_PROXY_URL;
 const targetUrl = mergedEnv.GITHUB_WEBHOOK_TARGET_URL ?? "http://localhost:3000/api/github/webhook";
 

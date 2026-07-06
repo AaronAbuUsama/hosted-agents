@@ -10,12 +10,15 @@
     "start": "node --import braintrust/hook.mjs dist/server.mjs"
   },
   "dependencies": {
+    "@daytona/sdk": "^0.187.0",
     "@earendil-works/pi-ai": "^0.80.3",
+    "@flue/github": "1.0.0-beta.1",
     "@flue/runtime": "^1.0.0-beta.9",
     "@hosted-agents/api": "workspace:*",
     "@hosted-agents/auth": "workspace:*",
     "@hosted-agents/db": "workspace:*",
     "@hosted-agents/env": "workspace:*",
+    "@octokit/rest": "^22.0.1",
     "@orpc/openapi": "catalog:",
     "@orpc/server": "catalog:",
     "@orpc/zod": "catalog:",

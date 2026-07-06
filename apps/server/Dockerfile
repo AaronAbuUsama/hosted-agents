@@ -13,4 +13,4 @@ ENV SKIP_ENV_VALIDATION=
 EXPOSE 3000
 
 WORKDIR /app/apps/server
-CMD ["bun", "run", "start"]
+CMD ["sh", "-c", "cd /app && bun run db:migrate && cd /app/apps/server && exec bun run start"]

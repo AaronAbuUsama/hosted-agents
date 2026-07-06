@@ -16,6 +16,16 @@ That command starts:
 - the Flue/Hono server
 - the Smee forwarder
 
+Before testing webhook admission against a durable local database, apply the
+committed Drizzle migrations:
+
+```bash
+bun run db:migrate
+```
+
+Use `bun run db:push` only for disposable local databases. Production and
+Dokploy deploys use `bun run db:migrate`; see `docs/runbooks/database-migrations.md`.
+
 If the web app is already running and you only need server plus webhooks:
 
 ```bash
@@ -24,7 +34,7 @@ bun run dev:github-webhooks
 
 ## Local Environment
 
-The script reads `apps/server/.env` and `.env.braintrust`.
+The script reads `~/.config/hosted-agents/secrets.env`, `apps/server/.env`, and `.env.braintrust`. If local secrets still use the old `DATONA_API_KEY` / `DATONA_API_URL` spelling, the dev script aliases them to `DAYTONA_API_KEY` / `DAYTONA_API_URL` before starting the server.
 
 Required for Smee forwarding:
 
@@ -103,12 +113,15 @@ Subscribe to these webhook events:
 
 ## Current Local Proof
 
-The local endpoint verifies `x-hub-signature-256`, logs the GitHub event, action, delivery id, and installation id, then returns `202`.
+The local endpoint is backed by Flue's GitHub channel. It verifies
+`x-hub-signature-256` against the exact JSON body, rejects invalid signatures, and
+returns `202` after admission decisions.
 
-The dashboard GitHub App card generates an install URL with the active organization
-id in `state`. After GitHub redirects to the setup URL, the setup page claims the
-`installation_id`, validates it with the GitHub App private key, stores the
-installation on the organization, and syncs the selected repositories.
+Verified `pull_request` deliveries with action `opened`, `reopened`,
+`synchronize`, or `ready_for_review` are admitted by claiming
+`X-GitHub-Delivery` in the database, resolving the GitHub installation and
+repository to a Coworker organization, and creating one queued `review_run` with
+PR metadata. Duplicate delivery ids return `202` without creating another run.
 
-The next product slice turns accepted `pull_request` events into `review_run`
-records.
+The Hono server remains the control plane. Agent execution is not run in the
+service container; the execution-plane path is Daytona through Flue.

@@ -2,6 +2,15 @@ import "dotenv/config";
 import { createEnv } from "@t3-oss/env-core";
 import { z } from "zod";
 
+function applyEnvAlias(currentName: string, legacyName: string): void {
+  if (!process.env[currentName] && process.env[legacyName]) {
+    process.env[currentName] = process.env[legacyName];
+  }
+}
+
+applyEnvAlias("DAYTONA_API_KEY", "DATONA_API_KEY");
+applyEnvAlias("DAYTONA_API_URL", "DATONA_API_URL");
+
 export const env = createEnv({
   server: {
     DATABASE_URL: z.string().min(1),
@@ -21,6 +30,8 @@ export const env = createEnv({
     GITHUB_CLIENT_ID: z.string().min(1).optional(),
     GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
     GITHUB_WEBHOOK_SECRET: z.string().min(16).optional(),
+    DAYTONA_API_KEY: z.string().min(1).optional(),
+    DAYTONA_API_URL: z.url().optional(),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   runtimeEnv: process.env,
