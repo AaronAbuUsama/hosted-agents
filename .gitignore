@@ -10,7 +10,7 @@ build
 
 # Generated files
 apps/web/src/routeTree.gen.ts
-
+artifacts/*
 # Environment variables
 .env
 .env*.local
@@ -55,3 +55,4 @@ temp
 # Added by Braintrust Wizard
 .env.braintrust
 .braintrust.json
+local.db
