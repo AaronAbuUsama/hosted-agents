@@ -11,7 +11,34 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageRoot, "../..");
 const migrationsFolder = resolve(packageRoot, "src/migrations");
 
-const reviewRunGitHubColumns = [
+const tableAdoptionColumns = {
+  user: [
+    { name: "username", definition: "`username` text" },
+    { name: "display_username", definition: "`display_username` text" },
+    { name: "image", definition: "`image` text" },
+  ],
+  organization: [
+    { name: "logo", definition: "`logo` text" },
+    { name: "metadata", definition: "`metadata` text" },
+  ],
+} as const;
+
+const reviewRunAdoptionColumns = [
+  { name: "agent_name", definition: "`agent_name` text DEFAULT 'code-review' NOT NULL" },
+  {
+    name: "provider_credential_id",
+    definition:
+      "`provider_credential_id` text REFERENCES `agent_provider_credential`(`id`) ON UPDATE no action ON DELETE set null",
+  },
+  {
+    name: "repository_provider",
+    definition: "`repository_provider` text DEFAULT 'manual' NOT NULL",
+  },
+  { name: "repository_owner", definition: "`repository_owner` text" },
+  { name: "repository_name", definition: "`repository_name` text" },
+  { name: "repository_url", definition: "`repository_url` text" },
+  { name: "base_branch", definition: "`base_branch` text" },
+  { name: "review_context", definition: "`review_context` text" },
   {
     name: "github_delivery_id",
     definition:
@@ -32,9 +59,20 @@ const reviewRunGitHubColumns = [
   { name: "pull_request_base_sha", definition: "`pull_request_base_sha` text" },
   { name: "pull_request_head_ref", definition: "`pull_request_head_ref` text" },
   { name: "pull_request_head_sha", definition: "`pull_request_head_sha` text" },
+  { name: "flue_run_id", definition: "`flue_run_id` text" },
+  { name: "summary", definition: "`summary` text" },
+  { name: "findings_json", definition: "`findings_json` text" },
+  { name: "error_message", definition: "`error_message` text" },
+  { name: "started_at", definition: "`started_at` integer" },
+  { name: "completed_at", definition: "`completed_at` integer" },
 ] as const;
 
-const reviewRunGitHubIndexes = [
+const reviewRunAdoptionIndexes = [
+  "CREATE INDEX IF NOT EXISTS `review_run_organizationId_idx` ON `review_run` (`organization_id`)",
+  "CREATE INDEX IF NOT EXISTS `review_run_userId_idx` ON `review_run` (`user_id`)",
+  "CREATE INDEX IF NOT EXISTS `review_run_providerCredentialId_idx` ON `review_run` (`provider_credential_id`)",
+  "CREATE INDEX IF NOT EXISTS `review_run_flueRunId_idx` ON `review_run` (`flue_run_id`)",
+  "CREATE INDEX IF NOT EXISTS `review_run_status_idx` ON `review_run` (`status`)",
   "CREATE INDEX IF NOT EXISTS `review_run_githubDeliveryId_idx` ON `review_run` (`github_delivery_id`)",
   "CREATE INDEX IF NOT EXISTS `review_run_githubInstallationId_idx` ON `review_run` (`github_installation_id`)",
   "CREATE INDEX IF NOT EXISTS `review_run_githubRepositoryId_idx` ON `review_run` (`github_repository_id`)",
@@ -89,14 +127,41 @@ function idempotentBaselineStatement(statement: string): string | undefined {
     return undefined;
   }
 
-  if (trimmedStatement.includes("`review_run_github")) {
+  if (/^CREATE\s+(UNIQUE\s+)?INDEX\s+/i.test(trimmedStatement)) {
+    return undefined;
+  }
+
+  return trimmedStatement.replace(/^CREATE TABLE\s+`/i, "CREATE TABLE IF NOT EXISTS `");
+}
+
+function idempotentIndexStatement(statement: string): string | undefined {
+  const trimmedStatement = statement.trim();
+
+  if (!/^CREATE\s+(UNIQUE\s+)?INDEX\s+/i.test(trimmedStatement)) {
     return undefined;
   }
 
   return trimmedStatement
-    .replace(/^CREATE TABLE\s+`/i, "CREATE TABLE IF NOT EXISTS `")
     .replace(/^CREATE UNIQUE INDEX\s+`/i, "CREATE UNIQUE INDEX IF NOT EXISTS `")
     .replace(/^CREATE INDEX\s+`/i, "CREATE INDEX IF NOT EXISTS `");
+}
+
+function indexTarget(statement: string) {
+  const match = statement.match(
+    /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+`[^`]+`\s+ON\s+`([^`]+)`\s+\((.+)\)$/i,
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const [, tableName, columnList] = match;
+  const columns = [...columnList.matchAll(/`([^`]+)`/g)].map((columnMatch) => columnMatch[1]);
+
+  return {
+    tableName,
+    columns,
+  };
 }
 
 async function applyBaselineWithoutClobberingExistingTables(
@@ -112,17 +177,63 @@ async function applyBaselineWithoutClobberingExistingTables(
   }
 }
 
-async function ensureReviewRunGitHubColumns(client: Client): Promise<void> {
+async function ensureTableAdoptionColumns(
+  client: Client,
+  tableName: keyof typeof tableAdoptionColumns,
+): Promise<void> {
+  if (!(await tableExists(client, tableName))) {
+    return;
+  }
+
+  const columns = await columnNames(client, tableName);
+
+  for (const column of tableAdoptionColumns[tableName]) {
+    if (!columns.has(column.name)) {
+      await client.execute(`ALTER TABLE \`${tableName}\` ADD COLUMN ${column.definition}`);
+    }
+  }
+}
+
+async function ensureReviewRunAdoptionColumns(client: Client): Promise<void> {
+  if (!(await tableExists(client, "review_run"))) {
+    return;
+  }
+
   const columns = await columnNames(client, "review_run");
 
-  for (const column of reviewRunGitHubColumns) {
+  for (const column of reviewRunAdoptionColumns) {
     if (!columns.has(column.name)) {
       await client.execute(`ALTER TABLE \`review_run\` ADD COLUMN ${column.definition}`);
     }
   }
 
-  for (const statement of reviewRunGitHubIndexes) {
+  for (const statement of reviewRunAdoptionIndexes) {
     await client.execute(statement);
+  }
+}
+
+async function applyBaselineIndexesWhenColumnsExist(
+  client: Client,
+  baseline: MigrationMeta,
+): Promise<void> {
+  for (const statement of baseline.sql) {
+    const idempotentStatement = idempotentIndexStatement(statement);
+
+    if (!idempotentStatement) {
+      continue;
+    }
+
+    const target = indexTarget(statement);
+
+    if (!target || !(await tableExists(client, target.tableName))) {
+      continue;
+    }
+
+    const columns = await columnNames(client, target.tableName);
+
+    if (target.columns.every((column) => columns.has(column))) {
+      await client.execute(idempotentStatement);
+    }
   }
 }
 
@@ -151,9 +262,14 @@ async function adoptUnmanagedDatabase(client: Client, migrations: MigrationMeta[
     throw new Error(`No Drizzle baseline migration exists in ${migrationsFolder}`);
   }
 
-  console.info("No Drizzle migration history found on an existing database; adopting baseline safely.");
+  console.info(
+    "No Drizzle migration history found on an existing database; adopting baseline safely.",
+  );
   await applyBaselineWithoutClobberingExistingTables(client, baseline);
-  await ensureReviewRunGitHubColumns(client);
+  await ensureTableAdoptionColumns(client, "user");
+  await ensureTableAdoptionColumns(client, "organization");
+  await ensureReviewRunAdoptionColumns(client);
+  await applyBaselineIndexesWhenColumnsExist(client, baseline);
   await recordAppliedMigration(client, baseline);
 }
 

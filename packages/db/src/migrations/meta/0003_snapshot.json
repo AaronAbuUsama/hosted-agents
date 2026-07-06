@@ -1,9 +1,675 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c079beb5-f38d-469c-a441-a16a6bddf223",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "7de78de1-beaa-4de9-b075-669bbbf5eb88",
+  "prevId": "d646bee6-7bb9-4f41-8a8e-e41709551685",
   "tables": {
+    "agent_run": {
+      "name": "agent_run",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_credential_id": {
+          "name": "provider_credential_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "coworker_slug": {
+          "name": "coworker_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_type": {
+          "name": "run_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_provider": {
+          "name": "source_provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_delivery_id": {
+          "name": "source_delivery_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "github_installation_id": {
+          "name": "github_installation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "github_repository_id": {
+          "name": "github_repository_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "repository_owner": {
+          "name": "repository_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "repository_name": {
+          "name": "repository_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "repository_url": {
+          "name": "repository_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "branch": {
+          "name": "branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "base_branch": {
+          "name": "base_branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pull_request_number": {
+          "name": "pull_request_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pull_request_base_ref": {
+          "name": "pull_request_base_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pull_request_base_sha": {
+          "name": "pull_request_base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pull_request_head_ref": {
+          "name": "pull_request_head_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pull_request_head_sha": {
+          "name": "pull_request_head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'queued'"
+        },
+        "flue_run_id": {
+          "name": "flue_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sandbox_provider": {
+          "name": "sandbox_provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sandbox_id": {
+          "name": "sandbox_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "current_stage": {
+          "name": "current_stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_heartbeat_at": {
+          "name": "last_heartbeat_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "findings_json": {
+          "name": "findings_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        }
+      },
+      "indexes": {
+        "agent_run_organizationId_idx": {
+          "name": "agent_run_organizationId_idx",
+          "columns": ["organization_id"],
+          "isUnique": false
+        },
+        "agent_run_userId_idx": {
+          "name": "agent_run_userId_idx",
+          "columns": ["user_id"],
+          "isUnique": false
+        },
+        "agent_run_providerCredentialId_idx": {
+          "name": "agent_run_providerCredentialId_idx",
+          "columns": ["provider_credential_id"],
+          "isUnique": false
+        },
+        "agent_run_coworkerSlug_idx": {
+          "name": "agent_run_coworkerSlug_idx",
+          "columns": ["coworker_slug"],
+          "isUnique": false
+        },
+        "agent_run_runType_idx": {
+          "name": "agent_run_runType_idx",
+          "columns": ["run_type"],
+          "isUnique": false
+        },
+        "agent_run_status_idx": {
+          "name": "agent_run_status_idx",
+          "columns": ["status"],
+          "isUnique": false
+        },
+        "agent_run_flueRunId_idx": {
+          "name": "agent_run_flueRunId_idx",
+          "columns": ["flue_run_id"],
+          "isUnique": false
+        },
+        "agent_run_sandboxId_idx": {
+          "name": "agent_run_sandboxId_idx",
+          "columns": ["sandbox_id"],
+          "isUnique": false
+        },
+        "agent_run_sourceDeliveryId_idx": {
+          "name": "agent_run_sourceDeliveryId_idx",
+          "columns": ["source_delivery_id"],
+          "isUnique": false
+        },
+        "agent_run_githubInstallationId_idx": {
+          "name": "agent_run_githubInstallationId_idx",
+          "columns": ["github_installation_id"],
+          "isUnique": false
+        },
+        "agent_run_githubRepositoryId_idx": {
+          "name": "agent_run_githubRepositoryId_idx",
+          "columns": ["github_repository_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "agent_run_organization_id_organization_id_fk": {
+          "name": "agent_run_organization_id_organization_id_fk",
+          "tableFrom": "agent_run",
+          "tableTo": "organization",
+          "columnsFrom": ["organization_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "agent_run_user_id_user_id_fk": {
+          "name": "agent_run_user_id_user_id_fk",
+          "tableFrom": "agent_run",
+          "tableTo": "user",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "agent_run_provider_credential_id_agent_provider_credential_id_fk": {
+          "name": "agent_run_provider_credential_id_agent_provider_credential_id_fk",
+          "tableFrom": "agent_run",
+          "tableTo": "agent_provider_credential",
+          "columnsFrom": ["provider_credential_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "agent_run_github_installation_id_github_installation_id_fk": {
+          "name": "agent_run_github_installation_id_github_installation_id_fk",
+          "tableFrom": "agent_run",
+          "tableTo": "github_installation",
+          "columnsFrom": ["github_installation_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "agent_run_github_repository_id_github_repository_id_fk": {
+          "name": "agent_run_github_repository_id_github_repository_id_fk",
+          "tableFrom": "agent_run",
+          "tableTo": "github_repository",
+          "columnsFrom": ["github_repository_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "agent_run_artifact": {
+      "name": "agent_run_artifact",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "payload_json": {
+          "name": "payload_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        }
+      },
+      "indexes": {
+        "agent_run_artifact_runId_idx": {
+          "name": "agent_run_artifact_runId_idx",
+          "columns": ["run_id"],
+          "isUnique": false
+        },
+        "agent_run_artifact_name_idx": {
+          "name": "agent_run_artifact_name_idx",
+          "columns": ["name"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "agent_run_artifact_run_id_agent_run_id_fk": {
+          "name": "agent_run_artifact_run_id_agent_run_id_fk",
+          "tableFrom": "agent_run_artifact",
+          "tableTo": "agent_run",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "agent_run_event": {
+      "name": "agent_run_event",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "stage": {
+          "name": "stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload_json": {
+          "name": "payload_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "flue_event_index": {
+          "name": "flue_event_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "flue_event_type": {
+          "name": "flue_event_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        }
+      },
+      "indexes": {
+        "agent_run_event_runId_idx": {
+          "name": "agent_run_event_runId_idx",
+          "columns": ["run_id"],
+          "isUnique": false
+        },
+        "agent_run_event_runSequence_idx": {
+          "name": "agent_run_event_runSequence_idx",
+          "columns": ["run_id", "sequence"],
+          "isUnique": true
+        },
+        "agent_run_event_type_idx": {
+          "name": "agent_run_event_type_idx",
+          "columns": ["type"],
+          "isUnique": false
+        },
+        "agent_run_event_category_idx": {
+          "name": "agent_run_event_category_idx",
+          "columns": ["category"],
+          "isUnique": false
+        },
+        "agent_run_event_flueEventIndex_idx": {
+          "name": "agent_run_event_flueEventIndex_idx",
+          "columns": ["flue_event_index"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "agent_run_event_run_id_agent_run_id_fk": {
+          "name": "agent_run_event_run_id_agent_run_id_fk",
+          "tableFrom": "agent_run_event",
+          "tableTo": "agent_run",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "agent_run_sandbox": {
+      "name": "agent_run_sandbox",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sandbox_id": {
+          "name": "sandbox_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "labels_json": {
+          "name": "labels_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        }
+      },
+      "indexes": {
+        "agent_run_sandbox_runId_idx": {
+          "name": "agent_run_sandbox_runId_idx",
+          "columns": ["run_id"],
+          "isUnique": false
+        },
+        "agent_run_sandbox_sandboxId_idx": {
+          "name": "agent_run_sandbox_sandboxId_idx",
+          "columns": ["sandbox_id"],
+          "isUnique": false
+        },
+        "agent_run_sandbox_status_idx": {
+          "name": "agent_run_sandbox_status_idx",
+          "columns": ["status"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "agent_run_sandbox_run_id_agent_run_id_fk": {
+          "name": "agent_run_sandbox_run_id_agent_run_id_fk",
+          "tableFrom": "agent_run_sandbox",
+          "tableTo": "agent_run",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "account": {
       "name": "account",
       "columns": {
@@ -931,6 +1597,13 @@
           "autoincrement": false,
           "default": "'claimed'"
         },
+        "agent_run_id": {
+          "name": "agent_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "review_run_id": {
           "name": "review_run_id",
           "type": "text",
@@ -969,6 +1642,11 @@
         "github_webhook_delivery_status_idx": {
           "name": "github_webhook_delivery_status_idx",
           "columns": ["status"],
+          "isUnique": false
+        },
+        "github_webhook_delivery_agentRunId_idx": {
+          "name": "github_webhook_delivery_agentRunId_idx",
+          "columns": ["agent_run_id"],
           "isUnique": false
         },
         "github_webhook_delivery_reviewRunId_idx": {
@@ -1279,6 +1957,34 @@
           "notNull": false,
           "autoincrement": false
         },
+        "sandbox_provider": {
+          "name": "sandbox_provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sandbox_id": {
+          "name": "sandbox_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sandbox_started_at": {
+          "name": "sandbox_started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sandbox_completed_at": {
+          "name": "sandbox_completed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "summary": {
           "name": "summary",
           "type": "text",
@@ -1288,6 +1994,20 @@
         },
         "findings_json": {
           "name": "findings_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artifacts_json": {
+          "name": "artifacts_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "execution_logs": {
+          "name": "execution_logs",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -1350,6 +2070,11 @@
         "review_run_flueRunId_idx": {
           "name": "review_run_flueRunId_idx",
           "columns": ["flue_run_id"],
+          "isUnique": false
+        },
+        "review_run_sandboxId_idx": {
+          "name": "review_run_sandboxId_idx",
+          "columns": ["sandbox_id"],
           "isUnique": false
         },
         "review_run_status_idx": {

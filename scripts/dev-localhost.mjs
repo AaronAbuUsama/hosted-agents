@@ -1,67 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+
+import { loadHostedAgentsLocalEnv } from "./local-env.mjs";
 
 const root = process.cwd();
 const args = new Set(process.argv.slice(2));
-const serverEnvPath = resolve(root, "apps/server/.env");
-const braintrustEnvPath = resolve(root, ".env.braintrust");
-const localSecretsEnvPath = resolve(homedir(), ".config/hosted-agents/secrets.env");
 const children = new Set();
-const daytonaEnvAliases = [
-  ["DAYTONA_API_KEY", "DATONA_API_KEY"],
-  ["DAYTONA_API_URL", "DATONA_API_URL"],
-];
-
-function parseEnvFile(path) {
-  if (!existsSync(path)) {
-    return {};
-  }
-
-  return Object.fromEntries(
-    readFileSync(path, "utf8")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#") && line.includes("="))
-      .map((line) => {
-        const index = line.indexOf("=");
-        const key = line.slice(0, index);
-        const value = line.slice(index + 1).replace(/^['"]|['"]$/g, "");
-        return [key, value];
-      }),
-  );
-}
-
-function applyDaytonaEnvAliases(env) {
-  const merged = { ...env };
-
-  for (const [currentName, legacyName] of daytonaEnvAliases) {
-    if (!merged[currentName] && merged[legacyName]) {
-      merged[currentName] = merged[legacyName];
-    }
-  }
-
-  return merged;
-}
-
-function ensureServerEnv() {
-  if (!existsSync(serverEnvPath)) {
-    console.error("Missing apps/server/.env. Copy the local server env before running this.");
-    process.exit(1);
-  }
-
-  const env = parseEnvFile(serverEnvPath);
-
-  if (!env.GITHUB_WEBHOOK_SECRET) {
-    appendFileSync(serverEnvPath, `\nGITHUB_WEBHOOK_SECRET=${randomBytes(32).toString("hex")}\n`);
-    console.info("Generated GITHUB_WEBHOOK_SECRET in apps/server/.env");
-  }
-
-  return parseEnvFile(serverEnvPath);
-}
 
 function prefixStream(name, stream, output) {
   let pending = "";
@@ -116,13 +60,7 @@ function shutdown(code = 0) {
   setTimeout(() => process.exit(code), 300);
 }
 
-const serverEnv = ensureServerEnv();
-const mergedEnv = applyDaytonaEnvAliases({
-  ...process.env,
-  ...parseEnvFile(localSecretsEnvPath),
-  ...serverEnv,
-  ...parseEnvFile(braintrustEnvPath),
-});
+const mergedEnv = loadHostedAgentsLocalEnv({ root });
 const smeeUrl = mergedEnv.GITHUB_WEBHOOK_PROXY_URL;
 const targetUrl = mergedEnv.GITHUB_WEBHOOK_TARGET_URL ?? "http://localhost:3000/api/github/webhook";
 
@@ -148,4 +86,7 @@ if (!args.has("--no-web")) {
 }
 
 run("server", "bun", ["run", "dev:server"], mergedEnv);
+if (!args.has("--no-worker")) {
+  run("review-worker", "bun", ["run", "worker:code-reviews"], mergedEnv);
+}
 run("smee", "npx", ["--yes", "smee-client", "-u", smeeUrl, "-t", targetUrl], mergedEnv);

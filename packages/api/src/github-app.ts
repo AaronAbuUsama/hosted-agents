@@ -167,7 +167,7 @@ async function fetchGitHubJson<T>(
   return (await response.json()) as T;
 }
 
-async function getInstallationToken(installationId: string) {
+export async function createGitHubInstallationAccessToken(installationId: string) {
   const response = await fetchGitHubJson<GitHubInstallationTokenResponse>(
     `/app/installations/${installationId}/access_tokens`,
     {
@@ -180,7 +180,7 @@ async function getInstallationToken(installationId: string) {
 }
 
 async function listInstallationRepositories(installationId: string) {
-  const token = await getInstallationToken(installationId);
+  const token = await createGitHubInstallationAccessToken(installationId);
   const response = await fetchGitHubJson<GitHubInstallationRepositoriesResponse>(
     "/installation/repositories?per_page=100",
     {

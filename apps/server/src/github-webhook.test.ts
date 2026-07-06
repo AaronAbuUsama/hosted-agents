@@ -124,6 +124,7 @@ async function createTables(client: TestClient) {
       "repository_full_name" text,
       "pull_request_number" integer,
       "status" text DEFAULT 'claimed' NOT NULL,
+      "agent_run_id" text,
       "review_run_id" text,
       "received_at" integer DEFAULT 0 NOT NULL,
       "updated_at" integer DEFAULT 0 NOT NULL
@@ -167,6 +168,50 @@ async function createTables(client: TestClient) {
       "pull_request_head_sha" text,
       "status" text DEFAULT 'queued' NOT NULL,
       "flue_run_id" text,
+      "sandbox_provider" text,
+      "sandbox_id" text,
+      "sandbox_started_at" integer,
+      "sandbox_completed_at" integer,
+      "summary" text,
+      "findings_json" text,
+      "artifacts_json" text,
+      "execution_logs" text,
+      "error_message" text,
+      "started_at" integer,
+      "completed_at" integer,
+      "created_at" integer DEFAULT 0 NOT NULL,
+      "updated_at" integer DEFAULT 0 NOT NULL
+    );
+
+    CREATE TABLE "agent_run" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "user_id" text NOT NULL,
+      "provider_credential_id" text,
+      "coworker_slug" text NOT NULL,
+      "worker_role" text DEFAULT 'code_review' NOT NULL,
+      "worker_display_name" text,
+      "run_type" text NOT NULL,
+      "source_provider" text NOT NULL,
+      "source_delivery_id" text,
+      "github_installation_id" text,
+      "github_repository_id" text,
+      "repository_owner" text,
+      "repository_name" text,
+      "repository_url" text,
+      "branch" text,
+      "base_branch" text,
+      "pull_request_number" integer,
+      "pull_request_base_ref" text,
+      "pull_request_base_sha" text,
+      "pull_request_head_ref" text,
+      "pull_request_head_sha" text,
+      "status" text DEFAULT 'queued' NOT NULL,
+      "flue_run_id" text,
+      "sandbox_provider" text,
+      "sandbox_id" text,
+      "current_stage" text,
+      "last_heartbeat_at" integer,
       "summary" text,
       "findings_json" text,
       "error_message" text,
@@ -174,6 +219,20 @@ async function createTables(client: TestClient) {
       "completed_at" integer,
       "created_at" integer DEFAULT 0 NOT NULL,
       "updated_at" integer DEFAULT 0 NOT NULL
+    );
+
+    CREATE TABLE "agent_run_event" (
+      "id" text PRIMARY KEY,
+      "run_id" text NOT NULL,
+      "sequence" integer NOT NULL,
+      "category" text NOT NULL,
+      "type" text NOT NULL,
+      "stage" text,
+      "message" text NOT NULL,
+      "payload_json" text,
+      "flue_event_index" integer,
+      "flue_event_type" text,
+      "created_at" integer DEFAULT 0 NOT NULL
     );
   `);
 }
@@ -334,7 +393,7 @@ describe("GitHub webhook admission", () => {
 
       expect(response.status).toBe(401);
       expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
-      expect(await database.select().from(schema.reviewRun)).toHaveLength(0);
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
     } finally {
       client.close();
     }
@@ -363,14 +422,14 @@ describe("GitHub webhook admission", () => {
         reason: "event_not_admitted",
       });
       expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
-      expect(await database.select().from(schema.reviewRun)).toHaveLength(0);
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
     } finally {
       client.close();
     }
   });
 
   for (const action of ADMITTED_PULL_REQUEST_ACTIONS) {
-    test(`queues one review run for pull_request.${action} and treats a redelivery as duplicate`, async () => {
+    test(`queues one agent run for pull_request.${action} and treats a redelivery as duplicate`, async () => {
       const { client, database } = await createTestDatabase();
       try {
         await seedLinkedPullRequestTarget(database);
@@ -394,26 +453,28 @@ describe("GitHub webhook admission", () => {
           event: "pull_request",
           action,
           deliveryId,
-          reviewRunId: acceptedAdmission.reviewRunId,
+          agentRunId: acceptedAdmission.agentRunId,
         });
-        expect(acceptedAdmission.reviewRunId).toBeTruthy();
+        expect(acceptedAdmission.agentRunId).toBeTruthy();
 
-        const firstRuns = await database.select().from(schema.reviewRun);
+        const firstRuns = await database.select().from(schema.agentRun);
         expect(firstRuns).toHaveLength(1);
         expect(firstRuns[0]).toMatchObject({
-          id: acceptedAdmission.reviewRunId,
+          id: acceptedAdmission.agentRunId,
           organizationId: "org-1",
           userId: "user-1",
           providerCredentialId: "credential-1",
-          agentName: "abu-bakr-code-review",
-          repositoryProvider: "github",
+          coworkerSlug: "code-review",
+          workerRole: "code_review",
+          workerDisplayName: "Code Review Worker",
+          runType: "github.pull_request_review",
+          sourceProvider: "github",
+          sourceDeliveryId: deliveryId,
           repositoryOwner: "octo-org",
           repositoryName: "widgets",
           repositoryUrl: "https://github.com/octo-org/widgets",
           branch: "feature/slice-1",
           baseBranch: "main",
-          reviewContext: null,
-          githubDeliveryId: deliveryId,
           githubInstallationId: "installation-record-1",
           githubRepositoryId: "repository-record-1",
           pullRequestNumber: 42,
@@ -422,6 +483,28 @@ describe("GitHub webhook admission", () => {
           pullRequestHeadRef: "feature/slice-1",
           pullRequestHeadSha: "head-sha-456",
           status: "queued",
+          currentStage: "queued",
+        });
+
+        const runEvents = await database
+          .select()
+          .from(schema.agentRunEvent)
+          .where(eq(schema.agentRunEvent.runId, acceptedAdmission.agentRunId ?? ""));
+        expect(runEvents.map((event) => event.type)).toEqual([
+          "github.webhook.accepted",
+          "queue.created",
+        ]);
+        expect(runEvents.find((event) => event.type === "queue.created")).toMatchObject({
+          message: "Queued code review worker run",
+        });
+        expect(
+          JSON.parse(
+            runEvents.find((event) => event.type === "queue.created")?.payloadJson ?? "{}",
+          ),
+        ).toMatchObject({
+          workerRole: "code_review",
+          workerDisplayName: "Code Review Worker",
+          runType: "github.pull_request_review",
         });
 
         const [delivery] = await database
@@ -436,7 +519,7 @@ describe("GitHub webhook admission", () => {
           repositoryFullName: "octo-org/widgets",
           pullRequestNumber: 42,
           status: "accepted",
-          reviewRunId: acceptedAdmission.reviewRunId,
+          agentRunId: acceptedAdmission.agentRunId,
         });
 
         const duplicateResponse = await postGitHubWebhook({
@@ -454,10 +537,10 @@ describe("GitHub webhook admission", () => {
           event: "pull_request",
           action,
           deliveryId,
-          reviewRunId: acceptedAdmission.reviewRunId,
+          agentRunId: acceptedAdmission.agentRunId,
           reason: "duplicate_delivery",
         });
-        expect(await database.select().from(schema.reviewRun)).toHaveLength(1);
+        expect(await database.select().from(schema.agentRun)).toHaveLength(1);
         expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(1);
       } finally {
         client.close();
@@ -465,7 +548,7 @@ describe("GitHub webhook admission", () => {
     });
   }
 
-  test("ignores a suspended linked installation without creating a review run", async () => {
+  test("ignores a suspended linked installation without creating an agent run", async () => {
     const { client, database } = await createTestDatabase();
     try {
       await seedLinkedPullRequestTarget(database);
@@ -493,7 +576,7 @@ describe("GitHub webhook admission", () => {
         deliveryId,
         reason: "installation_not_connected",
       });
-      expect(await database.select().from(schema.reviewRun)).toHaveLength(0);
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
 
       const [delivery] = await database
         .select()
@@ -502,6 +585,7 @@ describe("GitHub webhook admission", () => {
       expect(delivery).toMatchObject({
         id: deliveryId,
         status: "ignored:installation_not_connected",
+        agentRunId: null,
         reviewRunId: null,
       });
     } finally {
@@ -533,7 +617,7 @@ describe("GitHub webhook admission", () => {
       await expect(admitGitHubWebhookDelivery(webhookDelivery, database)).rejects.toThrow(
         "incomplete",
       );
-      expect(await database.select().from(schema.reviewRun)).toHaveLength(0);
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
 
       const [delivery] = await database
         .select()
@@ -542,6 +626,7 @@ describe("GitHub webhook admission", () => {
       expect(delivery).toMatchObject({
         id: deliveryId,
         status: "claimed",
+        agentRunId: null,
         reviewRunId: null,
       });
     } finally {

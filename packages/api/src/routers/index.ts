@@ -6,12 +6,17 @@ import {
   type OAuthDeviceCodeInfo,
 } from "@earendil-works/pi-ai/oauth";
 import { db } from "@hosted-agents/db";
+import {
+  CODE_REVIEW_WORKER_DISPLAY_NAME,
+  agentRun,
+  agentRunEvent,
+} from "@hosted-agents/db/schema/agent-runs";
 import { member } from "@hosted-agents/db/schema/auth";
 import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
 import { agentProviderCredential } from "@hosted-agents/db/schema/provider-credentials";
 import { reviewRun } from "@hosted-agents/db/schema/reviews";
 import { env } from "@hosted-agents/env/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import {
@@ -55,6 +60,13 @@ const listReviewRunsInput = z
     organizationId: z.string().optional(),
   })
   .optional();
+
+const listAgentRunsInput = listReviewRunsInput;
+
+const agentRunEventsInput = z.object({
+  runId: z.string().min(1),
+  organizationId: z.string().optional(),
+});
 
 const organizationScopedInput = z
   .object({
@@ -100,6 +112,18 @@ function parseFindings(value: string | null) {
   }
 }
 
+function parsePayload(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
 function mapReviewRun(row: typeof reviewRun.$inferSelect) {
   return {
     id: row.id,
@@ -116,6 +140,50 @@ function mapReviewRun(row: typeof reviewRun.$inferSelect) {
     reviewContext: row.reviewContext,
     status: row.status,
     flueRunId: row.flueRunId,
+    sandboxProvider: row.sandboxProvider,
+    sandboxId: row.sandboxId,
+    sandboxStartedAt: toIsoString(row.sandboxStartedAt),
+    sandboxCompletedAt: toIsoString(row.sandboxCompletedAt),
+    summary: row.summary,
+    findings: parseFindings(row.findingsJson),
+    artifacts: parseFindings(row.artifactsJson),
+    executionLogs: row.executionLogs,
+    errorMessage: row.errorMessage,
+    startedAt: toIsoString(row.startedAt),
+    completedAt: toIsoString(row.completedAt),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function mapAgentRun(row: typeof agentRun.$inferSelect) {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    userId: row.userId,
+    providerCredentialId: row.providerCredentialId,
+    coworkerSlug: row.coworkerSlug,
+    workerRole: row.workerRole,
+    workerDisplayName: row.workerDisplayName ?? CODE_REVIEW_WORKER_DISPLAY_NAME,
+    runType: row.runType,
+    sourceProvider: row.sourceProvider,
+    sourceDeliveryId: row.sourceDeliveryId,
+    repositoryOwner: row.repositoryOwner,
+    repositoryName: row.repositoryName,
+    repositoryUrl: row.repositoryUrl,
+    branch: row.branch,
+    baseBranch: row.baseBranch,
+    pullRequestNumber: row.pullRequestNumber,
+    pullRequestBaseRef: row.pullRequestBaseRef,
+    pullRequestBaseSha: row.pullRequestBaseSha,
+    pullRequestHeadRef: row.pullRequestHeadRef,
+    pullRequestHeadSha: row.pullRequestHeadSha,
+    status: row.status,
+    flueRunId: row.flueRunId,
+    sandboxProvider: row.sandboxProvider,
+    sandboxId: row.sandboxId,
+    currentStage: row.currentStage,
+    lastHeartbeatAt: toIsoString(row.lastHeartbeatAt),
     summary: row.summary,
     findings: parseFindings(row.findingsJson),
     errorMessage: row.errorMessage,
@@ -123,6 +191,22 @@ function mapReviewRun(row: typeof reviewRun.$inferSelect) {
     completedAt: toIsoString(row.completedAt),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function mapAgentRunEvent(row: typeof agentRunEvent.$inferSelect) {
+  return {
+    id: row.id,
+    runId: row.runId,
+    sequence: row.sequence,
+    category: row.category,
+    type: row.type,
+    stage: row.stage,
+    message: row.message,
+    payload: parsePayload(row.payloadJson),
+    flueEventIndex: row.flueEventIndex,
+    flueEventType: row.flueEventType,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -383,6 +467,67 @@ export const appRouter = {
 
     return rows.map(mapReviewRun);
   }),
+  agentRuns: protectedProcedure.input(listAgentRunsInput).handler(async ({ input, context }) => {
+    const userId = context.session.user.id;
+    const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+      ?.activeOrganizationId;
+    const requestedOrganizationId = input?.organizationId ?? activeOrganizationId ?? undefined;
+    const organizationIds = await getUserOrganizationIds(userId);
+
+    if (organizationIds.length === 0) {
+      return [];
+    }
+
+    if (requestedOrganizationId && !organizationIds.includes(requestedOrganizationId)) {
+      throw new ORPCError("FORBIDDEN");
+    }
+
+    const rows = await db
+      .select()
+      .from(agentRun)
+      .where(
+        requestedOrganizationId
+          ? and(
+              eq(agentRun.organizationId, requestedOrganizationId),
+              inArray(agentRun.organizationId, organizationIds),
+            )
+          : inArray(agentRun.organizationId, organizationIds),
+      )
+      .orderBy(desc(agentRun.createdAt));
+
+    return rows.map(mapAgentRun);
+  }),
+  agentRunEvents: protectedProcedure
+    .input(agentRunEventsInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const organizationIds = await getUserOrganizationIds(userId);
+
+      if (organizationIds.length === 0) {
+        throw new ORPCError("FORBIDDEN");
+      }
+
+      const [run] = await db.select().from(agentRun).where(eq(agentRun.id, input.runId)).limit(1);
+
+      if (!run) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      if (
+        !organizationIds.includes(run.organizationId) ||
+        (input.organizationId && input.organizationId !== run.organizationId)
+      ) {
+        throw new ORPCError("FORBIDDEN");
+      }
+
+      const rows = await db
+        .select()
+        .from(agentRunEvent)
+        .where(eq(agentRunEvent.runId, input.runId))
+        .orderBy(asc(agentRunEvent.sequence));
+
+      return rows.map(mapAgentRunEvent);
+    }),
   providerCredentials: protectedProcedure
     .input(organizationScopedInput)
     .handler(async ({ input, context }) => {

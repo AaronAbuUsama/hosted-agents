@@ -46,9 +46,10 @@ This repository originally used `db:push` without committed migration files. `bu
 
 1. If the Drizzle migration table exists, it applies unapplied Drizzle migrations normally.
 2. If no migration history exists and the database already has application tables, it safely adopts the generated baseline without dropping existing tables.
-3. During adoption it ensures the Slice 1 webhook schema exists:
+3. During the migration command it ensures the Slice 1 webhook and sandbox execution schema exists:
    - `github_webhook_delivery`
    - GitHub delivery, installation, repository, and pull request metadata columns on `review_run`
+   - sandbox provider/id, timing, artifacts, and execution log columns on `review_run`
    - indexes used by webhook admission and review-run lookups
 4. It records the baseline migration in `__drizzle_migrations`, so later schema changes use normal Drizzle migrations.
 
@@ -61,6 +62,7 @@ The checked-in baseline migration was generated from the current Drizzle schema 
 - existing Better Auth, organization, credential, GitHub installation, repository, and review tables
 - `github_webhook_delivery`
 - GitHub PR metadata columns and indexes on `review_run`
+- sandbox execution metadata columns and `review_run_sandboxId_idx`
 
 Validation commands used for this slice:
 

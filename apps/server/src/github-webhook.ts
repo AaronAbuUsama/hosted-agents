@@ -1,15 +1,17 @@
 import { db } from "@hosted-agents/db";
+import { agentRun, agentRunEvent } from "@hosted-agents/db/schema/agent-runs";
 import {
   githubInstallation,
   githubRepository,
   githubWebhookDelivery,
 } from "@hosted-agents/db/schema/github";
 import { agentProviderCredential } from "@hosted-agents/db/schema/provider-credentials";
-import { reviewRun } from "@hosted-agents/db/schema/reviews";
 import { env } from "@hosted-agents/env/server";
 import { createGitHubChannel, type GitHubChannel, type GitHubWebhookDelivery } from "@flue/github";
 import { and, desc, eq } from "drizzle-orm";
 import type { BlankEnv } from "hono/types";
+
+import { planGitHubPullRequestRun } from "./github-run-planner";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const ADMITTED_PULL_REQUEST_ACTIONS: Record<string, true> = {
@@ -52,6 +54,7 @@ export type GitHubWebhookAdmission = {
   event: string;
   action?: string;
   deliveryId: string;
+  agentRunId?: string;
   reviewRunId?: string;
   reason?: string;
 };
@@ -127,6 +130,7 @@ async function markDeliveryIgnored(
 async function getDuplicateAdmission(database: AdmissionDatabase, delivery: GitHubWebhookDelivery) {
   const [claimed] = await database
     .select({
+      agentRunId: githubWebhookDelivery.agentRunId,
       reviewRunId: githubWebhookDelivery.reviewRunId,
       status: githubWebhookDelivery.status,
     })
@@ -134,7 +138,7 @@ async function getDuplicateAdmission(database: AdmissionDatabase, delivery: GitH
     .where(eq(githubWebhookDelivery.id, delivery.deliveryId))
     .limit(1);
 
-  if (!claimed || (claimed.status === "claimed" && !claimed.reviewRunId)) {
+  if (!claimed || (claimed.status === "claimed" && !claimed.agentRunId && !claimed.reviewRunId)) {
     throw new Error("GitHub delivery claim is incomplete; retry delivery.");
   }
   return {
@@ -144,6 +148,7 @@ async function getDuplicateAdmission(database: AdmissionDatabase, delivery: GitH
     event: delivery.name,
     action: deliveryAction(delivery),
     deliveryId: delivery.deliveryId,
+    agentRunId: claimed?.agentRunId ?? undefined,
     reviewRunId: claimed?.reviewRunId ?? undefined,
     reason: "duplicate_delivery",
   } satisfies GitHubWebhookAdmission;
@@ -349,22 +354,25 @@ export async function admitGitHubWebhookDelivery(
       transaction,
       installation.organizationId,
     );
-    const reviewRunId = crypto.randomUUID();
+    const agentRunId = crypto.randomUUID();
+    const runPlan = planGitHubPullRequestRun();
 
-    await transaction.insert(reviewRun).values({
-      id: reviewRunId,
+    await transaction.insert(agentRun).values({
+      id: agentRunId,
       organizationId: installation.organizationId,
       userId: installation.installedByUserId,
       providerCredentialId: providerCredential?.id ?? null,
-      agentName: "abu-bakr-code-review",
-      repositoryProvider: "github",
+      coworkerSlug: runPlan.legacyCoworkerSlug,
+      workerRole: runPlan.workerRole,
+      workerDisplayName: runPlan.workerDisplayName,
+      runType: runPlan.runType,
+      sourceProvider: "github",
+      sourceDeliveryId: metadata.deliveryId,
       repositoryOwner: metadata.repositoryOwner,
       repositoryName: metadata.repositoryName,
       repositoryUrl: metadata.repositoryUrl,
       branch: metadata.headRef,
       baseBranch: metadata.baseRef,
-      reviewContext: null,
-      githubDeliveryId: metadata.deliveryId,
       githubInstallationId: installation.id,
       githubRepositoryId: repository.id,
       pullRequestNumber: metadata.pullRequestNumber,
@@ -373,13 +381,45 @@ export async function admitGitHubWebhookDelivery(
       pullRequestHeadRef: metadata.headRef,
       pullRequestHeadSha: metadata.headSha,
       status: "queued",
+      currentStage: "queued",
+      lastHeartbeatAt: new Date(),
+    });
+
+    await transaction.insert(agentRunEvent).values({
+      id: crypto.randomUUID(),
+      runId: agentRunId,
+      sequence: 1,
+      category: "github",
+      type: "github.webhook.accepted",
+      stage: "webhook_admitted",
+      message: `Accepted pull_request.${metadata.action} from GitHub`,
+      payloadJson: JSON.stringify({
+        deliveryId: metadata.deliveryId,
+        action: metadata.action,
+        repositoryFullName: metadata.repositoryFullName,
+        pullRequestNumber: metadata.pullRequestNumber,
+      }),
+    });
+    await transaction.insert(agentRunEvent).values({
+      id: crypto.randomUUID(),
+      runId: agentRunId,
+      sequence: 2,
+      category: "queue",
+      type: "queue.created",
+      stage: "queued",
+      message: "Queued code review worker run",
+      payloadJson: JSON.stringify({
+        workerRole: runPlan.workerRole,
+        workerDisplayName: runPlan.workerDisplayName,
+        runType: runPlan.runType,
+      }),
     });
 
     await transaction
       .update(githubWebhookDelivery)
       .set({
         status: "accepted",
-        reviewRunId,
+        agentRunId,
         updatedAt: new Date(),
       })
       .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
@@ -391,7 +431,7 @@ export async function admitGitHubWebhookDelivery(
       event: delivery.name,
       action,
       deliveryId: delivery.deliveryId,
-      reviewRunId,
+      agentRunId,
     };
   });
 }

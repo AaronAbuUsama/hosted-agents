@@ -80,6 +80,7 @@ export const githubWebhookDelivery = sqliteTable(
     repositoryFullName: text("repository_full_name"),
     pullRequestNumber: integer("pull_request_number"),
     status: text("status").default("claimed").notNull(),
+    agentRunId: text("agent_run_id"),
     reviewRunId: text("review_run_id"),
     receivedAt: integer("received_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
@@ -93,6 +94,7 @@ export const githubWebhookDelivery = sqliteTable(
     index("github_webhook_delivery_event_idx").on(table.event),
     index("github_webhook_delivery_installationId_idx").on(table.installationId),
     index("github_webhook_delivery_status_idx").on(table.status),
+    index("github_webhook_delivery_agentRunId_idx").on(table.agentRunId),
     index("github_webhook_delivery_reviewRunId_idx").on(table.reviewRunId),
   ],
 );
