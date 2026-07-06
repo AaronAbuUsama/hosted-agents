@@ -14,7 +14,8 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "bun src/migrate.ts",
+    "db:migrate:drizzle": "drizzle-kit migrate"
   },
   "dependencies": {
     "@hosted-agents/env": "workspace:*",

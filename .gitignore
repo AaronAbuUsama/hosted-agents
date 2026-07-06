@@ -52,3 +52,6 @@ coverage
 .cache
 tmp
 temp
+# Added by Braintrust Wizard
+.env.braintrust
+.braintrust.json
