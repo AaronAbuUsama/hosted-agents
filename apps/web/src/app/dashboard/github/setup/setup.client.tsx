@@ -143,7 +143,7 @@ export default function GitHubSetupClient({
             </div>
           ) : null}
 
-          <Button render={<Link href="/dashboard" />}>Back to Dashboard</Button>
+          <Button render={<Link href="/app" />}>Back to workspace</Button>
         </CardContent>
       </Card>
     </div>
