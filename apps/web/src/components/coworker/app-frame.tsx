@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Divider } from "@astryxdesign/core/Divider";
@@ -9,7 +16,13 @@ import { Icon } from "@astryxdesign/core/Icon";
 import type { IconType } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
-import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
+import {
+  SideNav,
+  SideNavCollapseButton,
+  SideNavItem,
+  SideNavSection,
+  type SideNavImperativeCollapseHandle,
+} from "@astryxdesign/core/SideNav";
 import { HStack, Stack, VStack } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import type { StatusDotVariant } from "@astryxdesign/core/StatusDot";
@@ -77,7 +90,6 @@ const topSearchStyle: CSSProperties = {
 
 const workspaceNavItems: WorkspaceNavItem[] = [
   { href: "/app", label: "Overview", icon: ChartBarSquareIcon, match: "exact" },
-  { href: "/app/projects", label: "Projects", icon: FolderIcon, count: projects.length },
   { href: "/app/runs", label: "Runs", icon: PlayCircleIcon, count: runs.length },
   { href: "/app/coworkers", label: "Coworkers", icon: UserGroupIcon, count: coworkers.length },
 ];
@@ -123,6 +135,8 @@ export default function AppFrame({ children }: AppFrameProps): ReactElement {
   const pathname = usePathname();
   const isSettingsRoute = pathname === "/app/settings";
   const runningRuns = runs.filter((run) => run.status === "Running").length;
+  const sideNavHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
+  const [isSideNavCollapsed, setIsSideNavCollapsed] = useState(false);
   const [selectedSettingsSection, setSelectedSettingsSection] =
     useState<string>(defaultSettingsSection);
 
@@ -144,6 +158,7 @@ export default function AppFrame({ children }: AppFrameProps): ReactElement {
               <Text type="supporting" color="secondary">
                 Capxul Alpha
               </Text>
+              {!isSideNavCollapsed ? <SideNavCollapseButton handleRef={sideNavHandleRef} /> : null}
             </HStack>
           }
           endContent={
@@ -197,7 +212,12 @@ export default function AppFrame({ children }: AppFrameProps): ReactElement {
       }
       sideNav={
         <SideNav
-          collapsible
+          handleRef={sideNavHandleRef}
+          collapsible={{
+            isCollapsed: isSideNavCollapsed,
+            onCollapsedChange: setIsSideNavCollapsed,
+            hasButton: isSideNavCollapsed,
+          }}
           resizable={{ defaultWidth: 280, minWidth: 220, maxWidth: 380 }}
           footer={
             <SideNavSection title="Status" isHeaderHidden>
@@ -259,34 +279,40 @@ export default function AppFrame({ children }: AppFrameProps): ReactElement {
               </SideNavSection>
               <Divider />
               <SideNavSection title="Projects">
-                {projects.map((project) => (
-                  <SideNavItem
-                    key={project.id}
-                    label={project.name}
-                    href={`/app/projects/${project.id}`}
-                    icon={FolderIcon}
-                    isSelected={pathname === `/app/projects/${project.id}`}
-                    endContent={
-                      <StatusDot
-                        variant={projectStatusVariant[project.status] ?? "neutral"}
-                        label={project.status}
-                      />
-                    }
-                    collapsible={{ defaultIsCollapsed: pathname !== `/app/projects/${project.id}` }}
-                  >
-                    <VStack gap={0.5}>
-                      <SideNavItem
-                        label={`${project.openPullRequests} pull requests`}
-                        href={`/app/projects/${project.id}`}
-                      />
-                      <SideNavItem
-                        label={`${project.syncedIssues || projectIssues.filter((issue) => issue.projectId === project.id).length} issues`}
-                        href={`/app/projects/${project.id}`}
-                      />
-                      <SideNavItem label={`${project.activeRuns} active runs`} href="/app/runs" />
-                    </VStack>
-                  </SideNavItem>
-                ))}
+                {projects.map((project) => {
+                  const projectHref = `/app/projects/${project.id}`;
+                  const isProjectSelected =
+                    pathname === projectHref || pathname.startsWith(`${projectHref}/`);
+
+                  return (
+                    <SideNavItem
+                      key={project.id}
+                      label={project.name}
+                      href={projectHref}
+                      icon={FolderIcon}
+                      isSelected={isProjectSelected}
+                      endContent={
+                        <StatusDot
+                          variant={projectStatusVariant[project.status] ?? "neutral"}
+                          label={project.status}
+                        />
+                      }
+                      collapsible={{ defaultIsCollapsed: !isProjectSelected }}
+                    >
+                      <VStack gap={0.5}>
+                        <SideNavItem
+                          label={`${project.openPullRequests} pull requests`}
+                          href={projectHref}
+                        />
+                        <SideNavItem
+                          label={`${project.syncedIssues || projectIssues.filter((issue) => issue.projectId === project.id).length} issues`}
+                          href={projectHref}
+                        />
+                        <SideNavItem label={`${project.activeRuns} active runs`} href="/app/runs" />
+                      </VStack>
+                    </SideNavItem>
+                  );
+                })}
               </SideNavSection>
               <SideNavSection title="Coworkers">
                 {coworkers.map((coworker) => (

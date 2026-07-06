@@ -16,13 +16,10 @@ import {
   Layout,
   LayoutContent,
   LayoutHeader,
-  LayoutPanel,
   Stack,
   StackItem,
   VStack,
 } from "@astryxdesign/core/Layout";
-import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
-import { ResizeHandle, useResizable, type ResizableProps } from "@astryxdesign/core/Resizable";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import {
   Table,
@@ -36,26 +33,20 @@ import type { TableColumn } from "@astryxdesign/core/Table";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
+import { Token } from "@astryxdesign/core/Token";
 import {
   ArrowTopRightOnSquareIcon,
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  CodeBracketIcon,
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
 
-import type {
-  Project,
-  ProjectIssue,
-  ProjectIssueStatus,
-  PullRequestReview,
-  Run,
-} from "@/lib/coworker-data";
+import type { ProjectIssue, ProjectIssueStatus, PullRequestReview, Run } from "@/lib/coworker-data";
 
 type ProjectWorkspaceProps = {
-  project: Project;
   issues: ProjectIssue[];
   reviews: PullRequestReview[];
   runs: Run[];
@@ -74,25 +65,20 @@ type WorkItem = {
   status: WorkItemStatus;
   owner: string;
   source: string;
+  description: string;
   labels: string[];
   comments: number;
   updated: string;
   githubUrl: string;
   lastComment: string;
+  detailHref: Route;
   runId?: string;
 };
 
 type WorkItemsProps = {
   workItems: WorkItem[];
-  selectedItemId?: string;
-  onSelectItem: (item: WorkItem) => void;
+  onOpenItem: (item: WorkItem) => void;
   isCompact?: boolean;
-};
-
-type WorkItemDetailPanelProps = {
-  item: WorkItem;
-  onClose: () => void;
-  resizable: ResizableProps;
 };
 
 const statusOrder: WorkItemStatus[] = ["Ready", "In progress", "In review", "Done", "Backlog"];
@@ -126,12 +112,13 @@ const reviewStatusToBoardStatus: Record<PullRequestReview["status"], WorkItemSta
 
 const columns: TableColumn<WorkItem>[] = [
   { key: "status", header: "", width: pixel(44) },
-  { key: "item", header: "Issue", width: proportional(1) },
-  { key: "owner", header: "Coworker", width: pixel(140) },
-  { key: "comments", header: "Comments", width: pixel(116) },
-  { key: "updated", header: "Updated", width: pixel(110) },
+  { key: "item", header: "Issue", width: proportional(1.6) },
+  { key: "labels", header: "Labels", width: proportional(0.7) },
+  { key: "owner", header: "Owner", width: pixel(132) },
+  { key: "activity", header: "Activity", width: pixel(92) },
+  { key: "updated", header: "Updated", width: pixel(104) },
   { key: "run", header: "Run", width: pixel(112) },
-  { key: "actions", header: "", width: pixel(56) },
+  { key: "actions", header: "", width: pixel(48) },
 ];
 
 const resolvedColumnWidths = resolveColumnWidths(columns);
@@ -178,6 +165,43 @@ const boardCardStyle: CSSProperties = {
   borderRadius: "var(--radius-element)",
 };
 
+const interactiveRowStyle: CSSProperties = {
+  cursor: "pointer",
+};
+
+function labelText(label: string): string {
+  return label.replace(/^coworker:/, "");
+}
+
+function summarizeMarkdown(markdown: string): string {
+  const lines = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return (
+    lines.find(
+      (line) =>
+        !line.startsWith("#") &&
+        !line.startsWith("-") &&
+        !line.startsWith("|") &&
+        !line.startsWith(">") &&
+        !line.startsWith("```"),
+    ) ?? markdown
+  );
+}
+
+function findReviewIssue(
+  review: PullRequestReview,
+  issues: ProjectIssue[],
+): ProjectIssue | undefined {
+  return (
+    issues.find((issue) => issue.number === review.number) ??
+    issues.find((issue) => review.branch.includes(`issue-${issue.number}`)) ??
+    issues.find((issue) => review.title.toLowerCase() === issue.title.toLowerCase())
+  );
+}
+
 function getWorkItems(
   issues: ProjectIssue[],
   reviews: PullRequestReview[],
@@ -192,17 +216,20 @@ function getWorkItems(
       status: issue.status,
       owner: issue.assignee,
       source: "GitHub issue",
+      description: summarizeMarkdown(issue.body),
       labels: issue.labels,
       comments: issue.comments,
       updated: issue.updated,
       githubUrl: issue.githubUrl,
       lastComment: issue.lastComment,
+      detailHref: `/app/projects/${issue.projectId}/issues/${issue.id}` as Route,
       runId: issue.linkedRunId,
     }),
   );
 
   const reviewItems = reviews.map((review): WorkItem => {
     const run = runs.find((candidate) => candidate.branch === review.branch);
+    const issue = findReviewIssue(review, issues);
 
     return {
       id: review.id,
@@ -212,11 +239,13 @@ function getWorkItems(
       status: reviewStatusToBoardStatus[review.status],
       owner: "Abu Bakr",
       source: review.branch,
+      description: run?.result ?? "Pull request review is attached to a coworker run.",
       labels: [review.status],
       comments: review.status === "Approved" ? 3 : 8,
       updated: run?.started ?? "Earlier today",
       githubUrl: `https://github.com/coworker/web/pull/${review.number}`,
       lastComment: run?.result ?? "Pull request review is attached to a coworker run.",
+      detailHref: `/app/projects/${review.projectId}/issues/${issue?.id ?? review.id}` as Route,
       runId: run?.id,
     };
   });
@@ -257,25 +286,23 @@ function groupWorkItems(workItems: WorkItem[]): Record<WorkItemStatus, WorkItem[
 }
 
 export default function ProjectWorkspace({
-  project,
   issues,
   reviews,
   runs,
   hasIssueSync,
 }: ProjectWorkspaceProps): ReactElement {
-  const [view, setView] = useState<ProjectWorkspaceView>(hasIssueSync ? "board" : "table");
+  const router = useRouter();
+  const [view, setView] = useState<ProjectWorkspaceView>("table");
   const [query, setQuery] = useState("");
   const workItems = useMemo(() => getWorkItems(issues, reviews, runs), [issues, reviews, runs]);
   const filteredItems = useMemo(() => filterWorkItems(workItems, query), [workItems, query]);
-  const [selectedItem, setSelectedItem] = useState<WorkItem | null>(() => workItems[0] ?? null);
   const isCompactWorkspace = useMediaQuery("(max-width: 1360px)");
-  const detailPanel = useResizable({
-    defaultSize: 340,
-    minSizePx: 300,
-    maxSizePx: 460,
-  });
   const activeCount = workItems.filter((item) => item.status !== "Done").length;
   const commentCount = workItems.reduce((total, item) => total + item.comments, 0);
+
+  function openItem(item: WorkItem): void {
+    router.push(item.detailHref);
+  }
 
   return (
     <Layout
@@ -288,8 +315,8 @@ export default function ProjectWorkspace({
                 <VStack gap={1}>
                   <Heading level={2}>GitHub issues and pull requests</Heading>
                   <Text type="supporting" color="secondary" as="p">
-                    {project.repo} work that can start a coworker run, collect GitHub comments, or
-                    wait for human review.
+                    Work that can start a coworker run, collect GitHub comments, or wait for human
+                    review.
                   </Text>
                 </VStack>
               </StackItem>
@@ -330,30 +357,13 @@ export default function ProjectWorkspace({
           {view === "table" ? (
             <ProjectWorkTable
               workItems={filteredItems}
-              selectedItemId={selectedItem?.id}
-              onSelectItem={setSelectedItem}
+              onOpenItem={openItem}
               isCompact={isCompactWorkspace}
             />
           ) : (
-            <ProjectWorkBoard
-              workItems={filteredItems}
-              selectedItemId={selectedItem?.id}
-              onSelectItem={setSelectedItem}
-            />
+            <ProjectWorkBoard workItems={filteredItems} onOpenItem={openItem} />
           )}
         </LayoutContent>
-      }
-      end={
-        selectedItem && !isCompactWorkspace ? (
-          <>
-            <ResizeHandle resizable={detailPanel.props} isReversed isAlwaysVisible={false} />
-            <WorkItemDetailPanel
-              item={selectedItem}
-              onClose={() => setSelectedItem(null)}
-              resizable={detailPanel.props}
-            />
-          </>
-        ) : undefined
       }
     />
   );
@@ -361,8 +371,7 @@ export default function ProjectWorkspace({
 
 function ProjectWorkTable({
   workItems,
-  selectedItemId,
-  onSelectItem,
+  onOpenItem,
   isCompact = false,
 }: WorkItemsProps): ReactElement {
   const [expandedGroups, setExpandedGroups] = useState<Set<WorkItemStatus>>(
@@ -439,17 +448,9 @@ function ProjectWorkTable({
                   ? itemsForStatus.map((item) => (
                       <Fragment key={item.id}>
                         {isCompact ? (
-                          <ProjectWorkCompactTableRow
-                            item={item}
-                            isSelected={item.id === selectedItemId}
-                            onSelectItem={onSelectItem}
-                          />
+                          <ProjectWorkCompactTableRow item={item} onOpenItem={onOpenItem} />
                         ) : (
-                          <ProjectWorkTableRow
-                            item={item}
-                            isSelected={item.id === selectedItemId}
-                            onSelectItem={onSelectItem}
-                          />
+                          <ProjectWorkTableRow item={item} onOpenItem={onOpenItem} />
                         )}
                       </Fragment>
                     ))
@@ -465,15 +466,23 @@ function ProjectWorkTable({
 
 function ProjectWorkCompactTableRow({
   item,
-  isSelected,
-  onSelectItem,
+  onOpenItem,
 }: {
   item: WorkItem;
-  isSelected: boolean;
-  onSelectItem: (item: WorkItem) => void;
+  onOpenItem: (item: WorkItem) => void;
 }): ReactElement {
   return (
-    <TableRow aria-selected={isSelected} onClick={() => onSelectItem(item)}>
+    <TableRow
+      role="link"
+      tabIndex={0}
+      style={interactiveRowStyle}
+      onClick={() => onOpenItem(item)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          onOpenItem(item);
+        }
+      }}
+    >
       <TableCell>
         <Center axis="horizontal">
           <StatusDot variant={statusDotVariants[item.status]} label={item.status} />
@@ -482,14 +491,19 @@ function ProjectWorkCompactTableRow({
       <TableCell>
         <VStack gap={1}>
           <HStack gap={2} vAlign="center" wrap="wrap">
-            <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
             <Text type="supporting" color="secondary" hasTabularNumbers>
               #{item.number}
             </Text>
-            <Text type="body" maxLines={1}>
+            <Text type="body" weight="semibold" maxLines={1}>
               {item.title}
             </Text>
+            {item.kind === "Pull request" ? (
+              <Badge variant={kindBadgeVariants[item.kind]} label="PR" />
+            ) : null}
           </HStack>
+          <Text type="supporting" color="secondary" maxLines={1}>
+            {item.description}
+          </Text>
           <HStack gap={3} vAlign="center" wrap="wrap">
             <HStack gap={1} vAlign="center">
               <Avatar name={item.owner} size="xsmall" />
@@ -505,7 +519,11 @@ function ProjectWorkCompactTableRow({
             </HStack>
             <Text type="supporting">{item.updated}</Text>
             {item.runId ? (
-              <Link href={`/app/runs/${item.runId}`} isStandalone>
+              <Link
+                href={`/app/runs/${item.runId}`}
+                isStandalone
+                onClick={(event) => event.stopPropagation()}
+              >
                 Open run
               </Link>
             ) : null}
@@ -513,7 +531,7 @@ function ProjectWorkCompactTableRow({
           {item.labels.length > 0 ? (
             <HStack gap={1} wrap="wrap">
               {item.labels.map((label) => (
-                <Badge key={label} variant="neutral" label={label} />
+                <Token key={label} label={labelText(label)} />
               ))}
             </HStack>
           ) : null}
@@ -526,7 +544,10 @@ function ProjectWorkCompactTableRow({
           size="sm"
           isIconOnly
           icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
-          onClick={() => window.open(item.githubUrl, "_blank", "noopener,noreferrer")}
+          onClick={(event) => {
+            event.stopPropagation();
+            window.open(item.githubUrl, "_blank", "noopener,noreferrer");
+          }}
         />
       </TableCell>
     </TableRow>
@@ -535,15 +556,23 @@ function ProjectWorkCompactTableRow({
 
 function ProjectWorkTableRow({
   item,
-  isSelected,
-  onSelectItem,
+  onOpenItem,
 }: {
   item: WorkItem;
-  isSelected: boolean;
-  onSelectItem: (item: WorkItem) => void;
+  onOpenItem: (item: WorkItem) => void;
 }): ReactElement {
   return (
-    <TableRow aria-selected={isSelected} onClick={() => onSelectItem(item)}>
+    <TableRow
+      role="link"
+      tabIndex={0}
+      style={interactiveRowStyle}
+      onClick={() => onOpenItem(item)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          onOpenItem(item);
+        }
+      }}
+    >
       <TableCell>
         <Center axis="horizontal">
           <StatusDot variant={statusDotVariants[item.status]} label={item.status} />
@@ -552,20 +581,27 @@ function ProjectWorkTableRow({
       <TableCell>
         <VStack gap={1}>
           <HStack gap={2} vAlign="center">
-            <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
             <Text type="supporting" color="secondary" hasTabularNumbers>
               #{item.number}
             </Text>
-            <Text type="body" maxLines={1}>
+            <Text type="body" weight="semibold" maxLines={1}>
               {item.title}
             </Text>
+            {item.kind === "Pull request" ? (
+              <Badge variant={kindBadgeVariants[item.kind]} label="PR" />
+            ) : null}
           </HStack>
-          <HStack gap={1} wrap="wrap">
-            {item.labels.map((label) => (
-              <Badge key={label} variant="neutral" label={label} />
-            ))}
-          </HStack>
+          <Text type="supporting" color="secondary" maxLines={1}>
+            {item.description}
+          </Text>
         </VStack>
+      </TableCell>
+      <TableCell>
+        <HStack gap={1} wrap="wrap">
+          {item.labels.map((label) => (
+            <Token key={label} label={labelText(label)} />
+          ))}
+        </HStack>
       </TableCell>
       <TableCell>
         <HStack gap={2} vAlign="center">
@@ -588,7 +624,11 @@ function ProjectWorkTableRow({
       </TableCell>
       <TableCell>
         {item.runId ? (
-          <Link href={`/app/runs/${item.runId}`} isStandalone>
+          <Link
+            href={`/app/runs/${item.runId}`}
+            isStandalone
+            onClick={(event) => event.stopPropagation()}
+          >
             Open run
           </Link>
         ) : (
@@ -604,18 +644,17 @@ function ProjectWorkTableRow({
           size="sm"
           isIconOnly
           icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
-          onClick={() => window.open(item.githubUrl, "_blank", "noopener,noreferrer")}
+          onClick={(event) => {
+            event.stopPropagation();
+            window.open(item.githubUrl, "_blank", "noopener,noreferrer");
+          }}
         />
       </TableCell>
     </TableRow>
   );
 }
 
-function ProjectWorkBoard({
-  workItems,
-  selectedItemId,
-  onSelectItem,
-}: WorkItemsProps): ReactElement {
+function ProjectWorkBoard({ workItems, onOpenItem }: WorkItemsProps): ReactElement {
   const groupedItems = groupWorkItems(workItems);
 
   return (
@@ -639,16 +678,17 @@ function ProjectWorkBoard({
                     key={item.id}
                     padding={4}
                     style={boardCardStyle}
-                    variant={item.id === selectedItemId ? "muted" : undefined}
-                    onClick={() => onSelectItem(item)}
+                    onClick={() => onOpenItem(item)}
                   >
                     <VStack gap={3}>
                       <HStack hAlign="between" vAlign="center">
                         <HStack gap={1} vAlign="center">
-                          <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
                           <Text type="supporting" hasTabularNumbers>
                             #{item.number}
                           </Text>
+                          {item.kind === "Pull request" ? (
+                            <Badge variant={kindBadgeVariants[item.kind]} label="PR" />
+                          ) : null}
                         </HStack>
                         <HStack gap={1} vAlign="center">
                           <Icon icon={ChatBubbleLeftRightIcon} size="sm" color="secondary" />
@@ -688,80 +728,5 @@ function ProjectWorkBoard({
         );
       })}
     </HStack>
-  );
-}
-
-function WorkItemDetailPanel({ item, onClose, resizable }: WorkItemDetailPanelProps): ReactElement {
-  const router = useRouter();
-
-  return (
-    <LayoutPanel
-      hasDivider
-      resizable={resizable}
-      padding={4}
-      role="complementary"
-      label="Issue details"
-    >
-      <VStack gap={4}>
-        <HStack hAlign="between" vAlign="center">
-          <Badge variant={kindBadgeVariants[item.kind]} label={item.kind} />
-          <Button label="Close" variant="ghost" size="sm" onClick={onClose} />
-        </HStack>
-        <VStack gap={1}>
-          <Text type="supporting" color="secondary" hasTabularNumbers>
-            #{item.number}
-          </Text>
-          <Heading level={3}>{item.title}</Heading>
-          <Text type="supporting" color="secondary">
-            {item.source}
-          </Text>
-        </VStack>
-        <MetadataList label={{ position: "start" }}>
-          <MetadataListItem label="Status">
-            <HStack gap={2} vAlign="center">
-              <StatusDot variant={statusDotVariants[item.status]} label={item.status} />
-              <Text>{item.status}</Text>
-            </HStack>
-          </MetadataListItem>
-          <MetadataListItem label="Coworker">{item.owner}</MetadataListItem>
-          <MetadataListItem label="Comments">{item.comments}</MetadataListItem>
-          <MetadataListItem label="Updated">{item.updated}</MetadataListItem>
-        </MetadataList>
-        <Divider />
-        <VStack gap={2}>
-          <Text type="label">Latest comment</Text>
-          <Text type="body" color="secondary" as="p">
-            {item.lastComment}
-          </Text>
-        </VStack>
-        <VStack gap={2}>
-          <Text type="label">Labels</Text>
-          <HStack gap={1} wrap="wrap">
-            {item.labels.map((label) => (
-              <Badge key={label} variant="neutral" label={label} />
-            ))}
-          </HStack>
-        </VStack>
-        <Divider />
-        <HStack gap={2} wrap="wrap">
-          <Button
-            label="Open GitHub"
-            variant="primary"
-            size="md"
-            icon={<Icon icon={ArrowTopRightOnSquareIcon} />}
-            onClick={() => window.open(item.githubUrl, "_blank", "noopener,noreferrer")}
-          />
-          {item.runId ? (
-            <Button
-              label="Open run"
-              variant="secondary"
-              size="md"
-              icon={<Icon icon={CodeBracketIcon} />}
-              onClick={() => router.push(`/app/runs/${item.runId}`)}
-            />
-          ) : null}
-        </HStack>
-      </VStack>
-    </LayoutPanel>
   );
 }

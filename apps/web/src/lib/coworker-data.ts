@@ -62,14 +62,26 @@ export type ProjectIssue = {
   projectId: string;
   number: number;
   title: string;
+  body: string;
   status: ProjectIssueStatus;
   labels: string[];
   assignee: string;
+  openedBy: string;
+  opened: string;
   comments: number;
   updated: string;
   githubUrl: string;
   lastComment: string;
   linkedRunId?: string;
+};
+
+export type ProjectIssueComment = {
+  id: string;
+  issueId: string;
+  author: string;
+  role: "Human" | "Coworker" | "GitHub";
+  time: string;
+  body: string;
 };
 
 export type PullRequestReview = {
@@ -232,9 +244,42 @@ export const projectIssues: ProjectIssue[] = [
     projectId: "coworker-web",
     number: 117,
     title: "Add provider credential storage",
+    body: [
+      "## Goal",
+      "",
+      "Persist provider credentials at the organization boundary so assigned coworkers can start sandboxed implementation runs without copying account secrets into each task.",
+      "",
+      "## Requirements",
+      "",
+      "- Store credentials by organization and provider.",
+      "- Keep per-coworker overrides out of this slice.",
+      "- Return a clear blocked state when no provider account is connected.",
+      "- Do not expose secret values through the dashboard API.",
+      "",
+      "## Proposed shape",
+      "",
+      "```ts",
+      "type ProviderCredential = {",
+      "  organizationId: string;",
+      '  provider: "openai" | "codex";',
+      "  alias: string;",
+      '  status: "active" | "revoked";',
+      "};",
+      "```",
+      "",
+      "## Acceptance criteria",
+      "",
+      "| Check | Expected result |",
+      "| --- | --- |",
+      "| Organization has a credential | Coworker run can enter sandbox setup |",
+      "| Credential is missing | Run is blocked before sandbox creation |",
+      "| User opens settings | Provider account state is visible without leaking secrets |",
+    ].join("\n"),
     status: "In progress",
     labels: ["coworker:in-progress", "backend", "provider"],
     assignee: "Umar",
+    openedBy: "Product",
+    opened: "Jul 3",
     comments: 12,
     updated: "8 min ago",
     githubUrl: "https://github.com/coworker/web/issues/117",
@@ -247,9 +292,30 @@ export const projectIssues: ProjectIssue[] = [
     projectId: "coworker-web",
     number: 130,
     title: "Clarify auth copy on provider setup",
+    body: [
+      "## Problem",
+      "",
+      "The provider setup screen currently makes GitHub access and model/provider access sound like the same thing.",
+      "",
+      "## Copy direction",
+      "",
+      "- GitHub installation grants repository access.",
+      "- Provider account powers sandboxed coworker runs.",
+      "- A reviewer coworker can review PRs without an implementer coworker being enabled.",
+      "",
+      "> The user should know why a provider account is required before a coworker starts editing code.",
+      "",
+      "## Suggested microcopy",
+      "",
+      "```md",
+      "Connect a provider account so coworkers can create sandboxes, run checks, and prepare pull requests for your organization.",
+      "```",
+    ].join("\n"),
     status: "Ready",
     labels: ["coworker:ready", "frontend"],
     assignee: "Unassigned",
+    openedBy: "Product",
+    opened: "Jul 3",
     comments: 4,
     updated: "21 min ago",
     githubUrl: "https://github.com/coworker/web/issues/130",
@@ -261,9 +327,33 @@ export const projectIssues: ProjectIssue[] = [
     projectId: "coworker-web",
     number: 482,
     title: "Review GitHub App installation flow",
+    body: [
+      "## Review scope",
+      "",
+      "Review the GitHub App installation flow and verify the organization/install mapping is clear before named coworkers are enabled across multiple repositories.",
+      "",
+      "## Focus areas",
+      "",
+      "- Signature verification on `/webhooks/github/[coworker]`.",
+      "- Installation-to-organization lookup.",
+      "- Permission copy for reviewer-only projects.",
+      "- Required check behavior while CI is still pending.",
+      "",
+      "## Expected reviewer output",
+      "",
+      "- [ ] Inline comments on blocking issues.",
+      "- [ ] Summary comment on the pull request.",
+      "- [ ] Required check held until CI is green.",
+      "",
+      "```bash",
+      "bunx tsc --noEmit -p apps/web/tsconfig.json",
+      "```",
+    ].join("\n"),
     status: "In review",
     labels: ["coworker:review", "pull-request"],
     assignee: "Abu Bakr",
+    openedBy: "Abu Bakr",
+    opened: "Jul 4",
     comments: 18,
     updated: "4 min ago",
     githubUrl: "https://github.com/coworker/web/issues/482",
@@ -276,13 +366,79 @@ export const projectIssues: ProjectIssue[] = [
     projectId: "coworker-web",
     number: 101,
     title: "Document branch scope defaults",
+    body: [
+      "## Documentation update",
+      "",
+      "Document how branch scopes default for review-only projects and how an organization can narrow a coworker to release branches later.",
+      "",
+      "```yaml",
+      "defaultBranchScope:",
+      "  include:",
+      "    - main",
+      "    - develop",
+      "  exclude: []",
+      "```",
+    ].join("\n"),
     status: "Done",
     labels: ["coworker:done", "docs"],
     assignee: "Human",
+    openedBy: "Operations",
+    opened: "Jul 1",
     comments: 7,
     updated: "Yesterday",
     githubUrl: "https://github.com/coworker/web/issues/101",
     lastComment: "The branch-scope note was merged into the setup runbook.",
+  },
+];
+
+export const projectIssueComments: ProjectIssueComment[] = [
+  {
+    id: "comment-117-product",
+    issueId: "issue-117",
+    author: "Product",
+    role: "Human",
+    time: "32 min ago",
+    body: "Keep the implementation scoped to **organization credentials** first. Per-coworker overrides can be a follow-up if the first migration leaves a clean extension point.",
+  },
+  {
+    id: "comment-117-umar",
+    issueId: "issue-117",
+    author: "Umar",
+    role: "Coworker",
+    time: "8 min ago",
+    body: "I opened a draft PR with the organization-level model. Open question: should the API expose `credential.alias` in this slice, or keep it internal until settings needs it?",
+  },
+  {
+    id: "comment-130-product",
+    issueId: "issue-130",
+    author: "Product",
+    role: "Human",
+    time: "21 min ago",
+    body: "The setup copy should name the provider account explicitly before the user reaches sandbox configuration. We should not call this a GitHub credential.",
+  },
+  {
+    id: "comment-482-abu",
+    issueId: "issue-482",
+    author: "Abu Bakr",
+    role: "Coworker",
+    time: "4 min ago",
+    body: "I am holding the final review until CI completes. Main issue: one missing permission check around `installation.owner`.",
+  },
+  {
+    id: "comment-482-ci",
+    issueId: "issue-482",
+    author: "GitHub",
+    role: "GitHub",
+    time: "2 min ago",
+    body: "The typecheck job passed. Integration tests are still running.",
+  },
+  {
+    id: "comment-101-ops",
+    issueId: "issue-101",
+    author: "Operations",
+    role: "Human",
+    time: "Yesterday",
+    body: "The branch-scope note was merged into the setup runbook.",
   },
 ];
 
