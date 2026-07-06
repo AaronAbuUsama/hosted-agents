@@ -1,433 +1,342 @@
 "use client";
 
-import { useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { useMemo, useState, type ReactElement } from "react";
 
 import { Avatar } from "@astryxdesign/core/Avatar";
-import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
-import {
-  ChatLayout,
-  ChatMessage,
-  ChatMessageBubble,
-  ChatMessageList,
-  ChatMessageMetadata,
-  ChatSystemMessage,
-  ChatToolCalls,
-} from "@astryxdesign/core/Chat";
-import { ClickableCard } from "@astryxdesign/core/ClickableCard";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
-import { HStack, Layout, LayoutContent, StackItem, VStack } from "@astryxdesign/core/Layout";
-import { Markdown } from "@astryxdesign/core/Markdown";
-import { MoreMenu } from "@astryxdesign/core/MoreMenu";
-import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
-import { Section } from "@astryxdesign/core/Section";
-import { Heading, Text } from "@astryxdesign/core/Text";
-import { Timestamp } from "@astryxdesign/core/Timestamp";
-import { Token } from "@astryxdesign/core/Token";
-import { Toolbar } from "@astryxdesign/core/Toolbar";
+import { Link } from "@astryxdesign/core/Link";
+import { List, ListItem } from "@astryxdesign/core/List";
 import {
-  ChevronRightIcon,
-  ClipboardDocumentIcon,
-  DocumentTextIcon,
-  ShareIcon,
-  XMarkIcon,
-} from "@heroicons/react/24/outline";
+  HStack,
+  Layout,
+  LayoutContent,
+  LayoutHeader,
+  StackItem,
+  VStack,
+} from "@astryxdesign/core/Layout";
+import { Markdown } from "@astryxdesign/core/Markdown";
+import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
+import { Section } from "@astryxdesign/core/Section";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Heading, Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
+import { ArrowTopRightOnSquareIcon, DocumentTextIcon } from "@heroicons/react/24/outline";
 
-import type { Coworker, Run } from "@/lib/coworker-data";
-
-const mobileMaxWidth = 767;
-
-const root: CSSProperties = {
-  height: "100%",
-  width: "100%",
-  containerType: "inline-size",
-  containerName: "artifact",
-};
-
-const rolloutColumn: CSSProperties = {
-  flex: 1,
-  width: "100%",
-  minWidth: 0,
-  height: "100%",
-};
-
-const rolloutLayout: CSSProperties = {
-  flex: 1,
-  minHeight: 0,
-};
-
-const artifactCard: CSSProperties = {
-  marginBlockStart: "var(--spacing-2)",
-};
-
-const artifactScroll: CSSProperties = {
-  flex: 1,
-  overflowY: "auto",
-};
-
-const articleBody: CSSProperties = {
-  maxWidth: 720,
-  marginInline: "auto",
-};
-
-function getArtifactPanelStyle(size: number | string): CSSProperties {
-  return {
-    "--artifact-panel-width": typeof size === "number" ? `${size}px` : size,
-  } as CSSProperties;
-}
-
-const runRolloutCss = `
-.run-rollout-resize-handle {
-  display: flex;
-}
-.run-rollout-artifact-panel {
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  width: var(--artifact-panel-width);
-  flex-shrink: 0;
-}
-@container artifact (max-width: ${mobileMaxWidth}px) {
-  .run-rollout-resize-handle {
-    display: none;
-  }
-  .run-rollout-artifact-panel {
-    display: none;
-    width: 100%;
-    flex-shrink: 1;
-  }
-}
-`;
-
-const promptTitle = "Review PR #482: prompt and skills";
-const promptSubtitle = "Run context · Abu Bakr by Coworker";
-const promptMenuItems = [
-  { label: "Prompt" },
-  { label: "Skills" },
-  { label: "GitHub output" },
-];
-
-const promptContent = `## User prompt
-
-Review PR #482 in \`coworker/web\`. Leave inline comments for correctness risks, silent failures, and migration ordering. Wait for CI before approving.
-
-## System instructions
-
-- Follow repository agent conventions before commenting.
-- Prefer inline comments for specific code issues.
-- Post a required check summary after review.
-- Do not approve until CI is green.
-
-## Skills loaded
-
-| Skill | Why it matters |
-| --- | --- |
-| code-reviewer | Review changed files for correctness and maintainability |
-| silent-failure-hunter | Find swallowed errors and unsafe fallbacks |
-| diagnose | Trace failing auth/provider behavior before suggesting fixes |
-
-## GitHub context
-
-- Repository: \`coworker/web\`
-- Branch: \`feature/github-app-install\`
-- Event: \`pull_request.opened\`
-- Coworker identity: Abu Bakr by Coworker
-
-## Expected output
-
-1. Inline comments on blocking issues
-2. Summary comment on the PR
-3. Required check status
-4. Approval only after CI passes`;
+import type { Coworker, Run, RunStatus } from "@/lib/coworker-data";
 
 type RunRolloutProps = {
   coworker?: Coworker;
+  initialTab?: RunDetailTab;
   run: Run;
 };
 
-export default function RunRollout({ coworker, run }: RunRolloutProps): ReactElement {
-  const [isArtifactDialogOpen, setIsArtifactDialogOpen] = useState(false);
-  const [isArtifactOpen, setIsArtifactOpen] = useState(true);
-  const rootRef = useRef<HTMLElement>(null);
-  const artifactResize = useResizable({
-    defaultSize: 560,
-    minSizePx: 440,
-    maxSizePx: 840,
-    autoSaveId: "coworker-run-rollout-artifact-panel",
-  });
-  const coworkerName = coworker?.name ?? "Coworker";
+export type RunDetailTab = "timeline" | "transcript" | "artifacts" | "github";
 
-  function openArtifact(): void {
-    const rootWidth = rootRef.current?.offsetWidth ?? Infinity;
-    if (rootWidth <= mobileMaxWidth) {
-      setIsArtifactDialogOpen(true);
+const statusDotVariants: Record<RunStatus, "accent" | "warning" | "success" | "error"> = {
+  Running: "accent",
+  "Needs review": "warning",
+  Blocked: "error",
+  Completed: "success",
+};
+
+const defaultTab: RunDetailTab = "timeline";
+
+function getStepVariant(
+  run: Run,
+  index: number,
+  total: number,
+): "accent" | "warning" | "success" | "error" {
+  const isLastStep = index === total - 1;
+
+  if (!isLastStep || run.status === "Completed") {
+    return "success";
+  }
+
+  return statusDotVariants[run.status];
+}
+
+function getStepLabel(run: Run, index: number, total: number): string {
+  const isLastStep = index === total - 1;
+  if (!isLastStep || run.status === "Completed") {
+    return "Completed";
+  }
+
+  return run.status;
+}
+
+function getGitHubHref(run: Run): string {
+  return `https://github.com/${run.repo}/tree/${run.branch}`;
+}
+
+function getArtifactMarkdown(run: Run, coworkerName: string): string {
+  return `## Run prompt
+
+${run.title} in \`${run.repo}\`.
+
+## Context
+
+- Coworker: ${coworkerName}
+- Trigger: \`${run.trigger}\`
+- Repository: \`${run.repo}\`
+- Branch: \`${run.branch}\`
+- Current status: ${run.status}
+- Current result: ${run.result}
+
+## Expected output
+
+1. Inspect the GitHub event and repository instructions.
+2. Produce the required review or implementation work.
+3. Leave GitHub comments or open a pull request when the run has output.
+4. Keep the run blocked when required credentials, permissions, or review gates are missing.`;
+}
+
+function getRunContextJson(run: Run, coworkerName: string): string {
+  return JSON.stringify(
+    {
+      runId: run.id,
+      coworker: coworkerName,
+      status: run.status,
+      repository: run.repo,
+      branch: run.branch,
+      trigger: run.trigger,
+      started: run.started,
+      duration: run.duration,
+      result: run.result,
+    },
+    null,
+    2,
+  );
+}
+
+export default function RunRollout({
+  coworker,
+  initialTab = defaultTab,
+  run,
+}: RunRolloutProps): ReactElement {
+  const [activeTab, setActiveTab] = useState<RunDetailTab>(initialTab);
+  const coworkerName = coworker?.name ?? "Coworker";
+  const githubHref = getGitHubHref(run);
+  const artifactMarkdown = useMemo(
+    () => getArtifactMarkdown(run, coworkerName),
+    [coworkerName, run],
+  );
+  const runContextJson = useMemo(() => getRunContextJson(run, coworkerName), [coworkerName, run]);
+
+  function changeTab(nextTab: RunDetailTab): void {
+    setActiveTab(nextTab);
+
+    if (typeof window === "undefined") {
       return;
     }
 
-    setIsArtifactOpen(true);
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", nextTab);
+    window.history.replaceState(null, "", url);
   }
 
   return (
-    <VStack ref={rootRef} style={root}>
-      <style>{runRolloutCss}</style>
-      <Layout
-        height="fill"
-        content={
-          <LayoutContent padding={0}>
-            <HStack height="100%">
-              <VStack style={rolloutColumn}>
-                <ChatLayout density="spacious" style={rolloutLayout} composer={null}>
-                  <ChatMessageList>
-                    <ChatSystemMessage variant="divider">{run.started}</ChatSystemMessage>
+    <Layout
+      height="fill"
+      contentWidth={1000}
+      header={
+        <LayoutHeader hasDivider padding={4}>
+          <VStack gap={4}>
+            <Link href="/app/runs" isStandalone>
+              Back to runs
+            </Link>
 
-                    <ChatMessage sender="user">
-                      <HStack gap={1} wrap="wrap">
-                        <Token label={run.repo} />
-                        <Token label={run.branch} />
-                        <Token label={run.trigger} />
-                      </HStack>
-                      <ChatMessageBubble
-                        metadata={
-                          <ChatMessageMetadata
-                            timestamp={<Timestamp value="2026-07-05T18:10:00" format="time" />}
-                          />
-                        }
-                      >
-                        PR #482 opened. Abu Bakr should review the diff, leave inline comments, and post the required check.
-                      </ChatMessageBubble>
-                    </ChatMessage>
-
-                    <ChatMessage sender="assistant" avatar={<Avatar name={coworkerName} size="small" />}>
-                      <ChatMessageBubble variant="ghost">
-                        I’m loading the pull request diff and repository instructions before writing comments.
-                      </ChatMessageBubble>
-                      <ChatToolCalls
-                        defaultIsExpanded
-                        calls={[
-                          { name: "read", target: "AGENTS.md", status: "complete", duration: "42ms" },
-                          { name: "read", target: "apps/web/src/app/(app)/app/settings/page.tsx", status: "complete", duration: "58ms" },
-                          { name: "bash", target: "bunx next build", status: "running", duration: "4.8s", node: "sandbox" },
-                        ]}
-                      />
-                      <ChatMessageBubble variant="ghost">
-                        <Markdown density="compact">{`Found two review targets so far:
-
-1. Provider credential state can silently fall through when the organization is missing a connected account.
-2. The GitHub App setup copy does not explain which named coworker identity will post the check.
-
-I’m preparing inline comments and waiting for CI before final approval.`}</Markdown>
-                      </ChatMessageBubble>
-                      <ChatMessageBubble variant="ghost">
-                        <CodeBlock
-                          title="apps/web/src/components/coworker/auth-form.tsx"
-                          language="typescript"
-                          code={`if (!providerAccount) {
-  return {
-    status: "blocked",
-    reason: "Provider account missing",
-  };
-}
-
-return startSandboxRun({
-  coworkerId,
-  repositoryId,
-});`}
-                        />
-                      </ChatMessageBubble>
-                      <ChatMessageMetadata
-                        timestamp={<Timestamp value="2026-07-05T18:12:00" format="time" />}
-                        footer={<Text type="supporting">{coworkerName}</Text>}
-                      />
-                    </ChatMessage>
-
-                    <ChatSystemMessage>CI still running · final approval held</ChatSystemMessage>
-
-                    <ChatMessage sender="assistant" avatar={<Avatar name={coworkerName} size="small" />}>
-                      <ChatMessageBubble variant="ghost">
-                        <Markdown density="compact">{`I drafted the review summary and linked the run prompt below. The prompt explains why I am waiting for CI and which skills are active for this review.`}</Markdown>
-                      </ChatMessageBubble>
-                      <ArtifactCard onOpen={openArtifact} />
-                      <ChatToolCalls
-                        calls={[
-                          { name: "edit", target: "GitHub inline comments", status: "running", node: "sandbox" },
-                        ]}
-                      />
-                      <ChatMessageMetadata timestamp={<Timestamp value="2026-07-05T18:14:00" format="time" />} />
-                    </ChatMessage>
-                  </ChatMessageList>
-                </ChatLayout>
-              </VStack>
-
-              {isArtifactOpen && (
-                <>
-                  <ResizeHandle
-                    direction="horizontal"
-                    resizable={artifactResize.props}
-                    isReversed
-                    pillPlacement="start"
-                    hasDivider
-                    label="Resize run detail panel"
-                    className="run-rollout-resize-handle"
-                  />
-
-                  <Card
-                    variant="transparent"
-                    height="100%"
-                    className="run-rollout-artifact-panel"
-                    style={getArtifactPanelStyle(artifactResize.size)}
-                  >
-                    <Toolbar
-                      label="Run detail actions"
-                      dividers={["bottom"]}
-                      startContent={
-                        <HStack gap={3} vAlign="center">
-                          <Icon icon={DocumentTextIcon} size="sm" color="secondary" />
-                          <ArtifactTitle subtitle={promptSubtitle} />
-                        </HStack>
-                      }
-                      endContent={<ArtifactActions onClose={() => setIsArtifactOpen(false)} />}
-                    />
-                    <ArtifactBody />
-                  </Card>
-                </>
-              )}
+            <HStack gap={4} hAlign="between" vAlign="start" wrap="wrap">
+              <StackItem size="fill">
+                <VStack gap={2}>
+                  <HStack gap={2} vAlign="center" wrap="wrap">
+                    <Text type="supporting" color="secondary" hasTabularNumbers>
+                      {run.id}
+                    </Text>
+                    <StatusDot variant={statusDotVariants[run.status]} label={run.status} />
+                    <Text type="supporting">{run.status}</Text>
+                  </HStack>
+                  <Heading level={1}>{run.title}</Heading>
+                  <HStack gap={3} vAlign="center" wrap="wrap">
+                    <HStack gap={1} vAlign="center">
+                      <Avatar name={coworkerName} size="xsmall" />
+                      <Text type="supporting">{coworkerName}</Text>
+                    </HStack>
+                    <Token label={run.repo} />
+                    <Token label={run.branch} />
+                    <Text type="supporting" color="secondary" hasTabularNumbers>
+                      {run.started} / {run.duration}
+                    </Text>
+                  </HStack>
+                </VStack>
+              </StackItem>
+              <Link href={githubHref} isStandalone isExternalLink>
+                Open GitHub
+              </Link>
             </HStack>
-          </LayoutContent>
-        }
-      />
-      <Dialog
-        isOpen={isArtifactDialogOpen}
-        onOpenChange={setIsArtifactDialogOpen}
-        purpose="info"
-        variant="fullscreen"
-      >
-        <Layout
-          header={
-            <DialogHeader
-              title={promptTitle}
-              subtitle={promptSubtitle}
-              hasDivider
-              onOpenChange={setIsArtifactDialogOpen}
-              endContent={<MobileArtifactActions />}
-            />
-          }
-          content={
-            <LayoutContent padding={0}>
-              <ArtifactBody />
-            </LayoutContent>
-          }
-        />
-      </Dialog>
-    </VStack>
-  );
-}
 
-type ArtifactActionsProps = {
-  onClose?: () => void;
-};
-
-function ArtifactActions({ onClose }: ArtifactActionsProps): ReactElement {
-  return (
-    <>
-      <DropdownMenu
-        button={{ label: "Prompt", variant: "ghost", size: "sm" }}
-        items={promptMenuItems}
-      />
-      <Button
-        label="Copy"
-        variant="ghost"
-        size="sm"
-        icon={<Icon icon={ClipboardDocumentIcon} size="sm" />}
-        isIconOnly
-      />
-      <Button
-        label="Share"
-        variant="ghost"
-        size="sm"
-        icon={<Icon icon={ShareIcon} size="sm" />}
-        isIconOnly
-      />
-      {onClose != null && (
-        <Button
-          label="Close details"
-          variant="ghost"
-          size="sm"
-          icon={<Icon icon={XMarkIcon} size="sm" />}
-          isIconOnly
-          onClick={onClose}
-        />
-      )}
-    </>
-  );
-}
-
-function MobileArtifactActions(): ReactElement {
-  return (
-    <MoreMenu
-      label="Run detail actions"
-      size="sm"
-      items={[
-        { type: "section", title: "View", items: promptMenuItems },
-        { type: "divider" },
-        { label: "Copy", icon: ClipboardDocumentIcon },
-        { label: "Share", icon: ShareIcon },
-      ]}
+            <TabList value={activeTab} onChange={(value) => changeTab(value as RunDetailTab)}>
+              <Tab value="timeline" label="Timeline" />
+              <Tab value="transcript" label="Transcript" />
+              <Tab value="artifacts" label="Artifacts" />
+              <Tab value="github" label="GitHub" />
+            </TabList>
+          </VStack>
+        </LayoutHeader>
+      }
+      content={
+        <LayoutContent role="main" isScrollable padding={5}>
+          {activeTab === "timeline" ? <TimelineTab run={run} /> : null}
+          {activeTab === "transcript" ? (
+            <TranscriptTab run={run} coworkerName={coworkerName} />
+          ) : null}
+          {activeTab === "artifacts" ? (
+            <ArtifactsTab artifactMarkdown={artifactMarkdown} runContextJson={runContextJson} />
+          ) : null}
+          {activeTab === "github" ? (
+            <GitHubTab run={run} coworkerName={coworkerName} githubHref={githubHref} />
+          ) : null}
+        </LayoutContent>
+      }
     />
   );
 }
 
-type ArtifactTitleProps = {
-  subtitle: string;
-};
-
-function ArtifactTitle({ subtitle }: ArtifactTitleProps): ReactElement {
+function TimelineTab({ run }: { run: Run }): ReactElement {
   return (
-    <VStack gap={0}>
-      <Text type="label" weight="semibold">
-        {promptTitle}
-      </Text>
-      <Text type="supporting" color="secondary">
-        {subtitle}
-      </Text>
-    </VStack>
-  );
-}
-
-function ArtifactBody(): ReactElement {
-  return (
-    <Section variant="transparent" style={artifactScroll}>
-      <VStack gap={2} style={articleBody}>
-        <Heading level={1}>{promptTitle}</Heading>
-        <Markdown>{promptContent}</Markdown>
+    <Section variant="section" padding={4}>
+      <VStack gap={4}>
+        <VStack gap={1}>
+          <Heading level={2}>Timeline</Heading>
+          <Text type="supporting" color="secondary">
+            Ordered run events from trigger through the current output.
+          </Text>
+        </VStack>
+        <List hasDividers density="balanced" header="Run timeline">
+          {run.timeline.map((event, index) => (
+            <ListItem
+              key={event}
+              label={event}
+              description={getStepLabel(run, index, run.timeline.length)}
+              startContent={
+                <StatusDot
+                  variant={getStepVariant(run, index, run.timeline.length)}
+                  label={getStepLabel(run, index, run.timeline.length)}
+                />
+              }
+            />
+          ))}
+        </List>
       </VStack>
     </Section>
   );
 }
 
-type ArtifactCardProps = {
-  onOpen: () => void;
-};
-
-function ArtifactCard({ onOpen }: ArtifactCardProps): ReactElement {
+function TranscriptTab({ run, coworkerName }: { run: Run; coworkerName: string }): ReactElement {
   return (
-    <ClickableCard
-      label={`Open ${promptTitle}`}
-      onClick={onOpen}
-      variant="muted"
-      padding={3}
-      maxWidth={360}
-      style={artifactCard}
-    >
-      <HStack gap={3} vAlign="center" width="100%">
-        <Icon icon={DocumentTextIcon} size="md" color="secondary" />
-        <StackItem size="fill">
-          <ArtifactTitle subtitle="Prompt and active skills" />
-        </StackItem>
-        <Icon icon={ChevronRightIcon} size="sm" color="secondary" />
-      </HStack>
-    </ClickableCard>
+    <Section variant="section" padding={4}>
+      <VStack gap={4}>
+        <VStack gap={1}>
+          <Heading level={2}>Transcript</Heading>
+          <Text type="supporting" color="secondary">
+            Messages emitted by GitHub and the coworker during this run.
+          </Text>
+        </VStack>
+        <List hasDividers density="balanced" header="Run transcript">
+          {run.transcript.map((entry, index) => (
+            <ListItem
+              key={`${entry.speaker}-${index}`}
+              label={entry.speaker}
+              description={
+                <Markdown density="compact" contentWidth="100%">
+                  {entry.message}
+                </Markdown>
+              }
+              startContent={
+                entry.speaker === "GitHub" ? (
+                  <Icon icon={DocumentTextIcon} size="md" color="secondary" />
+                ) : (
+                  <Avatar name={entry.speaker || coworkerName} size="small" />
+                )
+              }
+            />
+          ))}
+        </List>
+      </VStack>
+    </Section>
+  );
+}
+
+function ArtifactsTab({
+  artifactMarkdown,
+  runContextJson,
+}: {
+  artifactMarkdown: string;
+  runContextJson: string;
+}): ReactElement {
+  return (
+    <VStack gap={4}>
+      <Section variant="section" padding={4}>
+        <VStack gap={3}>
+          <Heading level={2}>Run prompt and active context</Heading>
+          <Markdown headingLevelStart={3} autolink="gfm" contentWidth="100%">
+            {artifactMarkdown}
+          </Markdown>
+        </VStack>
+      </Section>
+      <Section variant="section" padding={4}>
+        <VStack gap={3}>
+          <Heading level={2}>Run context</Heading>
+          <CodeBlock title="run-context.json" language="json" code={runContextJson} />
+        </VStack>
+      </Section>
+    </VStack>
+  );
+}
+
+function GitHubTab({
+  run,
+  coworkerName,
+  githubHref,
+}: {
+  run: Run;
+  coworkerName: string;
+  githubHref: string;
+}): ReactElement {
+  return (
+    <Section variant="section" padding={4}>
+      <VStack gap={4}>
+        <HStack gap={4} hAlign="between" vAlign="center" wrap="wrap">
+          <VStack gap={1}>
+            <Heading level={2}>GitHub event</Heading>
+            <Text type="supporting" color="secondary">
+              Source metadata that explains why this run exists.
+            </Text>
+          </VStack>
+          <Link href={githubHref} isStandalone isExternalLink>
+            <HStack gap={1} vAlign="center">
+              <Icon icon={ArrowTopRightOnSquareIcon} size="sm" />
+              <Text type="body">Open source</Text>
+            </HStack>
+          </Link>
+        </HStack>
+        <MetadataList columns="multi" label={{ position: "top" }}>
+          <MetadataListItem label="Repository">{run.repo}</MetadataListItem>
+          <MetadataListItem label="Branch">{run.branch}</MetadataListItem>
+          <MetadataListItem label="Trigger">{run.trigger}</MetadataListItem>
+          <MetadataListItem label="Coworker">{coworkerName}</MetadataListItem>
+          <MetadataListItem label="Started">{run.started}</MetadataListItem>
+          <MetadataListItem label="Duration">{run.duration}</MetadataListItem>
+          <MetadataListItem label="Status">
+            <HStack gap={2} vAlign="center">
+              <StatusDot variant={statusDotVariants[run.status]} label={run.status} />
+              <Text type="body">{run.status}</Text>
+            </HStack>
+          </MetadataListItem>
+          <MetadataListItem label="Result">{run.result}</MetadataListItem>
+        </MetadataList>
+      </VStack>
+    </Section>
   );
 }

@@ -4,22 +4,18 @@ import { Fragment, useMemo, useState, type CSSProperties, type ReactElement } fr
 
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
-import { Button } from "@astryxdesign/core/Button";
 import { Center } from "@astryxdesign/core/Center";
-import { Divider } from "@astryxdesign/core/Divider";
-import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
+import { Link } from "@astryxdesign/core/Link";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import {
   HStack,
   Layout,
   LayoutContent,
   LayoutHeader,
-  LayoutPanel,
   StackItem,
   VStack,
 } from "@astryxdesign/core/Layout";
-import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
-import { ResizeHandle, useResizable, type ResizableProps } from "@astryxdesign/core/Resizable";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import {
   Table,
@@ -32,11 +28,10 @@ import {
 import type { TableColumn } from "@astryxdesign/core/Table";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
+import { Token } from "@astryxdesign/core/Token";
 import {
-  ArrowTopRightOnSquareIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  EllipsisHorizontalIcon,
   ExclamationTriangleIcon,
   PlayCircleIcon,
 } from "@heroicons/react/24/outline";
@@ -46,12 +41,6 @@ import { coworkers, projects, runs, type Run, type RunStatus } from "@/lib/cowor
 
 type RunRow = Run & {
   coworkerName: string;
-};
-
-type RunDetailPanelProps = {
-  run: RunRow;
-  onClose: () => void;
-  resizable: ResizableProps;
 };
 
 type RowsByStatus = Record<RunStatus, RunRow[]>;
@@ -67,19 +56,37 @@ const statusDotVariants: Record<RunStatus, "accent" | "warning" | "success" | "e
 
 const columns: TableColumn<RunRow>[] = [
   { key: "status", header: "", width: pixel(44) },
-  { key: "title", header: "Run", width: proportional(1) },
+  { key: "title", header: "Run", width: proportional(1.6) },
   { key: "coworker", header: "Coworker", width: pixel(150) },
   { key: "project", header: "Project", width: pixel(180) },
   { key: "started", header: "Started", width: pixel(110) },
   { key: "duration", header: "Duration", width: pixel(90) },
   { key: "result", header: "Result", width: proportional(1) },
-  { key: "actions", header: "", width: pixel(56) },
+  { key: "actions", header: "", width: pixel(72) },
 ];
+
+const compactColumns: TableColumn<RunRow>[] = [
+  { key: "status", header: "", width: pixel(36) },
+  { key: "title", header: "Run", width: proportional(1) },
+  { key: "actions", header: "", width: pixel(64) },
+];
+
+const resolvedColumnWidths = resolveColumnWidths(columns);
+const resolvedCompactColumnWidths = resolveColumnWidths(compactColumns);
 
 const groupHeaderCell: CSSProperties = {
   cursor: "pointer",
   backgroundColor: "var(--color-background-muted)",
   padding: "var(--spacing-3) var(--spacing-4)",
+};
+
+const interactiveRowStyle: CSSProperties = {
+  cursor: "pointer",
+};
+
+const tableContentStyle: CSSProperties = {
+  minWidth: 0,
+  overflow: "hidden",
 };
 
 const coworkerNameById: Record<string, string> = Object.fromEntries(
@@ -94,8 +101,6 @@ const rows: RunRow[] = runs.map((run) => ({
   ...run,
   coworkerName: coworkerNameById[run.coworkerId] ?? "Coworker",
 }));
-
-const resolvedColumnWidths = resolveColumnWidths(columns);
 
 function groupRowsByStatus(runRows: RunRow[]): RowsByStatus {
   const grouped: RowsByStatus = {
@@ -115,9 +120,8 @@ function groupRowsByStatus(runRows: RunRow[]): RowsByStatus {
 export default function RunsTable(): ReactElement {
   const router = useRouter();
   const [search, setSearch] = useState("");
-  const [selectedRun, setSelectedRun] = useState<RunRow | null>(() => rows[0] ?? null);
   const [expandedGroups, setExpandedGroups] = useState<Set<RunStatus>>(() => new Set(statusOrder));
-  const detailPanel = useResizable({ defaultSize: 360, minSizePx: 280, maxSizePx: 500 });
+  const isCompact = useMediaQuery("(max-width: 1360px)");
 
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -134,6 +138,8 @@ export default function RunsTable(): ReactElement {
   }, [search]);
 
   const groupedRows = useMemo(() => groupRowsByStatus(filteredRows), [filteredRows]);
+  const activeColumns = isCompact ? compactColumns : columns;
+  const activeColumnWidths = isCompact ? resolvedCompactColumnWidths : resolvedColumnWidths;
 
   function toggleGroup(status: RunStatus): void {
     setExpandedGroups((current) => {
@@ -153,7 +159,7 @@ export default function RunsTable(): ReactElement {
       header={
         <LayoutHeader hasDivider padding={4}>
           <VStack gap={4}>
-            <HStack gap={3} vAlign="center">
+            <HStack gap={3} vAlign="center" wrap="wrap">
               <StackItem size="fill">
                 <VStack gap={1}>
                   <Heading level={1}>Runs</Heading>
@@ -163,12 +169,14 @@ export default function RunsTable(): ReactElement {
                   </Text>
                 </VStack>
               </StackItem>
-              <Button label="Kick off run" variant="primary" size="lg" />
+              <Text type="supporting" color="secondary" hasTabularNumbers>
+                {filteredRows.length} runs
+              </Text>
             </HStack>
             <TextInput
               label="Filter runs"
               isLabelHidden
-              placeholder="Filter by run, coworker, project, branch, trigger, or result…"
+              placeholder="Filter by run, coworker, project, branch, trigger, or result..."
               value={search}
               onChange={setSearch}
             />
@@ -176,17 +184,17 @@ export default function RunsTable(): ReactElement {
         </LayoutHeader>
       }
       content={
-        <LayoutContent role="main" padding={0}>
+        <LayoutContent role="main" padding={0} style={tableContentStyle}>
           <Table
-            columns={columns}
+            columns={activeColumns}
             density="balanced"
             dividers="rows"
             textOverflow="truncate"
             hasHover
           >
             <colgroup>
-              {columns.map((column) => (
-                <col key={column.key} style={resolvedColumnWidths.columns.get(column.key)?.style} />
+              {activeColumns.map((column) => (
+                <col key={column.key} style={activeColumnWidths.columns.get(column.key)?.style} />
               ))}
             </colgroup>
             <tbody>
@@ -211,7 +219,7 @@ export default function RunsTable(): ReactElement {
                         }
                       }}
                     >
-                      <TableCell colSpan={columns.length} style={groupHeaderCell}>
+                      <TableCell colSpan={activeColumns.length} style={groupHeaderCell}>
                         <HStack gap={2} vAlign="center">
                           <Icon
                             icon={isExpanded ? ChevronDownIcon : ChevronRightIcon}
@@ -225,99 +233,16 @@ export default function RunsTable(): ReactElement {
                         </HStack>
                       </TableCell>
                     </TableRow>
-                    {isExpanded &&
-                      runsForStatus.map((run) => (
-                        <TableRow key={run.id} onClick={() => setSelectedRun(run)}>
-                          <TableCell>
-                            <Center axis="horizontal">
-                              <StatusDot
-                                variant={statusDotVariants[run.status]}
-                                label={run.status}
-                              />
-                            </Center>
-                          </TableCell>
-                          <TableCell>
-                            <HStack gap={3} vAlign="center">
-                              <Icon
-                                icon={
-                                  run.status === "Blocked"
-                                    ? ExclamationTriangleIcon
-                                    : PlayCircleIcon
-                                }
-                                size="sm"
-                                color="secondary"
-                              />
-                              <Text type="supporting" color="secondary">
-                                {run.id}
-                              </Text>
-                              <Text type="body" maxLines={1}>
-                                {run.title}
-                              </Text>
-                              <Text type="body" color="secondary" maxLines={1}>
-                                › {run.trigger}
-                              </Text>
-                            </HStack>
-                          </TableCell>
-                          <TableCell>
-                            <HStack gap={2} vAlign="center">
-                              <Avatar name={run.coworkerName} size="xsmall" />
-                              <Text type="body" maxLines={1}>
-                                {run.coworkerName}
-                              </Text>
-                            </HStack>
-                          </TableCell>
-                          <TableCell>
-                            <Text type="body" maxLines={1}>
-                              {projectNameByRepo[run.repo] ?? run.repo}
-                            </Text>
-                          </TableCell>
-                          <TableCell>
-                            <Text type="supporting" color="secondary">
-                              {run.started}
-                            </Text>
-                          </TableCell>
-                          <TableCell>
-                            <Text type="supporting" color="secondary" hasTabularNumbers>
-                              {run.duration}
-                            </Text>
-                          </TableCell>
-                          <TableCell>
-                            <Text type="body" maxLines={1}>
-                              {run.result}
-                            </Text>
-                          </TableCell>
-                          <TableCell>
-                            <DropdownMenu
-                              button={{
-                                label: "Actions",
-                                variant: "ghost",
-                                size: "sm",
-                                icon: <Icon icon={EllipsisHorizontalIcon} size="sm" />,
-                                isIconOnly: true,
-                              }}
-                              hasChevron={false}
-                              items={[
-                                {
-                                  label: "Open run",
-                                  icon: ArrowTopRightOnSquareIcon,
-                                  onClick: () => router.push(`/app/runs/${run.id}`),
-                                },
-                                {
-                                  label: "Open in GitHub",
-                                  icon: ArrowTopRightOnSquareIcon,
-                                  onClick: () => {},
-                                },
-                                { type: "divider" as const },
-                                {
-                                  label: "Cancel run",
-                                  icon: ExclamationTriangleIcon,
-                                  onClick: () => {},
-                                },
-                              ]}
-                            />
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                    {isExpanded
+                      ? runsForStatus.map((run) => (
+                          <RunTableRow
+                            key={run.id}
+                            run={run}
+                            isCompact={isCompact}
+                            onOpenRun={() => router.push(`/app/runs/${run.id}`)}
+                          />
+                        ))
+                      : null}
                   </Fragment>
                 );
               })}
@@ -325,84 +250,123 @@ export default function RunsTable(): ReactElement {
           </Table>
         </LayoutContent>
       }
-      end={
-        selectedRun && (
-          <>
-            <ResizeHandle resizable={detailPanel.props} isReversed isAlwaysVisible={false} />
-            <RunDetailPanel
-              run={selectedRun}
-              onClose={() => setSelectedRun(null)}
-              resizable={detailPanel.props}
-            />
-          </>
-        )
-      }
     />
   );
 }
 
-function RunDetailPanel({ run, onClose, resizable }: RunDetailPanelProps): ReactElement {
-  const router = useRouter();
+type RunTableRowProps = {
+  run: RunRow;
+  isCompact: boolean;
+  onOpenRun: () => void;
+};
 
+function RunTableRow({ run, isCompact, onOpenRun }: RunTableRowProps): ReactElement {
   return (
-    <LayoutPanel
-      hasDivider
-      resizable={resizable}
-      padding={4}
-      role="complementary"
-      label="Run details"
+    <TableRow
+      role="link"
+      tabIndex={0}
+      style={interactiveRowStyle}
+      onClick={onOpenRun}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          onOpenRun();
+        }
+      }}
     >
-      <VStack gap={4}>
-        <HStack gap={2} vAlign="center">
-          <StackItem size="fill">
-            <Text type="supporting" color="secondary">
-              {run.id}
-            </Text>
-          </StackItem>
-          <Button label="Close panel" variant="ghost" size="sm" onClick={onClose} />
-        </HStack>
-
-        <VStack gap={1}>
-          <Heading level={3}>{run.title}</Heading>
-          <Text type="body" color="secondary">
-            {run.result}
-          </Text>
-        </VStack>
-
-        <MetadataList label={{ position: "start" }}>
-          <MetadataListItem label="Status">
-            <HStack gap={2} vAlign="center">
-              <StatusDot variant={statusDotVariants[run.status]} label={run.status} />
-              <Text type="body">{run.status}</Text>
-            </HStack>
-          </MetadataListItem>
-          <MetadataListItem label="Coworker">
+      <TableCell>
+        <Center axis="horizontal">
+          <StatusDot variant={statusDotVariants[run.status]} label={run.status} />
+        </Center>
+      </TableCell>
+      <TableCell>
+        <RunPrimaryCell run={run} isCompact={isCompact} />
+      </TableCell>
+      {!isCompact ? (
+        <>
+          <TableCell>
             <HStack gap={2} vAlign="center">
               <Avatar name={run.coworkerName} size="xsmall" />
-              <Text type="body">{run.coworkerName}</Text>
+              <Text type="body" maxLines={1}>
+                {run.coworkerName}
+              </Text>
             </HStack>
-          </MetadataListItem>
-          <MetadataListItem label="Project">
+          </TableCell>
+          <TableCell>
+            <VStack gap={1}>
+              <Text type="body" maxLines={1}>
+                {projectNameByRepo[run.repo] ?? run.repo}
+              </Text>
+              <Text type="supporting" color="secondary" maxLines={1}>
+                {run.branch}
+              </Text>
+            </VStack>
+          </TableCell>
+          <TableCell>
+            <Text type="supporting" color="secondary">
+              {run.started}
+            </Text>
+          </TableCell>
+          <TableCell>
+            <Text type="supporting" color="secondary" hasTabularNumbers>
+              {run.duration}
+            </Text>
+          </TableCell>
+          <TableCell>
+            <Text type="body" maxLines={1}>
+              {run.result}
+            </Text>
+          </TableCell>
+        </>
+      ) : null}
+      <TableCell>
+        <Link
+          href={`/app/runs/${run.id}`}
+          isStandalone
+          onClick={(event) => event.stopPropagation()}
+        >
+          Open
+        </Link>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function RunPrimaryCell({ run, isCompact }: { run: RunRow; isCompact: boolean }): ReactElement {
+  return (
+    <VStack gap={1}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Icon
+          icon={run.status === "Blocked" ? ExclamationTriangleIcon : PlayCircleIcon}
+          size="sm"
+          color="secondary"
+        />
+        <Text type="supporting" color="secondary" hasTabularNumbers>
+          {run.id}
+        </Text>
+        <Text type="body" weight="semibold" maxLines={1}>
+          {run.title}
+        </Text>
+      </HStack>
+      <Text type="supporting" color="secondary" maxLines={1}>
+        {run.trigger}
+      </Text>
+      {isCompact ? (
+        <HStack gap={3} vAlign="center" wrap="wrap">
+          <HStack gap={1} vAlign="center">
+            <Avatar name={run.coworkerName} size="xsmall" />
+            <Text type="supporting" maxLines={1}>
+              {run.coworkerName}
+            </Text>
+          </HStack>
+          <Text type="supporting" color="secondary" maxLines={1}>
             {projectNameByRepo[run.repo] ?? run.repo}
-          </MetadataListItem>
-          <MetadataListItem label="Branch">{run.branch}</MetadataListItem>
-          <MetadataListItem label="Trigger">{run.trigger}</MetadataListItem>
-          <MetadataListItem label="Started">{run.started}</MetadataListItem>
-          <MetadataListItem label="Duration">{run.duration}</MetadataListItem>
-        </MetadataList>
-
-        <Divider />
-
-        <HStack gap={2}>
-          <Button
-            label="Open run"
-            variant="primary"
-            size="md"
-            onClick={() => router.push(`/app/runs/${run.id}`)}
-          />
-          <Button label="Open GitHub" variant="secondary" size="md" />
+          </Text>
+          <Text type="supporting" color="secondary" hasTabularNumbers>
+            {run.started} / {run.duration}
+          </Text>
+          <Token label={run.status} />
         </HStack>
-      </VStack>
-    </LayoutPanel>
+      ) : null}
+    </VStack>
   );
 }
