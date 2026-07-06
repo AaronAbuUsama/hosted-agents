@@ -3,6 +3,21 @@
 Status: Draft
 Date: 2026-07-05
 
+## 2026-07-06 Vocabulary Update
+
+The runtime model is now role-based. Personal or branded names are
+user-defined display data, not backend module identity.
+
+- Use `workerRole` for stable capability ids such as `code_review`.
+- Use `workerDisplayName` for user-defined product and external-output labels.
+- Do not hard-code personal names into trigger rules, durable events, sandbox
+  labels, runtime modules, or run type decisions.
+- The first runtime role is `code_review`; the default display name is
+  `Code Review Worker`.
+
+This update supersedes the earlier names-first language below. The older
+sections remain as historical planning context until the PRD is recut.
+
 ## Problem Statement
 
 The current product has proven that a user can sign in, create an organization, connect an OpenAI Codex credential, and run a code review agent from the dashboard. That is useful proof, but it is still shaped like a one-off review console.

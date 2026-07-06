@@ -7,7 +7,8 @@
     "check-types": "tsc -b",
     "compile": "bun build --compile --minify --sourcemap --bytecode ./src/index.ts --outfile server",
     "dev": "NODE_OPTIONS='--import braintrust/hook.mjs' flue dev --target node --port 3000",
-    "start": "node --import braintrust/hook.mjs dist/server.mjs"
+    "start": "node --import braintrust/hook.mjs dist/server.mjs",
+    "worker:code-reviews": "NODE_OPTIONS='--import braintrust/hook.mjs' bun src/workers/code-review-worker.ts"
   },
   "dependencies": {
     "@daytona/sdk": "^0.187.0",
