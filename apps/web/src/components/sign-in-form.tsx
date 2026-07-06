@@ -2,6 +2,7 @@ import { Button } from "@hosted-agents/ui/components/button";
 import { Input } from "@hosted-agents/ui/components/input";
 import { Label } from "@hosted-agents/ui/components/label";
 import { useForm } from "@tanstack/react-form";
+import { GitPullRequest } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import z from "zod";
@@ -13,16 +14,29 @@ import Loader from "./loader";
 export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () => void }) {
   const router = useRouter();
   const { isPending } = authClient.useSession();
+  const signInWithGitHub = async () => {
+    await authClient.signIn.social(
+      {
+        provider: "github",
+        callbackURL: `${window.location.origin}/dashboard`,
+      },
+      {
+        onError: (error) => {
+          toast.error(error.error.message || error.error.statusText);
+        },
+      },
+    );
+  };
 
   const form = useForm({
     defaultValues: {
-      email: "",
+      username: "",
       password: "",
     },
     onSubmit: async ({ value }) => {
-      await authClient.signIn.email(
+      await authClient.signIn.username(
         {
-          email: value.email,
+          username: value.username,
           password: value.password,
         },
         {
@@ -38,7 +52,7 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
     },
     validators: {
       onSubmit: z.object({
-        email: z.email("Invalid email address"),
+        username: z.string().min(3, "Username must be at least 3 characters"),
         password: z.string().min(8, "Password must be at least 8 characters"),
       }),
     },
@@ -52,6 +66,11 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
     <div className="mx-auto w-full mt-10 max-w-md p-6">
       <h1 className="mb-6 text-center text-3xl font-bold">Welcome Back</h1>
 
+      <Button type="button" variant="outline" className="mb-4 w-full" onClick={signInWithGitHub}>
+        <GitPullRequest data-icon="inline-start" />
+        Continue with GitHub
+      </Button>
+
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -61,14 +80,14 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
         className="space-y-4"
       >
         <div>
-          <form.Field name="email">
+          <form.Field name="username">
             {(field) => (
               <div className="space-y-2">
-                <Label htmlFor={field.name}>Email</Label>
+                <Label htmlFor={field.name}>Username</Label>
                 <Input
                   id={field.name}
                   name={field.name}
-                  type="email"
+                  autoComplete="username"
                   value={field.state.value}
                   onBlur={field.handleBlur}
                   onChange={(e) => field.handleChange(e.target.value)}
@@ -91,6 +110,7 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
                 <Input
                   id={field.name}
                   name={field.name}
+                  autoComplete="current-password"
                   type="password"
                   value={field.state.value}
                   onBlur={field.handleBlur}

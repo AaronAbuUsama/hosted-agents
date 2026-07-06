@@ -46,9 +46,14 @@ lerna-debug.log*
 # Testing
 coverage
 .nyc_output
+.playwright-mcp
 
 # Misc
 *.tgz
 .cache
+local.db
 tmp
 temp
+# Added by Braintrust Wizard
+.env.braintrust
+.braintrust.json

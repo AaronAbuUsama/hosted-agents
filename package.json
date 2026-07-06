@@ -38,8 +38,13 @@
     "format": "vp fmt",
     "staged": "vp staged",
     "hooks:setup": "vp config",
+    "dev:localhost": "bun scripts/dev-localhost.mjs",
+    "dev:github-webhooks": "bun scripts/dev-localhost.mjs --no-web",
     "dev:web": "vp run --filter web dev",
     "dev:server": "vp run --filter server dev",
+    "worker:code-reviews": "bun scripts/run-code-review-worker.mjs",
+    "proof:preflight": "bun scripts/proof-preflight.mjs",
+    "proof:real-pr": "bun scripts/proof-real-pr-e2e.mjs",
     "db:push": "vp run --filter @hosted-agents/db db:push",
     "db:studio": "vp run --filter @hosted-agents/db db:studio",
     "db:generate": "vp run --filter @hosted-agents/db db:generate",
@@ -51,8 +56,11 @@
     "docker:logs": "docker compose logs -f"
   },
   "dependencies": {
+    "@daytona/sdk": "^0.187.0",
+    "@hosted-agents/db": "workspace:*",
     "@hosted-agents/env": "workspace:*",
     "dotenv": "catalog:",
+    "drizzle-orm": "^0.45.2",
     "zod": "catalog:"
   },
   "devDependencies": {

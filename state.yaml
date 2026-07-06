@@ -1,0 +1,176 @@
+goal: code-review-worker-real-pr-e2e-proof
+status: proven_real_pr_e2e_with_github_outputs
+operator_setup:
+  localhost_github_app_installed: true
+  test_repo_linked: true
+  proof_repo: AaronAbuUsama/test-repo
+  proof_pr: https://github.com/AaronAbuUsama/test-repo/pull/1
+  proof_requires_real_pr_event: true
+  current_blocker: null
+  readable_private_key_path: "/Users/abuusama/.config/hosted-agents/localhost-abu-bakr-at-coworker.2026-07-05.private-key.pem"
+
+latest_real_proof_attempt:
+  proof_date: "2026-07-06"
+  delivery: "Real pull_request.synchronize webhook arrived through Smee for PR #1 after pushing commit 031715f"
+  proof_repo: AaronAbuUsama/test-repo
+  proof_pr: 1
+  proof_pr_url: https://github.com/AaronAbuUsama/test-repo/pull/1
+  agent_run_id: e44b8522-ea95-4ca9-8a15-6f522cde7f43
+  terminal_status: completed
+  terminal_stage: completed
+  sandbox_id: fe4f6fbd-2375-4eba-9733-ed8d18fde4ff
+  durable_event_count: 106
+  durable_events_observed:
+    - github.webhook.accepted
+    - queue.created
+    - worker.claimed
+    - worker.installation_lookup
+    - worker.repository_lookup
+    - worker.installation_token
+    - sandbox.created
+    - flue.model
+    - flue.tool
+    - github.tool.start_github_review.completed
+    - github.tool.submit_pull_request_review.completed
+    - github.tool.complete_review_check.completed
+    - flue.result
+    - sandbox.deleted
+    - result.completed
+  first_event:
+    sequence: 1
+    type: github.webhook.accepted
+    stage: webhook_admitted
+    message: "Accepted pull_request.synchronize from GitHub"
+  sandbox_created_event:
+    sequence: 8
+    type: sandbox.created
+    message: "Daytona sandbox fe4f6fbd-2375-4eba-9733-ed8d18fde4ff created"
+  last_event:
+    sequence: 106
+    type: result.completed
+    stage: completed
+    message: "Code review completed"
+  orphaned_daytona_sandbox_possible: false
+  daytona_orphan_check: "Passed: no matching sandboxes remained for run labels"
+  api_surface_proof: "Org-scoped appRouter.agentRuns listed the completed run; appRouter.agentRunEvents returned 106 ordered events"
+  github_output_proof:
+    start_comment_url: https://github.com/AaronAbuUsama/test-repo/pull/1#issuecomment-4891614140
+    pull_request_review_url: https://github.com/AaronAbuUsama/test-repo/pull/1#pullrequestreview-4634864096
+    check_run_url: https://github.com/AaronAbuUsama/test-repo/runs/85346920073
+    check_conclusion: success
+    bot_login: localhost-abu-bakr-at-coworker[bot]
+    head_sha: 031715fa841275379fd71f8e34fa3fe0bf7fc3f6
+  sequence_race_fix: "appendAgentRunEvent now serializes appends per run and migration 0003 resequences existing rows before creating a unique run_id/sequence index"
+
+latest_role_based_worker_proof:
+  proof_date: "2026-07-06"
+  note: "PR #2 was admitted before the worker-role refactor, so sequence 1-2 still show the old queued message; worker claim through completion used the role-based runtime code."
+  proof_repo: AaronAbuUsama/test-repo
+  proof_pr: 2
+  proof_pr_url: https://github.com/AaronAbuUsama/test-repo/pull/2
+  agent_run_id: 75605a32-33b9-4fa0-859a-ad551c43ecd7
+  worker_role: code_review
+  worker_display_name: "Code Review Worker"
+  terminal_status: completed
+  terminal_stage: completed
+  sandbox_id: 3ba6adcd-500c-46e5-b29a-e3b44581bcf7
+  durable_event_count: 120
+  role_based_events_observed:
+    - worker.claimed payload workerRole=code_review
+    - sandbox.created labels workerRole=code_review
+    - github.tool.start_github_review.completed
+    - github.tool.submit_pull_request_review.completed
+    - github.tool.complete_review_check.completed
+    - sandbox.deleted
+    - result.completed message "Code review completed"
+  github_output_proof:
+    start_comment_url: https://github.com/AaronAbuUsama/test-repo/pull/2#issuecomment-4891992064
+    pull_request_review_url: https://github.com/AaronAbuUsama/test-repo/pull/2#pullrequestreview-4635181642
+    inline_comments: 3
+    check_run_url: https://github.com/AaronAbuUsama/test-repo/runs/85354587175
+    check_conclusion: action_required
+  daytona_orphan_check: "Passed: no matching sandboxes remained for workerRole/agentRunId/organizationId labels"
+
+previous_real_failure:
+  delivery: "Real pull_request.opened webhook arrived through Smee"
+  agent_run_id: 5b46f32d-387b-4dff-94d4-652cc417c1f3
+  terminal_status: failed
+  failed_stage: installation_token
+  error: "EPERM: operation not permitted, open '/Users/abuusama/Downloads/localhost-abu-bakr-at-coworker.2026-07-05.private-key.pem'"
+  guard_added: "proof:preflight and worker launcher now fail before polling when the key is unreadable"
+
+decisions:
+  worker_naming: "Worker roles are stable backend capability ids; workerDisplayName is user-defined display data. Do not hard-code personal names into runtime modules, events, sandbox labels, or run decisions."
+  runtime_spine: "Use generic agent_runs, agent_run_events, agent_run_artifacts, agent_run_sandboxes"
+  review_run_role: "Legacy/manual compatibility only; not the proof source of truth"
+  flue_shape: "Code review worker PR reviews run as a real Flue workflow where possible"
+  ui_surface: "Minimal backend/API run list and run events; no UI design work"
+  sandbox_plane: "Daytona only for agent execution; Docker/Dokploy only deploys services"
+  completion_proof: "Real GitHub PR webhook through Smee, not fixtures/direct calls"
+
+tasks:
+  - id: inspect-current-slice2
+    title: Read current uncommitted Slice 2 and preserve useful work
+    status: done
+    proves: "We build on existing webhook/worker/Daytona code without blindly rewriting"
+
+  - id: reread-flue-docs
+    title: Re-read Flue workflow, observability, events, Daytona, GitHub channel, skills/subagents docs
+    status: done
+    proves: "Runner uses official Flue extension points"
+
+  - id: add-generic-run-spine
+    title: Add agent_runs, agent_run_events, agent_run_artifacts, agent_run_sandboxes schema and migrations
+    status: done
+    proves: "Run/event model is product-generic, not review_run-specific"
+
+  - id: webhook-to-agent-run
+    title: Make verified GitHub PR webhook admission create queued agent_run and initial events
+    status: done
+    proves: "Real webhook creates durable queued run"
+
+  - id: worker-claim-heartbeat
+    title: Worker claims queued agent_runs, writes stage and heartbeat events
+    status: done
+    proves: "Run progress survives outside terminal logs"
+
+  - id: daytona-lifecycle-events
+    title: Persist Daytona create/start/delete/failure lifecycle and sandboxId immediately after creation
+    status: done
+    proves: "Sandbox lifecycle is durable and cleanup-auditable"
+
+  - id: flue-event-capture
+    title: Persist official Flue/log/model/tool/result events or closest available stream into agent_run_events
+    status: done
+    proves: "UI can see model/tool/result progress durably"
+
+  - id: stale-run-recovery
+    title: Recover stale running runs and clean Daytona sandboxes by labels
+    status: done
+    proves: "Interrupted workers do not leave stuck runs or orphaned sandboxes"
+
+  - id: flue-github-review-tools
+    title: Add Flue-native GitHub review tools for the code review worker
+    status: done
+    proves: "The agent posts the start comment, PR review, and check run through bounded app-owned Flue tools"
+
+  - id: minimal-run-api
+    title: Add minimal API to list runs and fetch run events for UI worktree
+    status: done
+    proves: "Dashboard/API can consume durable run state"
+
+  - id: deterministic-proof-loop
+    title: Add Smee real-PR local proof runbook/script without synthetic payload success claims
+    status: done
+    proves: "Operator can repeat the real end-to-end proof"
+
+  - id: key-preflight-guard
+    title: Add local preflight so unreadable GitHub App private key is caught before consuming a webhook
+    status: done
+    proves: "Next real PR attempt waits for app-token readiness instead of failing after queue claim"
+
+  - id: verification
+    title: Run tests, typecheck, migrations, real PR proof, and GitHub output proof
+    status: done
+    proves: "Implementation and proof gates pass"
+    proof: "Real Smee PR #1 synchronize delivery completed agent_run e44b8522-ea95-4ca9-8a15-6f522cde7f43 with 106 durable events, sandbox cleanup, API listing proof, GitHub start comment/review/check proof, and validation commands"
