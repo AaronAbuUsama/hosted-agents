@@ -1,7 +1,12 @@
 import { createCollection } from "@tanstack/react-db";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 
-import { mapAgentRunToRunRow, type RunViewModelRow } from "@/lib/run-view-model";
+import {
+  mapAgentRunEventToTimelineRow,
+  mapAgentRunToRunRow,
+  type RunTimelineEventRow,
+  type RunViewModelRow,
+} from "@/lib/run-view-model";
 import { client, queryClient } from "@/utils/orpc";
 
 export const agentRunsCollection = createCollection(
@@ -18,3 +23,20 @@ export const agentRunsCollection = createCollection(
     refetchInterval: 5_000,
   }),
 );
+
+export function createAgentRunEventsCollection(runId: string) {
+  return createCollection(
+    queryCollectionOptions<RunTimelineEventRow, Error, ["agent-run-events", string], string>({
+      id: `agent-run-events:${runId}`,
+      queryKey: ["agent-run-events", runId],
+      queryFn: async () => {
+        const records = await client.agentRunEvents({ runId });
+        return records.map(mapAgentRunEventToTimelineRow);
+      },
+      queryClient,
+      getKey: (event) => event.id,
+      staleTime: 5_000,
+      refetchInterval: 5_000,
+    }),
+  );
+}

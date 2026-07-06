@@ -36,6 +36,35 @@ export type AgentRunApiRecord = {
   updatedAt: string;
 };
 
+export type AgentRunEventApiRecord = {
+  id: string;
+  runId: string;
+  sequence: number;
+  category: string;
+  type: string;
+  stage: string | null;
+  message: string | null;
+  payload: unknown;
+  flueEventIndex: number | null;
+  flueEventType: string | null;
+  createdAt: string;
+};
+
+export type RunTimelineEventStatus = "neutral" | "accent" | "warning" | "success" | "error";
+
+export type RunTimelineEventRow = {
+  id: string;
+  runId: string;
+  sequence: number;
+  sequenceLabel: string;
+  categoryLabel: string;
+  stageLabel: string;
+  typeLabel: string;
+  message: string;
+  timestamp: string;
+  status: RunTimelineEventStatus;
+};
+
 export type RunViewModelStatus = "Queued" | "Running" | "Completed" | "Failed" | "Unknown";
 
 export type RunViewModelRow = {
@@ -96,6 +125,51 @@ export function mapAgentRunToRunRow(run: AgentRunApiRecord): RunViewModelRow {
 
 export function mapAgentRunStatus(status: AgentRunApiStatus): RunViewModelStatus {
   return statusLabels[status] ?? "Unknown";
+}
+
+export function mapAgentRunEventToTimelineRow(event: AgentRunEventApiRecord): RunTimelineEventRow {
+  const fallbackLabel = humanizeStage(nonEmpty(event.stage) ?? event.type);
+
+  return {
+    id: event.id,
+    runId: event.runId,
+    sequence: event.sequence,
+    sequenceLabel: `#${event.sequence}`,
+    categoryLabel: humanizeStage(event.category),
+    stageLabel: fallbackLabel,
+    typeLabel: humanizeStage(event.type),
+    message: nonEmpty(event.message) ?? fallbackLabel,
+    timestamp: formatDate(event.createdAt),
+    status: timelineStatusForEvent(event),
+  };
+}
+
+export function sortRunTimelineEvents(events: RunTimelineEventRow[]): RunTimelineEventRow[] {
+  return [...events].sort((left, right) => left.sequence - right.sequence);
+}
+
+function timelineStatusForEvent(event: AgentRunEventApiRecord): RunTimelineEventStatus {
+  if (event.category === "result") {
+    if (event.type === "result.completed") {
+      return "success";
+    }
+
+    if (event.type === "result.failed") {
+      return "error";
+    }
+
+    return "neutral";
+  }
+
+  if (event.category === "tool") {
+    return "warning";
+  }
+
+  if (event.category === "queue" || event.category === "github") {
+    return "neutral";
+  }
+
+  return "accent";
 }
 
 function titleForRun(run: AgentRunApiRecord): string {

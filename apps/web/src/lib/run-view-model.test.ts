@@ -3,8 +3,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  mapAgentRunEventToTimelineRow,
+  sortRunTimelineEvents,
   mapAgentRunToRunRow,
   type AgentRunApiRecord,
+  type AgentRunEventApiRecord,
+  type RunTimelineEventStatus,
   type RunViewModelRow,
 } from "./run-view-model";
 
@@ -47,6 +51,23 @@ function agentRun(overrides: Partial<AgentRunApiRecord> = {}): AgentRunApiRecord
   };
 }
 
+function agentRunEvent(overrides: Partial<AgentRunEventApiRecord> = {}): AgentRunEventApiRecord {
+  return {
+    id: "agent-run-event-7",
+    runId: "agent-run-42",
+    sequence: 7,
+    category: "worker",
+    type: "worker.claimed",
+    stage: "worker_claimed",
+    message: "Worker claimed queued GitHub pull request code review run",
+    payload: { workerRole: "code_review" },
+    flueEventIndex: null,
+    flueEventType: null,
+    createdAt: "2026-07-06T10:04:05.000Z",
+    ...overrides,
+  };
+}
+
 describe("run view model mapper", () => {
   test("maps real GitHub agent run metadata into the Runs row fields", () => {
     const row = mapAgentRunToRunRow(
@@ -74,14 +95,13 @@ describe("run view model mapper", () => {
 
   test("maps backend lifecycle statuses to explicit UI statuses without fixture-only review states", () => {
     const cases: Array<{
-      name: string;
       backendStatus: AgentRunApiRecord["status"];
       expectedStatus: RunViewModelRow["status"];
     }> = [
-      { name: "queued", backendStatus: "queued", expectedStatus: "Queued" },
-      { name: "running", backendStatus: "running", expectedStatus: "Running" },
-      { name: "completed", backendStatus: "completed", expectedStatus: "Completed" },
-      { name: "failed", backendStatus: "failed", expectedStatus: "Failed" },
+      { backendStatus: "queued", expectedStatus: "Queued" },
+      { backendStatus: "running", expectedStatus: "Running" },
+      { backendStatus: "completed", expectedStatus: "Completed" },
+      { backendStatus: "failed", expectedStatus: "Failed" },
     ];
 
     const statuses = cases.map(
@@ -95,12 +115,10 @@ describe("run view model mapper", () => {
 
   test("chooses result text from API summary, error message, then current stage", () => {
     const cases: Array<{
-      name: string;
       input: Partial<AgentRunApiRecord>;
       expectedResult: string;
     }> = [
       {
-        name: "completed summary",
         input: {
           status: "completed",
           summary: "Review completed with two high-confidence findings.",
@@ -110,7 +128,6 @@ describe("run view model mapper", () => {
         expectedResult: "Review completed with two high-confidence findings.",
       },
       {
-        name: "failed error message",
         input: {
           status: "failed",
           summary: "This stale summary must not hide the failure.",
@@ -120,7 +137,6 @@ describe("run view model mapper", () => {
         expectedResult: "sandbox unavailable",
       },
       {
-        name: "running current stage",
         input: {
           status: "running",
           summary: null,
@@ -130,7 +146,6 @@ describe("run view model mapper", () => {
         expectedResult: "GitHub tool submit pull request review started",
       },
       {
-        name: "queued current stage",
         input: {
           status: "queued",
           summary: null,
@@ -173,5 +188,112 @@ describe("run view model mapper", () => {
 
     expect(queued.started).toBe("Jul 6, 2026, 10:00 UTC");
     expect(queued.duration).toBe("Queued");
+  });
+});
+
+describe("run detail event timeline mapper", () => {
+  test("maps ordered event metadata into a timeline display row", () => {
+    const row = mapAgentRunEventToTimelineRow(
+      agentRunEvent({
+        sequence: 12,
+        category: "worker",
+        type: "worker.installation_token",
+        stage: "installation_token",
+        message: "Creating GitHub installation access token",
+        createdAt: "2026-07-06T10:04:05.000Z",
+      }),
+    );
+
+    expect(row).toMatchObject({
+      id: "agent-run-event-7",
+      runId: "agent-run-42",
+      sequenceLabel: "#12",
+      categoryLabel: "Worker",
+      stageLabel: "Installation token",
+      message: "Creating GitHub installation access token",
+      timestamp: "Jul 6, 2026, 10:04 UTC",
+      status: "accent",
+    });
+  });
+
+  test("orders timeline events by durable sequence before display", () => {
+    const timelineEvents = [
+      mapAgentRunEventToTimelineRow(agentRunEvent({ id: "agent-run-event-30", sequence: 30 })),
+      mapAgentRunEventToTimelineRow(agentRunEvent({ id: "agent-run-event-10", sequence: 10 })),
+      mapAgentRunEventToTimelineRow(agentRunEvent({ id: "agent-run-event-20", sequence: 20 })),
+    ];
+
+    expect(sortRunTimelineEvents(timelineEvents).map((event) => event.sequenceLabel)).toEqual([
+      "#10",
+      "#20",
+      "#30",
+    ]);
+  });
+
+  test("uses a humanized stage or type when the API event message is missing", () => {
+    const fallbackMessages = [
+      mapAgentRunEventToTimelineRow(
+        agentRunEvent({
+          type: "github.tool.create_pull_request_review.started",
+          stage: "github_tool",
+          message: "",
+        }),
+      ).message,
+      mapAgentRunEventToTimelineRow(
+        agentRunEvent({
+          type: "worker.repository_lookup",
+          stage: null,
+          message: "   ",
+        }),
+      ).message,
+    ];
+
+    expect(fallbackMessages).toEqual(["GitHub tool", "Worker repository lookup"]);
+    expect(fallbackMessages).not.toContain("");
+    expect(fallbackMessages).not.toContain("Loaded pull request diff");
+  });
+
+  test("maps result events to terminal statuses and active categories to non-error statuses", () => {
+    const cases: Array<{
+      category: AgentRunEventApiRecord["category"];
+      type: AgentRunEventApiRecord["type"];
+      expectedStatus: RunTimelineEventStatus;
+    }> = [
+      {
+        category: "result",
+        type: "result.completed",
+        expectedStatus: "success",
+      },
+      {
+        category: "result",
+        type: "result.failed",
+        expectedStatus: "error",
+      },
+      { category: "queue", type: "queue.created", expectedStatus: "neutral" },
+      {
+        category: "worker",
+        type: "worker.claimed",
+        expectedStatus: "accent",
+      },
+      {
+        category: "flue",
+        type: "flue.operation_start",
+        expectedStatus: "accent",
+      },
+      { category: "model", type: "flue.turn_start", expectedStatus: "accent" },
+      {
+        category: "tool",
+        type: "github.tool.create_pull_request_review.started",
+        expectedStatus: "warning",
+      },
+    ];
+
+    const statuses = cases.map(
+      ({ category, type }) =>
+        mapAgentRunEventToTimelineRow(agentRunEvent({ category, type })).status,
+    );
+
+    expect(statuses).toEqual(cases.map(({ expectedStatus }) => expectedStatus));
+    expect(statuses.slice(2)).not.toContain("error");
   });
 });
