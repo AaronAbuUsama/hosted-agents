@@ -65,6 +65,29 @@ export type RunTimelineEventRow = {
   status: RunTimelineEventStatus;
 };
 
+export type RunTranscriptRole = "user" | "assistant" | "tool";
+
+export type RunTranscriptToolCallRow = {
+  id: string;
+  name: string;
+  input: unknown;
+};
+
+export type RunTranscriptRow = {
+  id: string;
+  runId: string;
+  sequence: number;
+  role: RunTranscriptRole;
+  content: string;
+  timestamp: string;
+  thinking: string | null;
+  toolCalls: RunTranscriptToolCallRow[];
+  toolCallId: string | null;
+  toolName: string | null;
+  isError: boolean;
+  model: string | null;
+};
+
 export type RunViewModelStatus = "Queued" | "Running" | "Completed" | "Failed" | "Unknown";
 
 export type RunViewModelRow = {
@@ -146,6 +169,84 @@ export function mapAgentRunEventToTimelineRow(event: AgentRunEventApiRecord): Ru
 
 export function sortRunTimelineEvents(events: RunTimelineEventRow[]): RunTimelineEventRow[] {
   return [...events].sort((left, right) => left.sequence - right.sequence);
+}
+
+export function mapAgentRunEventsToTranscriptRows(
+  events: AgentRunEventApiRecord[],
+): RunTranscriptRow[] {
+  return [...events]
+    .sort((left, right) => left.sequence - right.sequence)
+    .flatMap(mapAgentRunEventToTranscriptRow);
+}
+
+function mapAgentRunEventToTranscriptRow(event: AgentRunEventApiRecord): RunTranscriptRow[] {
+  const payload = asRecord(event.payload);
+  if (payload.type !== "message_end" && event.flueEventType !== "message_end") {
+    return [];
+  }
+
+  const message = asRecord(payload.message);
+  const role = transcriptRole(message.role);
+  if (!role) {
+    return [];
+  }
+
+  if (role === "tool") {
+    return [mapToolResultTranscriptRow(event, message)];
+  }
+
+  const contentParts = normalizeContentParts(message.content);
+  const content = textFromContentParts(contentParts);
+  const thinking = thinkingFromContentParts(contentParts);
+  const toolCalls = toolCallsFromContentParts(contentParts);
+
+  if (!content && !thinking && toolCalls.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      id: event.id,
+      runId: event.runId,
+      sequence: event.sequence,
+      role,
+      content,
+      timestamp: formatDate(event.createdAt),
+      thinking,
+      toolCalls,
+      toolCallId: null,
+      toolName: null,
+      isError: Boolean(message.isError),
+      model: stringValue(message.model),
+    },
+  ];
+}
+
+function mapToolResultTranscriptRow(
+  event: AgentRunEventApiRecord,
+  message: Record<string, unknown>,
+): RunTranscriptRow {
+  const contentParts = normalizeContentParts(message.content);
+  const resultPart = contentParts.find((part) => asRecord(part).type === "toolResult");
+  const resultRecord = asRecord(resultPart);
+  const details = resultRecord.details ?? asRecord(message.details).output ?? message.details;
+  const textContent = textFromContentParts(contentParts);
+  const content = details === undefined ? textContent : formatPayload(details);
+
+  return {
+    id: event.id,
+    runId: event.runId,
+    sequence: event.sequence,
+    role: "tool",
+    content,
+    timestamp: formatDate(event.createdAt),
+    thinking: null,
+    toolCalls: [],
+    toolCallId: stringValue(message.toolCallId) ?? stringValue(resultRecord.toolCallId),
+    toolName: stringValue(message.toolName) ?? stringValue(resultRecord.toolName),
+    isError: Boolean(message.isError),
+    model: null,
+  };
 }
 
 function timelineStatusForEvent(event: AgentRunEventApiRecord): RunTimelineEventStatus {
@@ -283,6 +384,87 @@ function parseTimestamp(value: string | null): number | null {
 
   const time = new Date(value).getTime();
   return Number.isNaN(time) ? null : time;
+}
+
+function transcriptRole(value: unknown): RunTranscriptRole | null {
+  if (value === "user" || value === "assistant") {
+    return value;
+  }
+
+  if (value === "toolResult" || value === "tool") {
+    return "tool";
+  }
+
+  return null;
+}
+
+function normalizeContentParts(content: unknown): unknown[] {
+  if (typeof content === "string") {
+    return [{ type: "text", text: content }];
+  }
+
+  return Array.isArray(content) ? content : [];
+}
+
+function textFromContentParts(parts: unknown[]): string {
+  return parts
+    .map((part) => {
+      const record = asRecord(part);
+      if (record.type === "text") {
+        return stringValue(record.text);
+      }
+      return null;
+    })
+    .filter((text): text is string => Boolean(text))
+    .join("\n\n");
+}
+
+function thinkingFromContentParts(parts: unknown[]): string | null {
+  const thinking = parts
+    .map((part) => {
+      const record = asRecord(part);
+      if (record.type === "thinking" || record.type === "reasoning") {
+        return stringValue(record.thinking) ?? stringValue(record.text);
+      }
+      return null;
+    })
+    .filter((text): text is string => Boolean(text))
+    .join("\n\n");
+
+  return thinking || null;
+}
+
+function toolCallsFromContentParts(parts: unknown[]): RunTranscriptToolCallRow[] {
+  return parts.flatMap((part, index) => {
+    const record = asRecord(part);
+    if (record.type !== "toolCall") {
+      return [];
+    }
+
+    return [
+      {
+        id: stringValue(record.id) ?? stringValue(record.toolCallId) ?? `tool-call-${index}`,
+        name: stringValue(record.name) ?? stringValue(record.toolName) ?? "tool",
+        input: record.arguments ?? record.args ?? {},
+      },
+    ];
+  });
+}
+
+function formatPayload(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function humanizeToken(value: string): string {

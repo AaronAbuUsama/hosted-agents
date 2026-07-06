@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   mapAgentRunEventToTimelineRow,
+  mapAgentRunEventsToTranscriptRows,
   sortRunTimelineEvents,
   mapAgentRunToRunRow,
   type AgentRunApiRecord,
@@ -295,5 +296,216 @@ describe("run detail event timeline mapper", () => {
 
     expect(statuses).toEqual(cases.map(({ expectedStatus }) => expectedStatus));
     expect(statuses.slice(2)).not.toContain("error");
+  });
+});
+
+describe("run transcript event mapper", () => {
+  test("maps Flue user message_end text into a user transcript row", () => {
+    const rows = mapAgentRunEventsToTranscriptRows([
+      agentRunEvent({
+        id: "event-user-message",
+        sequence: 20,
+        category: "model",
+        type: "flue.message_end",
+        message: "Flue event: message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 3,
+          message: {
+            role: "user",
+            content: "Please review the pull request for auth regressions.",
+          },
+        },
+        flueEventIndex: 3,
+        flueEventType: "message_end",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "event-user-message",
+      runId: "agent-run-42",
+      sequence: 20,
+      role: "user",
+      content: "Please review the pull request for auth regressions.",
+    });
+  });
+
+  test("maps assistant toolCall content into an assistant row with the requested tool call", () => {
+    const [row] = mapAgentRunEventsToTranscriptRows([
+      agentRunEvent({
+        id: "event-assistant-tool-call",
+        sequence: 30,
+        category: "model",
+        type: "flue.message_end",
+        message: "Flue event: message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 4,
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "I will inspect the changed files first." },
+              {
+                type: "toolCall",
+                toolCallId: "call-shell-1",
+                toolName: "shell",
+                args: { command: "bun test apps/web/src/lib/run-view-model.test.ts" },
+              },
+            ],
+          },
+        },
+        flueEventIndex: 4,
+        flueEventType: "message_end",
+      }),
+    ]);
+
+    expect(row).toMatchObject({
+      id: "event-assistant-tool-call",
+      runId: "agent-run-42",
+      sequence: 30,
+      role: "assistant",
+      content: "I will inspect the changed files first.",
+      toolCalls: [
+        {
+          id: "call-shell-1",
+          name: "shell",
+          input: { command: "bun test apps/web/src/lib/run-view-model.test.ts" },
+        },
+      ],
+    });
+  });
+
+  test("maps toolResult message_end details into a readable tool result row", () => {
+    const [row] = mapAgentRunEventsToTranscriptRows([
+      agentRunEvent({
+        id: "event-tool-result",
+        sequence: 40,
+        category: "tool",
+        type: "flue.message_end",
+        message: "Flue event: message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 5,
+          message: {
+            role: "toolResult",
+            content: [
+              {
+                type: "toolResult",
+                toolCallId: "call-shell-1",
+                toolName: "shell",
+                details: {
+                  exitCode: 1,
+                  output:
+                    "error: Export named 'mapAgentRunEventsToTranscriptRows' not found in module",
+                },
+              },
+            ],
+          },
+        },
+        flueEventIndex: 5,
+        flueEventType: "message_end",
+      }),
+    ]);
+
+    expect(row).toMatchObject({
+      id: "event-tool-result",
+      runId: "agent-run-42",
+      sequence: 40,
+      role: "tool",
+      toolCallId: "call-shell-1",
+      toolName: "shell",
+    });
+    expect(row.content).toContain('"exitCode": 1');
+    expect(row.content).toContain("mapAgentRunEventsToTranscriptRows");
+  });
+
+  test("ignores durable non-message timeline events when building transcript rows", () => {
+    const rows = mapAgentRunEventsToTranscriptRows([
+      agentRunEvent({
+        id: "event-operation-start",
+        sequence: 10,
+        category: "flue",
+        type: "flue.operation_start",
+        message: "operation_start: review",
+        payload: { type: "operation_start", eventIndex: 1, operationKind: "review" },
+        flueEventIndex: 1,
+        flueEventType: "operation_start",
+      }),
+      agentRunEvent({
+        id: "event-user-message",
+        sequence: 20,
+        category: "model",
+        type: "flue.message_end",
+        message: "Flue event: message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 2,
+          message: { role: "user", content: "Only this message belongs in transcript." },
+        },
+        flueEventIndex: 2,
+        flueEventType: "message_end",
+      }),
+      agentRunEvent({
+        id: "event-worker-claimed",
+        sequence: 30,
+        category: "worker",
+        type: "worker.claimed",
+        stage: "worker_claimed",
+        message: "Worker claimed queued GitHub pull request code review run",
+        payload: { workerRole: "code_review" },
+        flueEventIndex: null,
+        flueEventType: null,
+      }),
+    ]);
+
+    expect(rows.map((row) => row.id)).toEqual(["event-user-message"]);
+  });
+
+  test("orders transcript rows by durable event sequence instead of input order", () => {
+    const rows = mapAgentRunEventsToTranscriptRows([
+      agentRunEvent({
+        id: "event-third",
+        sequence: 30,
+        category: "model",
+        type: "flue.message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 3,
+          message: { role: "assistant", content: "Third response." },
+        },
+        flueEventIndex: 3,
+        flueEventType: "message_end",
+      }),
+      agentRunEvent({
+        id: "event-first",
+        sequence: 10,
+        category: "model",
+        type: "flue.message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 1,
+          message: { role: "user", content: "First request." },
+        },
+        flueEventIndex: 1,
+        flueEventType: "message_end",
+      }),
+      agentRunEvent({
+        id: "event-second",
+        sequence: 20,
+        category: "model",
+        type: "flue.message_end",
+        payload: {
+          type: "message_end",
+          eventIndex: 2,
+          message: { role: "assistant", content: "Second response." },
+        },
+        flueEventIndex: 2,
+        flueEventType: "message_end",
+      }),
+    ]);
+
+    expect(rows.map((row) => row.id)).toEqual(["event-first", "event-second", "event-third"]);
+    expect(rows.map((row) => row.sequence)).toEqual([10, 20, 30]);
   });
 });

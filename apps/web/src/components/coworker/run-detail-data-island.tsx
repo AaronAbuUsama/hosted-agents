@@ -10,7 +10,12 @@ import { Text } from "@astryxdesign/core/Text";
 import { useLiveQuery } from "@tanstack/react-db";
 
 import { agentRunsCollection, createAgentRunEventsCollection } from "@/lib/collections/agent-runs";
-import { sortRunTimelineEvents, type RunViewModelRow } from "@/lib/run-view-model";
+import {
+  mapAgentRunEventToTimelineRow,
+  mapAgentRunEventsToTranscriptRows,
+  sortRunTimelineEvents,
+  type RunViewModelRow,
+} from "@/lib/run-view-model";
 
 import RunRollout, { type RunDetailTab } from "./run-rollout";
 
@@ -61,16 +66,33 @@ function RunDetailEventsIsland({
 }): ReactElement {
   const [eventsCollection] = useState(() => createAgentRunEventsCollection(run.id));
   const { data: events, isError, isLoading } = useLiveQuery(eventsCollection);
-  const timelineState = isError ? "error" : isLoading && events.length === 0 ? "loading" : "ready";
+  const timelineState = getTimelineState(isError, isLoading, events.length);
 
   return (
     <RunRollout
       run={run}
-      events={sortRunTimelineEvents(events)}
+      events={sortRunTimelineEvents(events.map(mapAgentRunEventToTimelineRow))}
+      transcriptRows={mapAgentRunEventsToTranscriptRows(events)}
       timelineState={timelineState}
       initialTab={initialTab}
     />
   );
+}
+
+function getTimelineState(
+  isError: boolean,
+  isLoading: boolean,
+  eventCount: number,
+): "error" | "loading" | "ready" {
+  if (isError) {
+    return "error";
+  }
+
+  if (isLoading && eventCount === 0) {
+    return "loading";
+  }
+
+  return "ready";
 }
 
 export function RunDetailLoading(): ReactElement {
