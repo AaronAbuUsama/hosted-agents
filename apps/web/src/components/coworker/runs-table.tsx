@@ -1,10 +1,12 @@
 "use client";
 
-import { Fragment, useMemo, useState, type CSSProperties, type ReactElement } from "react";
+import { Fragment, useState, type CSSProperties, type ReactElement } from "react";
 
+import { Banner } from "@astryxdesign/core/Banner";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Center } from "@astryxdesign/core/Center";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Link } from "@astryxdesign/core/Link";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
@@ -35,26 +37,25 @@ import {
   ExclamationTriangleIcon,
   PlayCircleIcon,
 } from "@heroicons/react/24/outline";
+import { useLiveQuery } from "@tanstack/react-db";
 import { useRouter } from "next/navigation";
 
-import { coworkers, projects, runs, type Run, type RunStatus } from "@/lib/coworker-data";
+import { agentRunsCollection } from "@/lib/collections/agent-runs";
+import type { RunViewModelRow, RunViewModelStatus } from "@/lib/run-view-model";
 
-type RunRow = Run & {
-  coworkerName: string;
-};
+type RowsByStatus = Record<RunViewModelStatus, RunViewModelRow[]>;
 
-type RowsByStatus = Record<RunStatus, RunRow[]>;
+const statusOrder: RunViewModelStatus[] = ["Queued", "Running", "Completed", "Failed", "Unknown"];
 
-const statusOrder: RunStatus[] = ["Running", "Needs review", "Blocked", "Completed"];
-
-const statusDotVariants: Record<RunStatus, "accent" | "warning" | "success" | "error"> = {
+const statusDotVariants: Record<RunViewModelStatus, "accent" | "warning" | "success" | "error"> = {
+  Queued: "accent",
   Running: "accent",
-  "Needs review": "warning",
-  Blocked: "error",
   Completed: "success",
+  Failed: "error",
+  Unknown: "warning",
 };
 
-const columns: TableColumn<RunRow>[] = [
+const columns: TableColumn<RunViewModelRow>[] = [
   { key: "status", header: "", width: pixel(44) },
   { key: "title", header: "Run", width: proportional(1.6) },
   { key: "coworker", header: "Coworker", width: pixel(150) },
@@ -65,7 +66,7 @@ const columns: TableColumn<RunRow>[] = [
   { key: "actions", header: "", width: pixel(72) },
 ];
 
-const compactColumns: TableColumn<RunRow>[] = [
+const compactColumns: TableColumn<RunViewModelRow>[] = [
   { key: "status", header: "", width: pixel(36) },
   { key: "title", header: "Run", width: proportional(1) },
   { key: "actions", header: "", width: pixel(64) },
@@ -89,25 +90,13 @@ const tableContentStyle: CSSProperties = {
   overflow: "hidden",
 };
 
-const coworkerNameById: Record<string, string> = Object.fromEntries(
-  coworkers.map((coworker) => [coworker.id, coworker.name] as const),
-);
-
-const projectNameByRepo: Record<string, string> = Object.fromEntries(
-  projects.map((project) => [project.repo, project.name] as const),
-);
-
-const rows: RunRow[] = runs.map((run) => ({
-  ...run,
-  coworkerName: coworkerNameById[run.coworkerId] ?? "Coworker",
-}));
-
-function groupRowsByStatus(runRows: RunRow[]): RowsByStatus {
+function groupRowsByStatus(runRows: RunViewModelRow[]): RowsByStatus {
   const grouped: RowsByStatus = {
+    Queued: [],
     Running: [],
-    "Needs review": [],
-    Blocked: [],
     Completed: [],
+    Failed: [],
+    Unknown: [],
   };
 
   for (const run of runRows) {
@@ -120,28 +109,31 @@ function groupRowsByStatus(runRows: RunRow[]): RowsByStatus {
 export default function RunsTable(): ReactElement {
   const router = useRouter();
   const [search, setSearch] = useState("");
-  const [expandedGroups, setExpandedGroups] = useState<Set<RunStatus>>(() => new Set(statusOrder));
+  const [expandedGroups, setExpandedGroups] = useState<Set<RunViewModelStatus>>(
+    () => new Set(statusOrder),
+  );
   const isCompact = useMediaQuery("(max-width: 1360px)");
+  const { data: rows, isError, isLoading } = useLiveQuery(agentRunsCollection);
 
-  const filteredRows = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) {
-      return rows;
-    }
-
-    return rows.filter((run) =>
-      [run.id, run.title, run.coworkerName, run.repo, run.branch, run.trigger, run.result]
-        .join(" ")
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [search]);
-
-  const groupedRows = useMemo(() => groupRowsByStatus(filteredRows), [filteredRows]);
+  const query = search.trim().toLowerCase();
+  const filteredRows = query
+    ? rows.filter((run) =>
+        [run.id, run.title, run.coworkerName, run.repo, run.branch, run.trigger, run.result]
+          .join(" ")
+          .toLowerCase()
+          .includes(query),
+      )
+    : rows;
+  const groupedRows = groupRowsByStatus(filteredRows);
+  const visibleStatusOrder = statusOrder.filter((status) => groupedRows[status].length > 0);
+  const hasLoadedRows = !isError && !isLoading;
+  const hasNoRows = hasLoadedRows && rows.length === 0;
+  const hasNoSearchResults = hasLoadedRows && rows.length > 0 && filteredRows.length === 0;
   const activeColumns = isCompact ? compactColumns : columns;
   const activeColumnWidths = isCompact ? resolvedCompactColumnWidths : resolvedColumnWidths;
+  const showsPaddedState = isError || hasNoRows || hasNoSearchResults;
 
-  function toggleGroup(status: RunStatus): void {
+  function toggleGroup(status: RunViewModelStatus): void {
     setExpandedGroups((current) => {
       const next = new Set(current);
       if (next.has(status)) {
@@ -184,70 +176,93 @@ export default function RunsTable(): ReactElement {
         </LayoutHeader>
       }
       content={
-        <LayoutContent role="main" padding={0} style={tableContentStyle}>
-          <Table
-            columns={activeColumns}
-            density="balanced"
-            dividers="rows"
-            textOverflow="truncate"
-            hasHover
-          >
-            <colgroup>
-              {activeColumns.map((column) => (
-                <col key={column.key} style={activeColumnWidths.columns.get(column.key)?.style} />
-              ))}
-            </colgroup>
-            <tbody>
-              {statusOrder.map((status) => {
-                const runsForStatus = groupedRows[status];
-                if (runsForStatus.length === 0) {
-                  return null;
-                }
+        <LayoutContent role="main" padding={showsPaddedState ? 4 : 0} style={tableContentStyle}>
+          {isError ? (
+            <Banner
+              status="error"
+              title="Runs could not load"
+              description="The server did not return agent runs for this session. Check that the local API is running and that the browser has an active organization session."
+              container="section"
+            />
+          ) : isLoading && rows.length === 0 ? (
+            <Center>
+              <Text type="supporting" color="secondary">
+                Loading runs…
+              </Text>
+            </Center>
+          ) : hasNoRows ? (
+            <EmptyState
+              title="No runs yet"
+              description="Queued GitHub pull request reviews and worker runs will appear here after webhook admission creates agent_run records."
+              headingLevel={2}
+            />
+          ) : hasNoSearchResults ? (
+            <EmptyState
+              title="No matching runs"
+              description="Clear the filter or search by run id, coworker, repository, branch, trigger, or result."
+              headingLevel={2}
+            />
+          ) : (
+            <Table
+              columns={activeColumns}
+              density="balanced"
+              dividers="rows"
+              textOverflow="truncate"
+              hasHover
+            >
+              <colgroup>
+                {activeColumns.map((column) => (
+                  <col key={column.key} style={activeColumnWidths.columns.get(column.key)?.style} />
+                ))}
+              </colgroup>
+              <tbody>
+                {visibleStatusOrder.map((status) => {
+                  const runsForStatus = groupedRows[status];
+                  const isExpanded = expandedGroups.has(status);
 
-                const isExpanded = expandedGroups.has(status);
-
-                return (
-                  <Fragment key={status}>
-                    <TableRow
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => toggleGroup(status)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          toggleGroup(status);
-                        }
-                      }}
-                    >
-                      <TableCell colSpan={activeColumns.length} style={groupHeaderCell}>
-                        <HStack gap={2} vAlign="center">
-                          <Icon
-                            icon={isExpanded ? ChevronDownIcon : ChevronRightIcon}
-                            size="sm"
-                            color="secondary"
-                          />
-                          <Text type="body" weight="bold">
-                            {status}
-                          </Text>
-                          <Badge variant="neutral" label={String(runsForStatus.length)} />
-                        </HStack>
-                      </TableCell>
-                    </TableRow>
-                    {isExpanded
-                      ? runsForStatus.map((run) => (
-                          <RunTableRow
-                            key={run.id}
-                            run={run}
-                            isCompact={isCompact}
-                            onOpenRun={() => router.push(`/app/runs/${run.id}`)}
-                          />
-                        ))
-                      : null}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </Table>
+                  return (
+                    <Fragment key={status}>
+                      <TableRow
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => toggleGroup(status)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleGroup(status);
+                          }
+                        }}
+                      >
+                        <TableCell colSpan={activeColumns.length} style={groupHeaderCell}>
+                          <HStack gap={2} vAlign="center">
+                            <Icon
+                              icon={isExpanded ? ChevronDownIcon : ChevronRightIcon}
+                              size="sm"
+                              color="secondary"
+                            />
+                            <Text type="body" weight="bold">
+                              {status}
+                            </Text>
+                            <Badge variant="neutral" label={String(runsForStatus.length)} />
+                          </HStack>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded
+                        ? runsForStatus.map((run) => (
+                            <RunTableRow
+                              key={run.id}
+                              run={run}
+                              isCompact={isCompact}
+                              onOpenRun={() => router.push(`/app/runs/${run.id}`)}
+                            />
+                          ))
+                        : null}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </Table>
+          )}
         </LayoutContent>
       }
     />
@@ -255,7 +270,7 @@ export default function RunsTable(): ReactElement {
 }
 
 type RunTableRowProps = {
-  run: RunRow;
+  run: RunViewModelRow;
   isCompact: boolean;
   onOpenRun: () => void;
 };
@@ -294,7 +309,7 @@ function RunTableRow({ run, isCompact, onOpenRun }: RunTableRowProps): ReactElem
           <TableCell>
             <VStack gap={1}>
               <Text type="body" maxLines={1}>
-                {projectNameByRepo[run.repo] ?? run.repo}
+                {run.repo}
               </Text>
               <Text type="supporting" color="secondary" maxLines={1}>
                 {run.branch}
@@ -331,12 +346,18 @@ function RunTableRow({ run, isCompact, onOpenRun }: RunTableRowProps): ReactElem
   );
 }
 
-function RunPrimaryCell({ run, isCompact }: { run: RunRow; isCompact: boolean }): ReactElement {
+function RunPrimaryCell({
+  run,
+  isCompact,
+}: {
+  run: RunViewModelRow;
+  isCompact: boolean;
+}): ReactElement {
   return (
     <VStack gap={1}>
       <HStack gap={2} vAlign="center" wrap="wrap">
         <Icon
-          icon={run.status === "Blocked" ? ExclamationTriangleIcon : PlayCircleIcon}
+          icon={run.status === "Failed" ? ExclamationTriangleIcon : PlayCircleIcon}
           size="sm"
           color="secondary"
         />
@@ -359,7 +380,7 @@ function RunPrimaryCell({ run, isCompact }: { run: RunRow; isCompact: boolean })
             </Text>
           </HStack>
           <Text type="supporting" color="secondary" maxLines={1}>
-            {projectNameByRepo[run.repo] ?? run.repo}
+            {run.repo}
           </Text>
           <Text type="supporting" color="secondary" hasTabularNumbers>
             {run.started} / {run.duration}
