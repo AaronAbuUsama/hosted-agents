@@ -9,8 +9,9 @@ import { Section } from "@astryxdesign/core/Section";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
 import { ArrowRightIcon, SparklesIcon } from "@heroicons/react/24/outline";
-import { useRouter } from "next/navigation";
-import { type CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
+
+import { authClient } from "@/lib/auth-client";
 
 type AuthMode = "signin" | "signup";
 
@@ -59,11 +60,23 @@ const AUTH_SPLIT_CSS = `
 `;
 
 export default function AuthForm({ mode }: AuthFormProps) {
-  const router = useRouter();
   const isSignup = mode === "signup";
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  function continueWithGitHub(): void {
-    router.push(isSignup ? "/onboarding/github" : "/app");
+  async function continueWithGitHub(): Promise<void> {
+    setIsSigningIn(true);
+    setErrorMessage(null);
+
+    try {
+      await authClient.signIn.social({
+        provider: "github",
+        callbackURL: isSignup ? "/onboarding/github" : "/app",
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "GitHub sign-in failed.");
+      setIsSigningIn(false);
+    }
   }
 
   return (
@@ -101,12 +114,19 @@ export default function AuthForm({ mode }: AuthFormProps) {
                       </VStack>
 
                       <Button
-                        label="Continue with GitHub"
+                        label={isSigningIn ? "Opening GitHub" : "Continue with GitHub"}
                         variant="primary"
                         size="lg"
                         icon={<Icon icon={ArrowRightIcon} size="sm" />}
+                        isDisabled={isSigningIn}
+                        isLoading={isSigningIn}
                         onClick={continueWithGitHub}
                       />
+                      {errorMessage ? (
+                        <Text type="supporting" color="secondary" as="p">
+                          {errorMessage}
+                        </Text>
+                      ) : null}
                     </VStack>
                   </Center>
                 </StackItem>

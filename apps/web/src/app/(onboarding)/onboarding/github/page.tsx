@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 
 import { Button } from "@astryxdesign/core/Button";
 import { Grid } from "@astryxdesign/core/Grid";
@@ -21,30 +21,67 @@ import {
 } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
 
-import { projects, type Project } from "@/lib/coworker-data";
+import { client } from "@/utils/orpc";
 
 type GitHubStage = "apps" | "repositories" | "finish";
 type AppId = "reviewer" | "coder";
-
-const githubAccount = {
-  owner: "Capxul Alpha",
-  account: "capxul",
-};
-
-const requiredLabels = ["coworker:review", "coworker:implement"];
+type GitHubInstallation = Awaited<ReturnType<typeof client.githubInstallations>>[number];
+type GitHubRepository = GitHubInstallation["repositories"][number];
 
 export default function GitHubOnboardingPage(): ReactElement {
   const router = useRouter();
   const [stage, setStage] = useState<GitHubStage>("apps");
-  const [connectedApps, setConnectedApps] = useState<Record<AppId, boolean>>({
-    reviewer: false,
-    coder: false,
-  });
-  const areAppsConnected = connectedApps.reviewer && connectedApps.coder;
-  const areRepositoriesValidated = areAppsConnected;
+  const [installations, setInstallations] = useState<GitHubInstallation[]>([]);
+  const [isLoadingInstallations, setIsLoadingInstallations] = useState(true);
+  const [isStartingReviewerInstall, setIsStartingReviewerInstall] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
 
-  function connectApp(appId: AppId): void {
-    setConnectedApps((current) => ({ ...current, [appId]: true }));
+  const linkedRepositories = useMemo(
+    () => installations.flatMap((installation) => installation.repositories),
+    [installations],
+  );
+  const reviewerInstallation = installations[0] ?? null;
+  const accountLabel = reviewerInstallation?.accountLogin ?? "GitHub account linked on callback";
+  const areAppsConnected = Boolean(reviewerInstallation);
+  const areRepositoriesValidated = linkedRepositories.length > 0;
+
+  const loadInstallations = useCallback(async () => {
+    setIsLoadingInstallations(true);
+    setSetupError(null);
+
+    try {
+      setInstallations(await client.githubInstallations({}));
+    } catch (error) {
+      setSetupError(
+        error instanceof Error ? error.message : "Unable to load GitHub installations.",
+      );
+    } finally {
+      setIsLoadingInstallations(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadInstallations();
+  }, [loadInstallations]);
+
+  async function connectReviewerApp(): Promise<void> {
+    setIsStartingReviewerInstall(true);
+    setSetupError(null);
+
+    try {
+      const result = await client.githubAppInstallUrl({});
+
+      if (!result.configured || !result.installUrl) {
+        setSetupError("Reviewer GitHub App is not configured for this environment.");
+        setIsStartingReviewerInstall(false);
+        return;
+      }
+
+      window.location.assign(result.installUrl);
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : "Unable to start GitHub install.");
+      setIsStartingReviewerInstall(false);
+    }
   }
 
   return (
@@ -64,7 +101,7 @@ export default function GitHubOnboardingPage(): ReactElement {
             <section className="border-b border-border px-5 py-4">
               <HStack gap={4} wrap="wrap">
                 <ProgressItem
-                  label="Connect apps"
+                  label="Connect app"
                   isActive={stage === "apps"}
                   isComplete={areAppsConnected}
                 />
@@ -111,11 +148,27 @@ export default function GitHubOnboardingPage(): ReactElement {
 
               <Section variant="muted" padding={5}>
                 {stage === "apps" ? (
-                  <AppsPanel connectedApps={connectedApps} onConnectApp={connectApp} />
+                  <AppsPanel
+                    accountLabel={accountLabel}
+                    installError={setupError}
+                    isLoadingInstallations={isLoadingInstallations}
+                    isReviewerConnected={areAppsConnected}
+                    isStartingReviewerInstall={isStartingReviewerInstall}
+                    onConnectReviewer={connectReviewerApp}
+                    onRefresh={loadInstallations}
+                  />
                 ) : stage === "repositories" ? (
-                  <RepositoriesPanel />
+                  <RepositoriesPanel
+                    installError={setupError}
+                    isLoading={isLoadingInstallations}
+                    onRefresh={loadInstallations}
+                    repositories={linkedRepositories}
+                  />
                 ) : (
-                  <FinishPanel />
+                  <FinishPanel
+                    accountLabel={accountLabel}
+                    repositoryCount={linkedRepositories.length}
+                  />
                 )}
               </Section>
             </Grid>
@@ -138,12 +191,12 @@ function stageTitle(stage: GitHubStage): string {
 
 function stageDescription(stage: GitHubStage): string {
   if (stage === "repositories") {
-    return "Coworker reads the GitHub installation, then validates app coverage and required labels.";
+    return "Coworker reads repositories from the linked reviewer GitHub App installation.";
   }
   if (stage === "finish") {
-    return "Both apps are connected and the linked repositories have the required setup.";
+    return "The reviewer app is connected. The coder app remains disabled until its GitHub App is added.";
   }
-  return "Connect the reviewer app and coder app to the same GitHub account.";
+  return "Connect the reviewer GitHub App. The coder app is visible here, but not enabled in this PR.";
 }
 
 function StageActions({
@@ -210,11 +263,21 @@ function ProgressItem({
 }
 
 function AppsPanel({
-  connectedApps,
-  onConnectApp,
+  accountLabel,
+  installError,
+  isLoadingInstallations,
+  isReviewerConnected,
+  isStartingReviewerInstall,
+  onConnectReviewer,
+  onRefresh,
 }: {
-  connectedApps: Record<AppId, boolean>;
-  onConnectApp: (appId: AppId) => void;
+  accountLabel: string;
+  installError: string | null;
+  isLoadingInstallations: boolean;
+  isReviewerConnected: boolean;
+  isStartingReviewerInstall: boolean;
+  onConnectReviewer: () => void;
+  onRefresh: () => void;
 }): ReactElement {
   return (
     <VStack gap={5}>
@@ -222,10 +285,11 @@ function AppsPanel({
         <VStack gap={1}>
           <Heading level={2}>GitHub Apps</Heading>
           <Text type="supporting" color="secondary" as="p">
-            Both apps are required before repositories can be validated.
+            Reviewer app installation is wired now. The coder app is reserved for the next backend
+            slice.
           </Text>
         </VStack>
-        <AccountToken isVisible={connectedApps.reviewer || connectedApps.coder} />
+        <AccountToken label={isReviewerConnected ? accountLabel : null} />
       </HStack>
 
       <VStack gap={3}>
@@ -233,41 +297,70 @@ function AppsPanel({
           appId="reviewer"
           title="Reviewer app"
           detail="Reviews pull requests, leaves comments, and posts checks."
-          isConnected={connectedApps.reviewer}
-          onConnect={onConnectApp}
+          accountLabel={accountLabel}
+          isConnected={isReviewerConnected}
+          isLoading={isStartingReviewerInstall}
+          onConnect={onConnectReviewer}
+          statusLabel={isReviewerConnected ? "Connected" : "Required"}
         />
         <AppConnectionCard
           appId="coder"
           title="Coder app"
           detail="Responds to issue labels and prepares implementation pull requests."
-          isConnected={connectedApps.coder}
-          onConnect={onConnectApp}
+          accountLabel="Backend support not added yet"
+          disabledMessage="Coder GitHub App installation is intentionally disabled in this PR."
+          isConnected={false}
+          isDisabled
+          statusLabel="Coming soon"
         />
       </VStack>
+      {installError ? (
+        <VStack gap={2}>
+          <Text type="supporting" color="secondary" as="p">
+            {installError}
+          </Text>
+          <Button label="Refresh GitHub setup" variant="secondary" onClick={onRefresh} />
+        </VStack>
+      ) : null}
+      {isLoadingInstallations ? (
+        <Text type="supporting" color="secondary" as="p">
+          Checking linked GitHub installations...
+        </Text>
+      ) : null}
     </VStack>
   );
 }
 
-function AccountToken({ isVisible }: { isVisible: boolean }): ReactElement | null {
-  if (!isVisible) {
+function AccountToken({ label }: { label: string | null }): ReactElement | null {
+  if (!label) {
     return null;
   }
 
-  return <Token label={`${githubAccount.owner} / ${githubAccount.account}`} />;
+  return <Token label={label} />;
 }
 
 function AppConnectionCard({
   appId,
   title,
   detail,
+  accountLabel,
+  disabledMessage,
   isConnected,
+  isDisabled = false,
+  isLoading = false,
   onConnect,
+  statusLabel,
 }: {
   appId: AppId;
   title: string;
   detail: string;
+  accountLabel: string;
+  disabledMessage?: string;
   isConnected: boolean;
-  onConnect: (appId: AppId) => void;
+  isDisabled?: boolean;
+  isLoading?: boolean;
+  onConnect?: () => void;
+  statusLabel: string;
 }): ReactElement {
   return (
     <section className="rounded-lg border border-border bg-body p-4">
@@ -286,23 +379,23 @@ function AppConnectionCard({
               </Text>
             </VStack>
           </HStack>
-          <Token label={isConnected ? "Connected" : "Required"} size="sm" color="gray" />
+          <Token label={statusLabel} size="sm" color="gray" />
         </HStack>
         <HStack hAlign="between" vAlign="center" gap={3} wrap="wrap">
           <HStack gap={2} vAlign="center">
             <Icon icon={UserCircleIcon} size="sm" color="secondary" />
             <Text type="supporting" color="secondary">
-              {isConnected
-                ? `${githubAccount.owner} / ${githubAccount.account}`
-                : "No GitHub account linked"}
+              {isConnected ? accountLabel : (disabledMessage ?? "No GitHub account linked")}
             </Text>
           </HStack>
           {isConnected ? null : (
             <Button
-              label={`Connect ${appId} app`}
+              label={isLoading ? "Opening GitHub" : `Connect ${appId} app`}
               variant="primary"
               icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
-              onClick={() => onConnect(appId)}
+              isDisabled={isDisabled || isLoading}
+              isLoading={isLoading}
+              onClick={onConnect}
             />
           )}
         </HStack>
@@ -311,29 +404,72 @@ function AppConnectionCard({
   );
 }
 
-function RepositoriesPanel(): ReactElement {
+function RepositoriesPanel({
+  installError,
+  isLoading,
+  onRefresh,
+  repositories,
+}: {
+  installError: string | null;
+  isLoading: boolean;
+  onRefresh: () => void;
+  repositories: GitHubRepository[];
+}): ReactElement {
   return (
     <VStack gap={5}>
       <HStack hAlign="between" vAlign="center" gap={3} wrap="wrap">
         <VStack gap={1}>
           <Heading level={2}>Linked repositories</Heading>
           <Text type="supporting" color="secondary" as="p">
-            These repositories come from the GitHub App installation and are checked automatically.
+            These repositories are loaded from the reviewer GitHub App installation record.
           </Text>
         </VStack>
-        <Token label="Automatically validated" color="gray" />
+        <Token
+          label={
+            isLoading
+              ? "Loading"
+              : repositories.length
+                ? `${repositories.length} linked`
+                : "No repos"
+          }
+          color="gray"
+        />
       </HStack>
 
-      <VStack gap={3}>
-        {projects.map((project) => (
-          <RepositoryValidationCard key={project.id} project={project} />
-        ))}
-      </VStack>
+      {installError ? (
+        <VStack gap={2}>
+          <Text type="supporting" color="secondary" as="p">
+            {installError}
+          </Text>
+          <Button label="Refresh repositories" variant="secondary" onClick={onRefresh} />
+        </VStack>
+      ) : null}
+
+      {isLoading ? (
+        <Text type="supporting" color="secondary" as="p">
+          Loading linked repositories...
+        </Text>
+      ) : repositories.length ? (
+        <VStack gap={3}>
+          {repositories.map((repository) => (
+            <RepositoryValidationCard key={repository.id} repository={repository} />
+          ))}
+        </VStack>
+      ) : (
+        <VStack gap={2}>
+          <Text type="body" weight="semibold">
+            No repositories linked yet
+          </Text>
+          <Text type="supporting" color="secondary" as="p">
+            Install the reviewer GitHub App on at least one repository, then return to this step.
+          </Text>
+        </VStack>
+      )}
     </VStack>
   );
 }
 
-function RepositoryValidationCard({ project }: { project: Project }): ReactElement {
+function RepositoryValidationCard({ repository }: { repository: GitHubRepository }): ReactElement {
   return (
     <section className="rounded-lg border border-border bg-body p-4">
       <VStack gap={3}>
@@ -341,45 +477,48 @@ function RepositoryValidationCard({ project }: { project: Project }): ReactEleme
           <HStack gap={3} vAlign="start">
             <Icon icon={FolderIcon} size="sm" color="secondary" />
             <VStack gap={0.5}>
-              <Text weight="semibold">{project.name}</Text>
+              <Text weight="semibold">{repository.fullName}</Text>
               <Text type="supporting" color="secondary">
-                {githubAccount.account} / {project.branches.join(", ")}
+                Default branch: {repository.defaultBranch ?? "not reported"}
               </Text>
             </VStack>
           </HStack>
-          <Token label="Ready" size="sm" color="gray" />
+          <Token label={repository.selected ? "Selected" : "Installed"} size="sm" color="gray" />
         </HStack>
         <HStack gap={2} wrap="wrap">
           <Token label="Reviewer app" />
-          <Token label="Coder app" />
-          {requiredLabels.map((label) => (
-            <Token key={label} label={label} />
-          ))}
+          <Token label={repository.private ? "Private" : "Public"} />
+          <Token label="Label checks follow-up" />
         </HStack>
       </VStack>
     </section>
   );
 }
 
-function FinishPanel(): ReactElement {
+function FinishPanel({
+  accountLabel,
+  repositoryCount,
+}: {
+  accountLabel: string;
+  repositoryCount: number;
+}): ReactElement {
   return (
     <VStack gap={5}>
       <HStack hAlign="between" vAlign="center" gap={3} wrap="wrap">
         <VStack gap={1}>
           <Heading level={2}>Ready</Heading>
           <Text type="supporting" color="secondary" as="p">
-            The reviewer and coder apps are connected to the same GitHub account.
+            The reviewer app is connected and repositories are available to the workspace.
           </Text>
         </VStack>
         <Token label="Complete" color="gray" />
       </HStack>
       <VStack gap={3}>
-        <SummaryRow
-          label="GitHub account"
-          value={`${githubAccount.owner} / ${githubAccount.account}`}
-        />
-        <SummaryRow label="Apps" value="Reviewer app, Coder app" />
-        <SummaryRow label="Required labels" value={requiredLabels.join(", ")} />
+        <SummaryRow label="GitHub account" value={accountLabel} />
+        <SummaryRow label="Reviewer app" value="Connected" />
+        <SummaryRow label="Coder app" value="Disabled until app support is added" />
+        <SummaryRow label="Repositories" value={`${repositoryCount} linked`} />
+        <SummaryRow label="Label and rule validation" value="Follow-up backend wiring" />
       </VStack>
     </VStack>
   );
