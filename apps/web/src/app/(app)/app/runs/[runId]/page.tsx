@@ -11,7 +11,7 @@ type RunDetailPageProps = {
   searchParams: Promise<{ tab?: string }>;
 };
 
-const runDetailTabs = new Set<RunDetailTab>(["timeline", "transcript", "artifacts", "github"]);
+const runDetailTabs = new Set<RunDetailTab>(["timeline", "transcript", "github"]);
 
 function parseRunDetailTab(value?: string): RunDetailTab {
   return runDetailTabs.has(value as RunDetailTab) ? (value as RunDetailTab) : "timeline";

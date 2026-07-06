@@ -1,9 +1,8 @@
 "use client";
 
-import { useMemo, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 import { Avatar } from "@astryxdesign/core/Avatar";
-import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
@@ -32,7 +31,7 @@ type RunRolloutProps = {
   run: Run;
 };
 
-export type RunDetailTab = "timeline" | "transcript" | "artifacts" | "github";
+export type RunDetailTab = "timeline" | "transcript" | "github";
 
 const statusDotVariants: Record<RunStatus, "accent" | "warning" | "success" | "error"> = {
   Running: "accent",
@@ -70,46 +69,6 @@ function getGitHubHref(run: Run): string {
   return `https://github.com/${run.repo}/tree/${run.branch}`;
 }
 
-function getArtifactMarkdown(run: Run, coworkerName: string): string {
-  return `## Run prompt
-
-${run.title} in \`${run.repo}\`.
-
-## Context
-
-- Coworker: ${coworkerName}
-- Trigger: \`${run.trigger}\`
-- Repository: \`${run.repo}\`
-- Branch: \`${run.branch}\`
-- Current status: ${run.status}
-- Current result: ${run.result}
-
-## Expected output
-
-1. Inspect the GitHub event and repository instructions.
-2. Produce the required review or implementation work.
-3. Leave GitHub comments or open a pull request when the run has output.
-4. Keep the run blocked when required credentials, permissions, or review gates are missing.`;
-}
-
-function getRunContextJson(run: Run, coworkerName: string): string {
-  return JSON.stringify(
-    {
-      runId: run.id,
-      coworker: coworkerName,
-      status: run.status,
-      repository: run.repo,
-      branch: run.branch,
-      trigger: run.trigger,
-      started: run.started,
-      duration: run.duration,
-      result: run.result,
-    },
-    null,
-    2,
-  );
-}
-
 export default function RunRollout({
   coworker,
   initialTab = defaultTab,
@@ -118,11 +77,6 @@ export default function RunRollout({
   const [activeTab, setActiveTab] = useState<RunDetailTab>(initialTab);
   const coworkerName = coworker?.name ?? "Coworker";
   const githubHref = getGitHubHref(run);
-  const artifactMarkdown = useMemo(
-    () => getArtifactMarkdown(run, coworkerName),
-    [coworkerName, run],
-  );
-  const runContextJson = useMemo(() => getRunContextJson(run, coworkerName), [coworkerName, run]);
 
   function changeTab(nextTab: RunDetailTab): void {
     setActiveTab(nextTab);
@@ -179,7 +133,6 @@ export default function RunRollout({
             <TabList value={activeTab} onChange={(value) => changeTab(value as RunDetailTab)}>
               <Tab value="timeline" label="Timeline" />
               <Tab value="transcript" label="Transcript" />
-              <Tab value="artifacts" label="Artifacts" />
               <Tab value="github" label="GitHub" />
             </TabList>
           </VStack>
@@ -190,9 +143,6 @@ export default function RunRollout({
           {activeTab === "timeline" ? <TimelineTab run={run} /> : null}
           {activeTab === "transcript" ? (
             <TranscriptTab run={run} coworkerName={coworkerName} />
-          ) : null}
-          {activeTab === "artifacts" ? (
-            <ArtifactsTab artifactMarkdown={artifactMarkdown} runContextJson={runContextJson} />
           ) : null}
           {activeTab === "github" ? (
             <GitHubTab run={run} coworkerName={coworkerName} githubHref={githubHref} />
@@ -265,33 +215,6 @@ function TranscriptTab({ run, coworkerName }: { run: Run; coworkerName: string }
         </List>
       </VStack>
     </Section>
-  );
-}
-
-function ArtifactsTab({
-  artifactMarkdown,
-  runContextJson,
-}: {
-  artifactMarkdown: string;
-  runContextJson: string;
-}): ReactElement {
-  return (
-    <VStack gap={4}>
-      <Section variant="section" padding={4}>
-        <VStack gap={3}>
-          <Heading level={2}>Run prompt and active context</Heading>
-          <Markdown headingLevelStart={3} autolink="gfm" contentWidth="100%">
-            {artifactMarkdown}
-          </Markdown>
-        </VStack>
-      </Section>
-      <Section variant="section" padding={4}>
-        <VStack gap={3}>
-          <Heading level={2}>Run context</Heading>
-          <CodeBlock title="run-context.json" language="json" code={runContextJson} />
-        </VStack>
-      </Section>
-    </VStack>
   );
 }
 
