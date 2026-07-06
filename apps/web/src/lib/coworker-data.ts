@@ -611,7 +611,7 @@ export const setupSteps: SetupStep[] = [
     detail: "Capxul Alpha is the active Coworker organization.",
   },
   {
-    title: "Projects",
+    title: "Repositories",
     status: "Partial",
     detail:
       "Three repositories are linked. coworker/api is reviewer-only; coworker/web has the issue board enabled.",

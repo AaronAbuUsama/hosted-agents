@@ -38,6 +38,7 @@ import {
   FolderIcon,
   MagnifyingGlassIcon,
   PlayCircleIcon,
+  PlusIcon,
   ServerStackIcon,
   ShieldCheckIcon,
   SparklesIcon,
@@ -279,6 +280,7 @@ export default function AppFrame({ children }: AppFrameProps): ReactElement {
               </SideNavSection>
               <Divider />
               <SideNavSection title="Projects">
+                <SideNavItem label="Connect repository" href="/onboarding/github" icon={PlusIcon} />
                 {projects.map((project) => {
                   const projectHref = `/app/projects/${project.id}`;
                   const isProjectSelected =

@@ -1,18 +1,16 @@
 "use client";
 
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
-import { Divider } from "@astryxdesign/core/Divider";
+import { Center } from "@astryxdesign/core/Center";
+import { Grid } from "@astryxdesign/core/Grid";
+import { Icon } from "@astryxdesign/core/Icon";
 import { Link } from "@astryxdesign/core/Link";
-import { HStack, VStack } from "@astryxdesign/core/Stack";
-import { Text, Heading } from "@astryxdesign/core/Text";
-import { TextInput } from "@astryxdesign/core/TextInput";
-import { AtSymbolIcon, LockClosedIcon, UserIcon } from "@heroicons/react/24/outline";
+import { Section } from "@astryxdesign/core/Section";
+import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { Text } from "@astryxdesign/core/Text";
+import { ArrowRightIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
-import { useState, type FormEvent } from "react";
-
-import { authClient } from "@/lib/auth-client";
+import { type CSSProperties } from "react";
 
 type AuthMode = "signin" | "signup";
 
@@ -20,117 +18,119 @@ type AuthFormProps = {
   mode: AuthMode;
 };
 
+const columnMinWidth = 260;
+
+const authPageStyle: CSSProperties = {
+  minHeight: "100dvh",
+  padding: "var(--spacing-6)",
+  backgroundColor: "var(--color-background-body)",
+};
+
+const authShellStyle: CSSProperties = {
+  width: "100%",
+  maxWidth: 1040,
+  marginInline: "auto",
+};
+
+const coverPanelStyle: CSSProperties = {
+  height: "100%",
+  minHeight: 460,
+  backgroundColor: "var(--color-background-surface)",
+  border: "var(--border-width) solid var(--color-border)",
+  borderRadius: "var(--radius-container)",
+  backgroundImage:
+    "url('https://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=1200&q=80')",
+  backgroundPosition: "center",
+  backgroundSize: "cover",
+};
+
+const AUTH_SPLIT_CSS = `
+.coworker-auth-grid {
+  container-type: inline-size;
+  container-name: coworker-auth;
+  padding: var(--spacing-8);
+}
+
+@container coworker-auth (max-width: 559px) {
+  .coworker-auth-grid {
+    padding: var(--spacing-4);
+  }
+}
+`;
+
 export default function AuthForm({ mode }: AuthFormProps) {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const isSignup = mode === "signup";
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsSubmitting(true);
 
-    if (isSignup) {
-      await authClient.signUp.email(
-        { email, password, name },
-        {
-          onSuccess: () => {
-            toast.success("Account created");
-            router.push("/onboarding/organization");
-          },
-          onError: (error) => {
-            toast.error(error.error.message || error.error.statusText);
-          },
-        },
-      );
-      setIsSubmitting(false);
-      return;
-    }
-
-    await authClient.signIn.email(
-      { email, password },
-      {
-        onSuccess: () => {
-          toast.success("Signed in");
-          router.push("/app");
-        },
-        onError: (error) => {
-          toast.error(error.error.message || error.error.statusText);
-        },
-      },
-    );
-    setIsSubmitting(false);
+  function continueWithGitHub(): void {
+    router.push(isSignup ? "/onboarding/github" : "/app");
   }
 
   return (
-    <Card maxWidth={460} padding={8}>
-      <form onSubmit={handleSubmit}>
-        <VStack gap={6}>
-          <VStack gap={2}>
-            <Text type="label" color="accent">
-              coworker.tech
-            </Text>
-            <Heading level={1}>{isSignup ? "Hire your first coworker" : "Welcome back"}</Heading>
-            <Text type="supporting" as="p">
-              {isSignup
-                ? "Create your Coworker account, then connect an organization, provider account, GitHub, and named coworkers."
-                : "Sign in to manage coworkers, runs, GitHub installs, and automation rules."}
-            </Text>
-          </VStack>
+    <Center axis="both" style={authPageStyle}>
+      <style>{AUTH_SPLIT_CSS}</style>
+      <VStack gap={4} width="100%">
+        <section style={authShellStyle}>
+          <Section variant="section" padding={0}>
+            <Grid
+              columns={{ minWidth: columnMinWidth, repeat: "fit" }}
+              gap={8}
+              align="stretch"
+              className="coworker-auth-grid"
+            >
+              <VStack gap={5} height="100%">
+                <HStack gap={2} vAlign="center">
+                  <Icon icon={SparklesIcon} size="sm" />
+                  <Text type="body" weight="bold">
+                    Coworker
+                  </Text>
+                </HStack>
 
-          <VStack gap={4}>
-            {isSignup ? (
-              <TextInput
-                label="Name"
-                value={name}
-                onChange={setName}
-                startIcon={UserIcon}
-                placeholder="Ada Lovelace"
-                isRequired
-              />
-            ) : null}
-            <TextInput
-              label="Email"
-              type="email"
-              value={email}
-              onChange={setEmail}
-              startIcon={AtSymbolIcon}
-              placeholder="you@company.com"
-              isRequired
-            />
-            <TextInput
-              label="Password"
-              type="password"
-              value={password}
-              onChange={setPassword}
-              startIcon={LockClosedIcon}
-              isRequired
-            />
-          </VStack>
+                <StackItem size="fill">
+                  <Center axis="vertical" height="100%">
+                    <VStack gap={5} width="100%">
+                      <VStack gap={1}>
+                        <Text type="display-2" as="h1">
+                          {isSignup ? "Create your workspace" : "Welcome back"}
+                        </Text>
+                        <Text type="body" color="secondary" size="sm" as="p">
+                          {isSignup
+                            ? "Use GitHub to install Coworker, connect repositories, and start setup."
+                            : "Use GitHub to return to your coworker workspace."}
+                        </Text>
+                      </VStack>
 
-          <Button
-            label={isSignup ? "Create account" : "Sign in"}
-            variant="primary"
-            type="submit"
-            isLoading={isSubmitting}
-            isDisabled={email.length === 0 || password.length < 8 || (isSignup && name.length < 2)}
-          />
+                      <Button
+                        label="Continue with GitHub"
+                        variant="primary"
+                        size="lg"
+                        icon={<Icon icon={ArrowRightIcon} size="sm" />}
+                        onClick={continueWithGitHub}
+                      />
+                    </VStack>
+                  </Center>
+                </StackItem>
 
-          <Divider label="or" />
+                <HStack gap={1} wrap="wrap">
+                  <Text type="supporting" color="secondary">
+                    {isSignup ? "Already have an account?" : "Need an account?"}
+                  </Text>
+                  <Link href={isSignup ? "/login" : "/signup"} type="supporting">
+                    {isSignup ? "Sign in" : "Sign up"}
+                  </Link>
+                </HStack>
+              </VStack>
 
-          <Button label="Continue with GitHub" variant="secondary" isDisabled />
-
-          <HStack gap={1} hAlign="center">
-            <Text type="supporting">
-              {isSignup ? "Already have an account?" : "Need an account?"}
-            </Text>
-            <Link href={isSignup ? "/login" : "/signup"} isStandalone>
-              {isSignup ? "Sign in" : "Sign up"}
-            </Link>
-          </HStack>
+              <section aria-label="People collaborating at a workstation" style={coverPanelStyle} />
+            </Grid>
+          </Section>
+        </section>
+        <VStack hAlign="center">
+          <Text type="supporting" color="secondary">
+            By continuing, you agree to the Terms of Service and Privacy Policy.
+          </Text>
         </VStack>
-      </form>
-    </Card>
+      </VStack>
+    </Center>
   );
 }
