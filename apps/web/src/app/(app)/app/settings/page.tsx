@@ -1,12 +1,10 @@
-import type { ReactElement } from "react";
+import FeatureNotEnabled from "@/components/coworker/feature-not-enabled";
 
-import SettingsPanel from "@/components/coworker/settings-panel";
-
-type SettingsPageProps = {
-  searchParams: Promise<{ section?: string }>;
-};
-
-export default async function SettingsPage({ searchParams }: SettingsPageProps): Promise<ReactElement> {
-  const { section } = await searchParams;
-  return <SettingsPanel section={section} />;
+export default function SettingsPage() {
+  return (
+    <FeatureNotEnabled
+      featureName="Settings"
+      description="Settings are disabled until each control reads and writes production organization data. Continue through GitHub setup and reviewer runs for the current activation path."
+    />
+  );
 }
