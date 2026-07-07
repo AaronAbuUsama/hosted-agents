@@ -12,7 +12,11 @@ import {
   agentRunArtifact,
   agentRunEvent,
 } from "@hosted-agents/db/schema/agent-runs";
-import { member } from "@hosted-agents/db/schema/auth";
+import {
+  member,
+  organization as authOrganization,
+  session as authSession,
+} from "@hosted-agents/db/schema/auth";
 import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
 import { agentProviderCredential } from "@hosted-agents/db/schema/provider-credentials";
 import { reviewRun } from "@hosted-agents/db/schema/reviews";
@@ -77,6 +81,15 @@ const organizationScopedInput = z
   })
   .optional();
 
+const createOrganizationInput = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Organization name is required.")
+    .max(120)
+    .transform((name) => name.trim().replace(/\s+/g, " ")),
+});
+
 const credentialConnectionInput = z.object({
   connectionId: z.string(),
 });
@@ -95,6 +108,7 @@ const revokeProviderCredentialInput = z.object({
 
 type SessionWithActiveOrganization = {
   session?: {
+    id?: string;
     activeOrganizationId?: string | null;
   };
 };
@@ -279,6 +293,62 @@ function mapGitHubInstallation(
   };
 }
 
+type OrganizationMembershipRow = {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
+};
+
+function mapOrganizationMembership(row: OrganizationMembershipRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    role: row.role,
+  };
+}
+
+function slugifyOrganizationName(name: string) {
+  const slug = name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replace(/-+$/g, "");
+
+  return slug || "organization";
+}
+
+async function isOrganizationSlugAvailable(slug: string) {
+  const [existing] = await db
+    .select({ id: authOrganization.id })
+    .from(authOrganization)
+    .where(eq(authOrganization.slug, slug))
+    .limit(1);
+
+  return !existing;
+}
+
+async function createUniqueOrganizationSlug(name: string) {
+  const baseSlug = slugifyOrganizationName(name);
+
+  if (await isOrganizationSlugAvailable(baseSlug)) {
+    return baseSlug;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
+    if (await isOrganizationSlugAvailable(candidate)) {
+      return candidate;
+    }
+  }
+
+  return `${baseSlug}-${crypto.randomUUID()}`;
+}
+
 function mapConnection(record: PendingOpenAICodexConnection) {
   return {
     id: record.id,
@@ -306,6 +376,78 @@ async function getUserOrganizationIds(userId: string) {
     .where(eq(member.userId, userId));
 
   return rows.map((row) => row.organizationId);
+}
+
+async function listUserOrganizations(userId: string) {
+  return db
+    .select({
+      id: authOrganization.id,
+      name: authOrganization.name,
+      slug: authOrganization.slug,
+      role: member.role,
+    })
+    .from(member)
+    .innerJoin(authOrganization, eq(member.organizationId, authOrganization.id))
+    .where(eq(member.userId, userId));
+}
+
+async function findUserOrganizationByName(userId: string, name: string) {
+  const [row] = await db
+    .select({
+      id: authOrganization.id,
+      name: authOrganization.name,
+      slug: authOrganization.slug,
+      role: member.role,
+    })
+    .from(member)
+    .innerJoin(authOrganization, eq(member.organizationId, authOrganization.id))
+    .where(and(eq(member.userId, userId), eq(authOrganization.name, name)))
+    .limit(1);
+
+  return row ?? null;
+}
+
+async function setActiveOrganizationId(
+  contextSession: SessionWithActiveOrganization,
+  organizationId: string,
+) {
+  const session = contextSession.session;
+
+  if (!session?.id) {
+    return;
+  }
+
+  await db
+    .update(authSession)
+    .set({
+      activeOrganizationId: organizationId,
+      updatedAt: new Date(),
+    })
+    .where(eq(authSession.id, session.id));
+
+  session.activeOrganizationId = organizationId;
+}
+
+async function resolveActiveOrganization(
+  contextSession: SessionWithActiveOrganization,
+  organizations: OrganizationMembershipRow[],
+) {
+  if (organizations.length === 0) {
+    return null;
+  }
+
+  const activeOrganizationId = contextSession.session?.activeOrganizationId;
+  const activeOrganization = activeOrganizationId
+    ? organizations.find((organization) => organization.id === activeOrganizationId)
+    : null;
+
+  if (activeOrganization) {
+    return activeOrganization;
+  }
+
+  const fallbackOrganization = organizations[0]!;
+  await setActiveOrganizationId(contextSession, fallbackOrganization.id);
+  return fallbackOrganization;
 }
 
 async function resolveOrganizationId(userId: string, requestedId?: string) {
@@ -475,6 +617,64 @@ export const appRouter = {
       user: context.session?.user,
     };
   }),
+  organizations: protectedProcedure.handler(async ({ context }) => {
+    const contextSession = context.session as SessionWithActiveOrganization;
+    const organizations = await listUserOrganizations(context.session.user.id);
+    const activeOrganization = await resolveActiveOrganization(contextSession, organizations);
+
+    return {
+      organizations: organizations.map(mapOrganizationMembership),
+      activeOrganization: activeOrganization ? mapOrganizationMembership(activeOrganization) : null,
+    };
+  }),
+  activeOrganization: protectedProcedure.handler(async ({ context }) => {
+    const contextSession = context.session as SessionWithActiveOrganization;
+    const organizations = await listUserOrganizations(context.session.user.id);
+    const activeOrganization = await resolveActiveOrganization(contextSession, organizations);
+
+    return activeOrganization ? mapOrganizationMembership(activeOrganization) : null;
+  }),
+  createOrganization: protectedProcedure
+    .input(createOrganizationInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const contextSession = context.session as SessionWithActiveOrganization;
+      const existingOrganization = await findUserOrganizationByName(userId, input.name);
+
+      if (existingOrganization) {
+        await setActiveOrganizationId(contextSession, existingOrganization.id);
+        return mapOrganizationMembership(existingOrganization);
+      }
+
+      const id = crypto.randomUUID();
+      const now = new Date();
+      const slug = await createUniqueOrganizationSlug(input.name);
+
+      await db.transaction(async (transaction) => {
+        await transaction.insert(authOrganization).values({
+          id,
+          name: input.name,
+          slug,
+          createdAt: now,
+        });
+        await transaction.insert(member).values({
+          id: crypto.randomUUID(),
+          userId,
+          organizationId: id,
+          role: "owner",
+          createdAt: now,
+        });
+      });
+
+      await setActiveOrganizationId(contextSession, id);
+
+      return mapOrganizationMembership({
+        id,
+        name: input.name,
+        slug,
+        role: "owner",
+      });
+    }),
   reviewRuns: protectedProcedure.input(listReviewRunsInput).handler(async ({ input, context }) => {
     const userId = context.session.user.id;
     const activeOrganizationId = (context.session as SessionWithActiveOrganization).session

@@ -2,14 +2,16 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { authClient } from "@/lib/auth-client";
+import {
+  createGitHubSetupNextPath,
+  createOrganizationHref,
+  firstSearchParam,
+} from "@/lib/organization-routing";
+import { client } from "@/utils/orpc";
 
 import GitHubSetupClient from "./setup.client";
 
 type SetupSearchParams = Promise<Record<string, string | string[] | undefined>>;
-
-function first(value: string | string[] | undefined) {
-  return Array.isArray(value) ? value[0] : value;
-}
 
 export default async function GitHubSetupPage({
   searchParams,
@@ -28,12 +30,18 @@ export default async function GitHubSetupPage({
   }
 
   const params = await searchParams;
+  const installationId = firstSearchParam(params.installation_id);
+  const setupAction = firstSearchParam(params.setup_action);
+  const state = firstSearchParam(params.state);
+  const activeOrganization = await client.activeOrganization();
+
+  if (!activeOrganization) {
+    redirect(
+      createOrganizationHref(createGitHubSetupNextPath({ installationId, setupAction, state })),
+    );
+  }
 
   return (
-    <GitHubSetupClient
-      installationId={first(params.installation_id)}
-      setupAction={first(params.setup_action)}
-      state={first(params.state)}
-    />
+    <GitHubSetupClient installationId={installationId} setupAction={setupAction} state={state} />
   );
 }

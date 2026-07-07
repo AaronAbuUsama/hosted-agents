@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 
 import AppFrame from "@/components/coworker/app-frame";
 import { authClient } from "@/lib/auth-client";
+import { DEFAULT_ORGANIZATION_NEXT_PATH, createOrganizationHref } from "@/lib/organization-routing";
+import { client } from "@/utils/orpc";
 
 export default async function CoworkerAppLayout({ children }: { children: React.ReactNode }) {
   const session = await authClient.getSession({
@@ -16,5 +18,18 @@ export default async function CoworkerAppLayout({ children }: { children: React.
     redirect("/login");
   }
 
-  return <AppFrame>{children}</AppFrame>;
+  const activeOrganization = await client.activeOrganization();
+
+  if (!activeOrganization) {
+    redirect(createOrganizationHref(DEFAULT_ORGANIZATION_NEXT_PATH));
+  }
+
+  const userLabel = session.user.name ?? session.user.email ?? "Account";
+  const organizationLabel = activeOrganization.name ?? "Organization";
+
+  return (
+    <AppFrame organizationLabel={organizationLabel} userLabel={userLabel}>
+      {children}
+    </AppFrame>
+  );
 }

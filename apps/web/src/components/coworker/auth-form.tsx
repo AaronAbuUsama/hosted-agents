@@ -68,7 +68,7 @@ export default function AuthForm({ mode }: AuthFormProps) {
     setIsSigningIn(true);
     setErrorMessage(null);
 
-    const callbackPath = isSignup ? "/onboarding/github" : "/app";
+    const callbackPath = isSignup ? "/onboarding/organization" : "/app";
 
     try {
       await authClient.signIn.social({

@@ -1,23 +1,46 @@
-import { Badge } from "@astryxdesign/core/Badge";
-import { VStack } from "@astryxdesign/core/Stack";
-import { Text, Heading } from "@astryxdesign/core/Text";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 
 import OnboardingStep from "@/components/coworker/onboarding-step";
+import { authClient } from "@/lib/auth-client";
+import { firstSearchParam, normalizeOrganizationNextPath } from "@/lib/organization-routing";
+import { client } from "@/utils/orpc";
 
-export default function OrganizationStepPage() {
+import OrganizationForm from "./organization-form";
+
+type OrganizationSearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+export default async function OrganizationStepPage({
+  searchParams,
+}: {
+  searchParams: OrganizationSearchParams;
+}) {
+  const session = await authClient.getSession({
+    fetchOptions: {
+      headers: await headers(),
+      throw: true,
+    },
+  });
+
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  const params = await searchParams;
+  const nextPath = normalizeOrganizationNextPath(firstSearchParam(params.next));
+  const activeOrganization = await client.activeOrganization();
+
+  if (activeOrganization) {
+    redirect(nextPath);
+  }
+
   return (
     <OnboardingStep
       eyebrow="Step 1 of 5"
       title="Create your Coworker organization"
-      body="The organization owns provider credentials, GitHub installations, rules, coworkers, runs, and billing."
-      primaryHref="/onboarding/provider"
-      primaryLabel="Continue to provider account"
+      body="The organization owns provider credentials, GitHub installations, rules, workers, runs, and billing."
     >
-      <VStack gap={4}>
-        <Heading level={2}>Capxul Alpha</Heading>
-        <Text type="supporting" as="p">Workspace slug: capxul-alpha</Text>
-        <Badge variant="green" label="Ready" />
-      </VStack>
+      <OrganizationForm nextPath={nextPath} />
     </OnboardingStep>
   );
 }

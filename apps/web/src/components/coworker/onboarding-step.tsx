@@ -9,8 +9,8 @@ type OnboardingStepProps = {
   eyebrow: string;
   title: string;
   body: string;
-  primaryHref: string;
-  primaryLabel: string;
+  primaryHref?: string;
+  primaryLabel?: string;
   secondaryHref?: string;
   secondaryLabel?: string;
   children?: React.ReactNode;
@@ -82,16 +82,18 @@ export default function OnboardingStep({
                   <Text type="large" as="p" color="secondary">
                     {body}
                   </Text>
-                  <HStack gap={4} wrap="wrap">
-                    <Link href={primaryHref} isStandalone>
-                      {primaryLabel}
-                    </Link>
-                    {secondaryHref && secondaryLabel ? (
-                      <Link href={secondaryHref} isStandalone>
-                        {secondaryLabel}
+                  {primaryHref && primaryLabel ? (
+                    <HStack gap={4} wrap="wrap">
+                      <Link href={primaryHref} isStandalone>
+                        {primaryLabel}
                       </Link>
-                    ) : null}
-                  </HStack>
+                      {secondaryHref && secondaryLabel ? (
+                        <Link href={secondaryHref} isStandalone>
+                          {secondaryLabel}
+                        </Link>
+                      ) : null}
+                    </HStack>
+                  ) : null}
                 </VStack>
               </section>
 
