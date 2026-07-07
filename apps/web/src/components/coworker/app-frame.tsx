@@ -19,15 +19,16 @@ import { HStack, Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TopNav } from "@astryxdesign/core/TopNav";
 import {
+  ArrowRightStartOnRectangleIcon,
   BuildingOffice2Icon,
   Cog6ToothIcon,
-  KeyIcon,
   PlayCircleIcon,
   SparklesIcon,
   UserCircleIcon,
 } from "@heroicons/react/24/outline";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
+import { authClient } from "@/lib/auth-client";
 import { getWorkspaceNavItems } from "@/lib/organization-routing";
 
 type WorkspaceNavItem = {
@@ -39,6 +40,7 @@ type WorkspaceNavItem = {
 type AppFrameProps = {
   children: ReactNode;
   organizationLabel: string;
+  userEmail?: string | null;
   userLabel: string;
 };
 
@@ -62,7 +64,7 @@ const contentShellStyle: CSSProperties = {
 
 const workspaceNavItems: WorkspaceNavItem[] = getWorkspaceNavItems().map((item) => ({
   ...item,
-  icon: PlayCircleIcon,
+  icon: item.href === "/app/settings" ? Cog6ToothIcon : PlayCircleIcon,
 }));
 
 function isWorkspaceItemSelected(item: WorkspaceNavItem, pathname: string): boolean {
@@ -76,11 +78,23 @@ function navigateTo(href: string): void {
 export default function AppFrame({
   children,
   organizationLabel,
+  userEmail,
   userLabel,
 }: AppFrameProps): ReactElement {
   const pathname = usePathname();
+  const router = useRouter();
   const sideNavHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
   const [isSideNavCollapsed, setIsSideNavCollapsed] = useState(false);
+
+  function handleSignOut(): void {
+    authClient.signOut({
+      fetchOptions: {
+        onSuccess: () => {
+          router.push("/");
+        },
+      },
+    });
+  }
 
   return (
     <AppShell
@@ -110,24 +124,29 @@ export default function AppFrame({
             >
               <DropdownMenuItem
                 label={organizationLabel}
+                description="Coworker organization"
                 icon={BuildingOffice2Icon}
-                onClick={() => navigateTo("/app/settings")}
+                isDisabled
               />
+              {userEmail ? (
+                <DropdownMenuItem
+                  label={userEmail}
+                  description="Signed-in account"
+                  icon={UserCircleIcon}
+                  isDisabled
+                />
+              ) : null}
               <Divider />
               <DropdownMenuItem
-                label="Provider account"
-                icon={KeyIcon}
-                onClick={() => navigateTo("/onboarding/provider")}
-              />
-              <DropdownMenuItem
-                label="Organization settings"
+                label="Workspace settings"
+                description="Organization, GitHub App, provider, and rules"
                 icon={Cog6ToothIcon}
                 onClick={() => navigateTo("/app/settings")}
               />
               <DropdownMenuItem
-                label="Runs"
-                icon={PlayCircleIcon}
-                onClick={() => navigateTo("/app/runs")}
+                label="Sign out"
+                icon={ArrowRightStartOnRectangleIcon}
+                onClick={handleSignOut}
               />
             </DropdownMenu>
           }

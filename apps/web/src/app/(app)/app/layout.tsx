@@ -25,10 +25,11 @@ export default async function CoworkerAppLayout({ children }: { children: React.
   }
 
   const userLabel = session.user.name ?? session.user.email ?? "Account";
+  const userEmail = session.user.email ?? null;
   const organizationLabel = activeOrganization.name ?? "Organization";
 
   return (
-    <AppFrame organizationLabel={organizationLabel} userLabel={userLabel}>
+    <AppFrame organizationLabel={organizationLabel} userEmail={userEmail} userLabel={userLabel}>
       {children}
     </AppFrame>
   );
