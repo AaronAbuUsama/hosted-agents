@@ -1,10 +1,30 @@
-import FeatureNotEnabled from "@/components/coworker/feature-not-enabled";
+import type { ReactElement } from "react";
 
-export default function SettingsPage() {
+import CoworkerPage from "@/components/coworker/coworker-page";
+import { client } from "@/utils/orpc";
+
+import SettingsConfigurationClient from "./settings-configuration.client";
+
+export default async function SettingsPage(): Promise<ReactElement> {
+  const activeOrganization = await client.activeOrganization();
+  const [githubInstallations, providerCredentials] = activeOrganization
+    ? await Promise.all([
+        client.githubInstallations({ organizationId: activeOrganization.id }),
+        client.providerCredentials({ organizationId: activeOrganization.id }),
+      ])
+    : [[], []];
+
   return (
-    <FeatureNotEnabled
-      featureName="Settings"
-      description="Settings are disabled until each control reads and writes production organization data. Continue through GitHub setup and reviewer runs for the current activation path."
-    />
+    <CoworkerPage
+      title="Settings"
+      description="Configure the organization pieces that power reviewer runs."
+      width="wide"
+    >
+      <SettingsConfigurationClient
+        activeOrganization={activeOrganization}
+        githubInstallations={githubInstallations}
+        providerCredentials={providerCredentials}
+      />
+    </CoworkerPage>
   );
 }

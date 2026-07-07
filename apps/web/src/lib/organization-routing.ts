@@ -11,13 +11,17 @@ type WorkspaceNavItem = {
 };
 
 export const APP_LANDING_PATH = "/app/runs" as Route;
+export const SETUP_GITHUB_PATH = "/dashboard/github/setup" as Route;
+export const SETUP_PROVIDER_PATH = "/onboarding/provider" as Route;
 
-const workspaceNavItems: WorkspaceNavItem[] = [{ href: APP_LANDING_PATH, label: "Runs" }];
+const workspaceNavItems: WorkspaceNavItem[] = [
+  { href: APP_LANDING_PATH, label: "Runs" },
+  { href: "/app/settings" as Route, label: "Settings" },
+];
 
 const mockProductRoutePrefixes = [
   "/app/projects",
   "/app/coworkers",
-  "/app/settings",
   "/onboarding/coworkers",
   "/onboarding/rules",
 ] as const;
@@ -42,7 +46,27 @@ export function getAppRoutePolicy(pathname: string): AppRoutePolicy {
   return { type: "allow" };
 }
 
-export const DEFAULT_ORGANIZATION_NEXT_PATH = "/dashboard/github/setup" as Route;
+export const DEFAULT_ORGANIZATION_NEXT_PATH = SETUP_GITHUB_PATH;
+
+type SetupStateInput = {
+  hasGitHubInstallation: boolean;
+  hasProviderCredential: boolean;
+};
+
+export function getMissingSetupPath({
+  hasGitHubInstallation,
+  hasProviderCredential,
+}: SetupStateInput): Route | null {
+  if (!hasGitHubInstallation) {
+    return SETUP_GITHUB_PATH;
+  }
+
+  if (!hasProviderCredential) {
+    return SETUP_PROVIDER_PATH;
+  }
+
+  return null;
+}
 
 type SearchParamValue = string | string[] | undefined;
 type GitHubSetupNextParams = {

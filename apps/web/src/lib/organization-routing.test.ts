@@ -6,6 +6,7 @@ import {
   createGitHubSetupNextPath,
   createOrganizationHref,
   getAppRoutePolicy,
+  getMissingSetupPath,
   getWorkspaceNavItems,
   normalizeOrganizationNextPath,
 } from "./organization-routing";
@@ -42,6 +43,27 @@ describe("organization routing helper", () => {
 });
 
 describe("truthful app shell routing", () => {
+  test("resolves the next missing setup step before allowing the app workspace", () => {
+    expect(
+      getMissingSetupPath({
+        hasGitHubInstallation: false,
+        hasProviderCredential: false,
+      }),
+    ).toBe("/dashboard/github/setup");
+    expect(
+      getMissingSetupPath({
+        hasGitHubInstallation: true,
+        hasProviderCredential: false,
+      }),
+    ).toBe("/onboarding/provider");
+    expect(
+      getMissingSetupPath({
+        hasGitHubInstallation: true,
+        hasProviderCredential: true,
+      }),
+    ).toBe(null);
+  });
+
   test("redirects the legacy app dashboard entrypoint to the real runs workspace", () => {
     expect(getAppRoutePolicy("/app")).toEqual({
       type: "redirect",
@@ -56,7 +78,6 @@ describe("truthful app shell routing", () => {
       "/app/coworkers",
       "/app/coworkers/abu-bakr",
       "/onboarding/coworkers",
-      "/app/settings",
       "/onboarding/rules",
     ];
 
@@ -74,10 +95,13 @@ describe("truthful app shell routing", () => {
     expect(getAppRoutePolicy("/app/runs/run-1")).toEqual({ type: "allow" });
   });
 
-  test("only exposes real workspace navigation without mock links or fake counts", () => {
+  test("exposes real workspace navigation without mock links or fake counts", () => {
     const navItems = getWorkspaceNavItems();
 
-    expect(navItems).toEqual([{ href: "/app/runs", label: "Runs" }]);
+    expect(navItems).toEqual([
+      { href: "/app/runs", label: "Runs" },
+      { href: "/app/settings", label: "Settings" },
+    ]);
     expect(navItems.some((item) => item.href.startsWith("/app/projects"))).toBe(false);
     expect(navItems.some((item) => item.href.startsWith("/app/coworkers"))).toBe(false);
 

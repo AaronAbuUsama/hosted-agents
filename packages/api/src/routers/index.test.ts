@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +27,34 @@ process.env.GITHUB_APP_SLUG = "hosted-agents-test";
 process.env.GITHUB_APP_PRIVATE_KEY = gitHubAppPrivateKey
   .export({ format: "pem", type: "pkcs1" })
   .toString();
+
+let mockedCodexCredentials = {
+  accessToken: "synthetic-access-token",
+  refreshToken: "synthetic-refresh-token",
+  expires: new Date("2026-12-31T00:00:00.000Z").getTime(),
+};
+
+mock.module("@earendil-works/pi-ai/oauth", () => ({
+  loginOpenAICodexDeviceCode: async ({
+    onDeviceCode,
+  }: {
+    onDeviceCode?: (deviceCode: {
+      userCode: string;
+      verificationUri: string;
+      intervalSeconds: number;
+      expiresInSeconds: number;
+    }) => void;
+  }) => {
+    onDeviceCode?.({
+      userCode: "TEST-CODEX-CODE",
+      verificationUri: "https://example.test/device",
+      intervalSeconds: 1,
+      expiresInSeconds: 900,
+    });
+
+    return mockedCodexCredentials;
+  },
+}));
 
 type TestDatabase = typeof productionDb;
 type TestClient = {
@@ -201,6 +229,21 @@ async function createTables(testClient: TestClient) {
       "payload_json" text,
       "created_at" integer DEFAULT 0 NOT NULL
     );
+
+    CREATE TABLE "agent_provider_credential" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "user_id" text NOT NULL,
+      "provider" text NOT NULL,
+      "credential_type" text NOT NULL,
+      "encrypted_credential" text NOT NULL,
+      "expires_at" integer,
+      "status" text DEFAULT 'connected' NOT NULL,
+      "last_error" text,
+      "last_used_at" integer,
+      "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+      "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+    );
   `);
 }
 
@@ -264,6 +307,28 @@ async function expectOrpcCode(promise: Promise<unknown>, code: string) {
   }
 
   throw new Error(`Expected ORPC error code ${code}`);
+}
+
+async function waitForConnectionStatus(
+  context: Context,
+  connectionId: string,
+  status: "pending" | "connected" | "failed",
+) {
+  const connectionClient = createProcedureClient(appRouter.openAICodexCredentialConnection, {
+    context,
+  });
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const connection = await connectionClient({ connectionId });
+
+    if (connection.status === status) {
+      return connection;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Connection ${connectionId} did not reach ${status}`);
 }
 
 afterAll(() => {
@@ -586,6 +651,216 @@ describe("GitHub App router procedures", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("provider credential router procedures", () => {
+  test("owner can list organization provider credential metadata without secret fields", async () => {
+    await seedUser("provider-list-owner");
+    await seedSession("provider-list-owner", "provider-list-org");
+    await seedOrganization("provider-list-org");
+    await seedMembership("provider-list-owner", "provider-list-org", "owner");
+    await database.insert(schema.agentProviderCredential).values({
+      id: "provider-list-credential",
+      organizationId: "provider-list-org",
+      userId: "provider-list-owner",
+      provider: "openai-codex",
+      credentialType: "oauth",
+      encryptedCredential: "encrypted-synthetic-token-payload",
+      expiresAt: new Date("2026-12-31T00:00:00.000Z"),
+      status: "connected",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+    });
+
+    const credentials = await createProcedureClient(appRouter.providerCredentials, {
+      context: memberContext("provider-list-owner", {
+        activeOrganizationId: "provider-list-org",
+      }),
+    })({});
+
+    expect(credentials).toEqual([
+      {
+        id: "provider-list-credential",
+        organizationId: "provider-list-org",
+        userId: "provider-list-owner",
+        provider: "openai-codex",
+        credentialType: "oauth",
+        status: "connected",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+        lastError: null,
+        lastUsedAt: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    const serialized = JSON.stringify(credentials);
+    expect(serialized).not.toContain("encryptedCredential");
+    expect(serialized).not.toContain("encrypted-synthetic-token-payload");
+    expect(serialized).not.toContain("access_token");
+    expect(serialized).not.toContain("refresh_token");
+    expect(serialized).not.toContain("api_key");
+    expect(serialized).not.toContain("TEST-CODEX-CODE");
+  });
+
+  test("wrong-org access cannot list or revoke provider credentials", async () => {
+    await seedUser("provider-wrong-org-user");
+    await seedSession("provider-wrong-org-user", "provider-wrong-org-owned");
+    await seedOrganization("provider-wrong-org-owned");
+    await seedOrganization("provider-wrong-org-outside");
+    await seedMembership("provider-wrong-org-user", "provider-wrong-org-owned", "owner");
+    await database.insert(schema.agentProviderCredential).values({
+      id: "provider-wrong-org-credential",
+      organizationId: "provider-wrong-org-outside",
+      userId: "provider-wrong-org-user",
+      provider: "openai-codex",
+      credentialType: "oauth",
+      encryptedCredential: "encrypted-outside-org-payload",
+      status: "connected",
+    });
+    const context = memberContext("provider-wrong-org-user", {
+      activeOrganizationId: "provider-wrong-org-owned",
+    });
+
+    await expectOrpcCode(
+      createProcedureClient(appRouter.providerCredentials, {
+        context,
+      })({ organizationId: "provider-wrong-org-outside" }),
+      "FORBIDDEN",
+    );
+
+    await expectOrpcCode(
+      createProcedureClient(appRouter.revokeProviderCredential, {
+        context,
+      })({
+        id: "provider-wrong-org-credential",
+        organizationId: "provider-wrong-org-outside",
+      }),
+      "FORBIDDEN",
+    );
+  });
+
+  test("non-admin organization members cannot start or revoke provider credentials", async () => {
+    await seedUser("provider-member-user");
+    await seedSession("provider-member-user", "provider-member-org");
+    await seedOrganization("provider-member-org");
+    await seedMembership("provider-member-user", "provider-member-org", "member");
+    await database.insert(schema.agentProviderCredential).values({
+      id: "provider-member-credential",
+      organizationId: "provider-member-org",
+      userId: "provider-member-user",
+      provider: "openai-codex",
+      credentialType: "oauth",
+      encryptedCredential: "encrypted-member-payload",
+      status: "connected",
+    });
+    const context = memberContext("provider-member-user", {
+      activeOrganizationId: "provider-member-org",
+    });
+
+    await expectOrpcCode(
+      createProcedureClient(appRouter.startOpenAICodexCredentialConnection, {
+        context,
+      })({}),
+      "FORBIDDEN",
+    );
+
+    await expectOrpcCode(
+      createProcedureClient(appRouter.revokeProviderCredential, {
+        context,
+      })({ id: "provider-member-credential" }),
+      "FORBIDDEN",
+    );
+  });
+
+  test("starting a connection without an active or selectable organization returns BAD_REQUEST", async () => {
+    await seedUser("provider-no-org-user");
+    await seedSession("provider-no-org-user");
+
+    await expectOrpcCode(
+      createProcedureClient(appRouter.startOpenAICodexCredentialConnection, {
+        context: memberContext("provider-no-org-user"),
+      })({}),
+      "BAD_REQUEST",
+    );
+  });
+
+  test("mocked device-flow success stores encrypted credentials and replaces prior connected rows", async () => {
+    mockedCodexCredentials = {
+      accessToken: "synthetic-access-token-rotation",
+      refreshToken: "synthetic-refresh-token-rotation",
+      expires: new Date("2027-01-01T00:00:00.000Z").getTime(),
+    };
+    await seedUser("provider-connect-owner");
+    await seedSession("provider-connect-owner", "provider-connect-org");
+    await seedOrganization("provider-connect-org");
+    await seedMembership("provider-connect-owner", "provider-connect-org", "owner");
+    await database.insert(schema.agentProviderCredential).values({
+      id: "provider-connect-prior",
+      organizationId: "provider-connect-org",
+      userId: "provider-connect-owner",
+      provider: "openai-codex",
+      credentialType: "oauth",
+      encryptedCredential: "encrypted-prior-payload",
+      status: "connected",
+    });
+    const context = memberContext("provider-connect-owner", {
+      activeOrganizationId: "provider-connect-org",
+    });
+
+    const pendingConnection = await createProcedureClient(appRouter.startOpenAICodexCredentialConnection, {
+      context,
+    })({});
+
+    expect(pendingConnection).toMatchObject({
+      organizationId: "provider-connect-org",
+      status: "pending",
+      deviceCode: {
+        userCode: "TEST-CODEX-CODE",
+        verificationUri: "https://example.test/device",
+        intervalSeconds: 1,
+        expiresInSeconds: 900,
+      },
+    });
+
+    const connection = await waitForConnectionStatus(context, pendingConnection.id, "connected");
+
+    expect(connection).toMatchObject({
+      organizationId: "provider-connect-org",
+      status: "connected",
+    });
+
+    const rows = await database
+      .select()
+      .from(schema.agentProviderCredential)
+      .where(eq(schema.agentProviderCredential.organizationId, "provider-connect-org"));
+    const prior = rows.find((row) => row.id === "provider-connect-prior");
+    const connected = rows.find(
+      (row) =>
+        row.id === connection.credentialId ||
+        (row.provider === "openai-codex" && row.status === "connected"),
+    );
+
+    expect(prior?.status).toBe("replaced");
+    expect(connected).toMatchObject({
+      organizationId: "provider-connect-org",
+      userId: "provider-connect-owner",
+      provider: "openai-codex",
+      credentialType: "oauth",
+      status: "connected",
+    });
+    expect(connected?.encryptedCredential).toContain("ciphertext");
+    expect(connected?.encryptedCredential).not.toContain("synthetic-access-token-rotation");
+    expect(connected?.encryptedCredential).not.toContain("synthetic-refresh-token-rotation");
+
+    const credentials = await createProcedureClient(appRouter.providerCredentials, {
+      context,
+    })({});
+    const serializedCredentials = JSON.stringify(credentials);
+    expect(serializedCredentials).not.toContain("encryptedCredential");
+    expect(serializedCredentials).not.toContain("synthetic-access-token-rotation");
+    expect(serializedCredentials).not.toContain("synthetic-refresh-token-rotation");
+    expect(serializedCredentials).not.toContain("TEST-CODEX-CODE");
   });
 });
 
