@@ -28,6 +28,7 @@ import {
   claimGitHubInstallation,
   createGitHubAppInstallUrl,
   isGitHubAppConfigured,
+  listAvailableGitHubInstallations,
 } from "../github-app";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
@@ -851,6 +852,44 @@ export const appRouter = {
           repositoryRows.filter((repository) => repository.installationId === row.id),
         ),
       );
+    }),
+  availableGitHubInstallations: protectedProcedure
+    .input(organizationScopedInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+        ?.activeOrganizationId;
+      const organizationId = await resolveOrganizationId(
+        userId,
+        input?.organizationId ?? activeOrganizationId ?? undefined,
+      );
+
+      if (!organizationId) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Create or select an organization before checking GitHub installations.",
+        });
+      }
+
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      if (!isGitHubAppConfigured()) {
+        return {
+          configured: false,
+          installations: [],
+        };
+      }
+
+      try {
+        return {
+          configured: true,
+          installations: await listAvailableGitHubInstallations({ organizationId }),
+        };
+      } catch (error) {
+        throw new ORPCError("BAD_REQUEST", {
+          message:
+            error instanceof Error ? error.message : "Failed to check GitHub App installations.",
+        });
+      }
     }),
   claimGitHubInstallation: protectedProcedure
     .input(claimGitHubInstallationInput)

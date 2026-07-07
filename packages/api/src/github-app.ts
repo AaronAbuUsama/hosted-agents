@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { db } from "@hosted-agents/db";
 import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
 import { env } from "@hosted-agents/env/server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";
@@ -21,6 +21,8 @@ type GitHubInstallationResponse = {
   repository_selection?: string;
   suspended_at?: string | null;
 };
+
+type GitHubAppInstallationsResponse = GitHubInstallationResponse[];
 
 type GitHubInstallationTokenResponse = {
   token: string;
@@ -47,6 +49,28 @@ export type ClaimGitHubInstallationInput = {
   userId: string;
   installationId: string;
   setupAction?: string;
+};
+
+export type GitHubAvailableInstallation = {
+  installationId: string;
+  accountId: string | null;
+  accountLogin: string | null;
+  accountType: string | null;
+  repositorySelection: string | null;
+  status: "connected" | "suspended";
+  suspendedAt: string | null;
+  repositoryCount: number;
+  repositories: {
+    githubRepositoryId: string;
+    owner: string;
+    name: string;
+    fullName: string;
+    htmlUrl: string | null;
+    defaultBranch: string | null;
+    private: boolean;
+  }[];
+  linkStatus: "available" | "linked" | "linked_to_another_organization";
+  localInstallationId: string | null;
 };
 
 function assertGitHubAppConfigured() {
@@ -191,6 +215,28 @@ async function listInstallationRepositories(installationId: string) {
   return response.repositories ?? [];
 }
 
+async function listGitHubAppInstallations() {
+  const token = createGitHubAppJwt();
+  const installations: GitHubInstallationResponse[] = [];
+  let page = 1;
+
+  while (true) {
+    const pageInstallations = await fetchGitHubJson<GitHubAppInstallationsResponse>(
+      `/app/installations?per_page=100&page=${page}`,
+      {
+        token,
+      },
+    );
+    installations.push(...pageInstallations);
+
+    if (pageInstallations.length < 100) {
+      return installations;
+    }
+
+    page += 1;
+  }
+}
+
 async function getInstallation(installationId: string) {
   return fetchGitHubJson<GitHubInstallationResponse>(`/app/installations/${installationId}`, {
     token: createGitHubAppJwt(),
@@ -199,6 +245,141 @@ async function getInstallation(installationId: string) {
 
 function toNullableDate(value: string | null | undefined) {
   return value ? new Date(value) : null;
+}
+
+function installationStatus(installation: GitHubInstallationResponse) {
+  return installation.suspended_at ? "suspended" : "connected";
+}
+
+function mapRepository(repository: GitHubRepositoryResponse) {
+  const owner = repository.owner?.login ?? repository.full_name.split("/")[0] ?? "";
+
+  return {
+    githubRepositoryId: String(repository.id),
+    owner,
+    name: repository.name,
+    fullName: repository.full_name,
+    htmlUrl: repository.html_url ?? null,
+    defaultBranch: repository.default_branch ?? null,
+    private: repository.private ?? false,
+  };
+}
+
+async function syncInstallationRepositories({
+  installationRowId,
+  repositories,
+  now,
+}: {
+  installationRowId: string;
+  repositories: GitHubRepositoryResponse[];
+  now: Date;
+}) {
+  const selectedRepositoryIds = new Set(repositories.map((repository) => String(repository.id)));
+
+  for (const repository of repositories) {
+    const repositorySummary = mapRepository(repository);
+
+    await db
+      .insert(githubRepository)
+      .values({
+        id: crypto.randomUUID(),
+        installationId: installationRowId,
+        githubRepositoryId: repositorySummary.githubRepositoryId,
+        owner: repositorySummary.owner,
+        name: repositorySummary.name,
+        fullName: repositorySummary.fullName,
+        htmlUrl: repositorySummary.htmlUrl,
+        defaultBranch: repositorySummary.defaultBranch,
+        private: repositorySummary.private,
+        selected: true,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [githubRepository.installationId, githubRepository.githubRepositoryId],
+        set: {
+          owner: repositorySummary.owner,
+          name: repositorySummary.name,
+          fullName: repositorySummary.fullName,
+          htmlUrl: repositorySummary.htmlUrl,
+          defaultBranch: repositorySummary.defaultBranch,
+          private: repositorySummary.private,
+          selected: true,
+          updatedAt: now,
+        },
+      });
+  }
+
+  const persistedRepositories = await db
+    .select({
+      id: githubRepository.id,
+      githubRepositoryId: githubRepository.githubRepositoryId,
+    })
+    .from(githubRepository)
+    .where(eq(githubRepository.installationId, installationRowId));
+
+  const staleRepositories = persistedRepositories.filter(
+    (repository) => !selectedRepositoryIds.has(repository.githubRepositoryId),
+  );
+
+  for (const repository of staleRepositories) {
+    await db.delete(githubRepository).where(eq(githubRepository.id, repository.id));
+  }
+}
+
+export async function listAvailableGitHubInstallations({
+  organizationId,
+}: {
+  organizationId: string;
+}): Promise<GitHubAvailableInstallation[]> {
+  const installations = await listGitHubAppInstallations();
+  const installationIds = installations.map((installation) => String(installation.id));
+  const linkedInstallations = installationIds.length
+    ? await db
+        .select()
+        .from(githubInstallation)
+        .where(inArray(githubInstallation.installationId, installationIds))
+    : [];
+  const linkedByInstallationId = new Map(
+    linkedInstallations.map((installation) => [installation.installationId, installation]),
+  );
+  const availableInstallations: GitHubAvailableInstallation[] = [];
+
+  for (const installation of installations) {
+    const installationId = String(installation.id);
+    const linkedInstallation = linkedByInstallationId.get(installationId);
+    const repositories = await listInstallationRepositories(installationId);
+    const linkStatus =
+      linkedInstallation?.organizationId === organizationId
+        ? "linked"
+        : linkedInstallation
+          ? "linked_to_another_organization"
+          : "available";
+
+    availableInstallations.push({
+      installationId,
+      accountId: installation.account?.id ? String(installation.account.id) : null,
+      accountLogin: installation.account?.login ?? null,
+      accountType: installation.account?.type ?? null,
+      repositorySelection: installation.repository_selection ?? null,
+      status: installationStatus(installation),
+      suspendedAt: installation.suspended_at ?? null,
+      repositoryCount: repositories.length,
+      repositories: repositories.map(mapRepository),
+      linkStatus,
+      localInstallationId:
+        linkStatus === "linked" && linkedInstallation ? linkedInstallation.id : null,
+    });
+  }
+
+  return availableInstallations.sort((left, right) => {
+    if (left.linkStatus !== right.linkStatus) {
+      return left.linkStatus === "linked" ? -1 : right.linkStatus === "linked" ? 1 : 0;
+    }
+
+    return (left.accountLogin ?? left.installationId).localeCompare(
+      right.accountLogin ?? right.installationId,
+    );
+  });
 }
 
 export async function claimGitHubInstallation({
@@ -234,7 +415,7 @@ export async function claimGitHubInstallation({
       accountLogin: installation.account?.login ?? null,
       accountType: installation.account?.type ?? null,
       repositorySelection: installation.repository_selection ?? null,
-      status: installation.suspended_at ? "suspended" : "connected",
+      status: installationStatus(installation),
       setupAction: setupAction ?? null,
       installedByUserId: userId,
       suspendedAt: toNullableDate(installation.suspended_at),
@@ -249,7 +430,7 @@ export async function claimGitHubInstallation({
         accountLogin: installation.account?.login ?? null,
         accountType: installation.account?.type ?? null,
         repositorySelection: installation.repository_selection ?? null,
-        status: installation.suspended_at ? "suspended" : "connected",
+        status: installationStatus(installation),
         setupAction: setupAction ?? null,
         installedByUserId: userId,
         suspendedAt: toNullableDate(installation.suspended_at),
@@ -257,39 +438,7 @@ export async function claimGitHubInstallation({
       },
     });
 
-  for (const repository of repositories) {
-    const repositoryId = String(repository.id);
-    const owner = repository.owner?.login ?? repository.full_name.split("/")[0] ?? "";
-
-    await db
-      .insert(githubRepository)
-      .values({
-        id: crypto.randomUUID(),
-        installationId: id,
-        githubRepositoryId: repositoryId,
-        owner,
-        name: repository.name,
-        fullName: repository.full_name,
-        htmlUrl: repository.html_url ?? null,
-        defaultBranch: repository.default_branch ?? null,
-        private: repository.private ?? false,
-        selected: true,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [githubRepository.installationId, githubRepository.githubRepositoryId],
-        set: {
-          owner,
-          name: repository.name,
-          fullName: repository.full_name,
-          htmlUrl: repository.html_url ?? null,
-          defaultBranch: repository.default_branch ?? null,
-          private: repository.private ?? false,
-          selected: true,
-          updatedAt: now,
-        },
-      });
-  }
+  await syncInstallationRepositories({ installationRowId: id, repositories, now });
 
   return {
     installationId,
