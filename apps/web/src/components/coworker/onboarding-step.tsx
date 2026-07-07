@@ -16,7 +16,7 @@ type OnboardingStepProps = {
   children?: React.ReactNode;
 };
 
-const setupSteps = ["Organization", "Provider", "GitHub", "Coworkers", "Rules"] as const;
+const setupSteps = ["Organization", "GitHub", "Provider", "Coworkers", "Rules"] as const;
 
 export default function OnboardingStep({
   eyebrow,

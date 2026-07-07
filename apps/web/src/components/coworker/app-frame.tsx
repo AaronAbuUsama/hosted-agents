@@ -3,6 +3,8 @@
 import { useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 
 import { AppShell } from "@astryxdesign/core/AppShell";
+import { Divider } from "@astryxdesign/core/Divider";
+import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
 import type { IconType } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
@@ -16,7 +18,14 @@ import {
 import { HStack, Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TopNav } from "@astryxdesign/core/TopNav";
-import { PlayCircleIcon, SparklesIcon, UserCircleIcon } from "@heroicons/react/24/outline";
+import {
+  BuildingOffice2Icon,
+  Cog6ToothIcon,
+  KeyIcon,
+  PlayCircleIcon,
+  SparklesIcon,
+  UserCircleIcon,
+} from "@heroicons/react/24/outline";
 import { usePathname } from "next/navigation";
 
 import { getWorkspaceNavItems } from "@/lib/organization-routing";
@@ -60,6 +69,10 @@ function isWorkspaceItemSelected(item: WorkspaceNavItem, pathname: string): bool
   return pathname === item.href || pathname.startsWith(`${item.href}/`);
 }
 
+function navigateTo(href: string): void {
+  window.location.href = href;
+}
+
 export default function AppFrame({
   children,
   organizationLabel,
@@ -86,12 +99,37 @@ export default function AppFrame({
             </HStack>
           }
           endContent={
-            <HStack gap={2} vAlign="center">
-              <Icon icon={UserCircleIcon} size="sm" />
-              <Text type="supporting" color="secondary">
-                {userLabel}
-              </Text>
-            </HStack>
+            <DropdownMenu
+              button={{
+                label: userLabel,
+                variant: "secondary",
+                size: "sm",
+                icon: <Icon icon={UserCircleIcon} size="sm" />,
+              }}
+              menuWidth={260}
+            >
+              <DropdownMenuItem
+                label={organizationLabel}
+                icon={BuildingOffice2Icon}
+                onClick={() => navigateTo("/app/settings")}
+              />
+              <Divider />
+              <DropdownMenuItem
+                label="Provider account"
+                icon={KeyIcon}
+                onClick={() => navigateTo("/onboarding/provider")}
+              />
+              <DropdownMenuItem
+                label="Organization settings"
+                icon={Cog6ToothIcon}
+                onClick={() => navigateTo("/app/settings")}
+              />
+              <DropdownMenuItem
+                label="Runs"
+                icon={PlayCircleIcon}
+                onClick={() => navigateTo("/app/runs")}
+              />
+            </DropdownMenu>
           }
         />
       }
