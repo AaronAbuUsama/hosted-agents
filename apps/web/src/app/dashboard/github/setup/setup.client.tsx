@@ -4,7 +4,7 @@ import { Button } from "@hosted-agents/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@hosted-agents/ui/components/card";
 import { Label } from "@hosted-agents/ui/components/label";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckCircle2, ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
+import { CheckCircle2, ExternalLink, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -45,6 +45,21 @@ export default function GitHubSetupClient({
     }),
   );
   const installations = linkedInstallationData ?? [];
+  const {
+    data: availableInstallationData,
+    error: availableInstallationsError,
+    isError: isAvailableInstallationsError,
+    isFetching: isFetchingAvailableInstallations,
+    isPending: isPendingAvailableInstallations,
+    refetch: refetchAvailableInstallations,
+  } = useQuery(
+    orpc.availableGitHubInstallations.queryOptions({
+      input: selectedOrganizationId ? { organizationId: selectedOrganizationId } : undefined,
+      enabled: Boolean(selectedOrganizationId),
+    }),
+  );
+  const availableInstallations = availableInstallationData?.installations ?? [];
+  const isGitHubAppConfigured = availableInstallationData?.configured ?? true;
   const linkedRepositoryCount = installations.reduce(
     (count, installation) => count + installation.repositoryCount,
     0,
@@ -77,6 +92,7 @@ export default function GitHubSetupClient({
       onSuccess: (result) => {
         toast.success(`GitHub installation linked with ${result.repositoryCount} repos`);
         void refetchLinkedInstallations();
+        void refetchAvailableInstallations();
       },
       onError: (error) => {
         toast.error(error.message);
@@ -119,8 +135,15 @@ export default function GitHubSetupClient({
   const canRetry = Boolean(installationId && selectedOrganizationId);
   const isLoadingLinkedState =
     isPendingLinkedInstallations || isFetchingLinkedInstallations || organizations.isPending;
+  const isLoadingAvailableState =
+    isPendingAvailableInstallations || isFetchingAvailableInstallations || organizations.isPending;
   const hasLinkedReviewer = installations.length > 0;
   const canContinueToProvider = hasLinkedReviewer || claimGitHubInstallation.isSuccess;
+  const pendingInstallationId = claimGitHubInstallation.variables?.installationId ?? null;
+  const refreshGitHubState = () => {
+    void refetchLinkedInstallations();
+    void refetchAvailableInstallations();
+  };
 
   return (
     <div className="mx-auto grid w-full max-w-2xl gap-4 p-4">
@@ -141,8 +164,8 @@ export default function GitHubSetupClient({
             {setupAction ? <p className="text-muted-foreground">Action: {setupAction}</p> : null}
             {selectedOrganization ? (
               <p className="text-muted-foreground">
-                Linking into {selectedOrganization.name}. GitHub returns here with an
-                installation id; the API then persists the installation and selected repositories.
+                Linking into {selectedOrganization.name}. This Coworker organization can use
+                repositories from multiple GitHub App installations.
               </p>
             ) : null}
           </div>
@@ -193,21 +216,23 @@ export default function GitHubSetupClient({
                 claimGitHubInstallation.reset();
               }}
             />
-          ) : (
-            <div className="grid gap-3">
-              {hasLinkedReviewer ? (
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <CheckCircle2 className="size-4" />
-                  Reviewer app linked with {linkedRepositoryCount} repositories
-                </div>
-              ) : isLoadingLinkedState ? (
-                <LoadingState label="Checking linked GitHub installations" />
-              ) : (
-                <p className="text-muted-foreground">
-                  No Reviewer GitHub App installation is linked to this organization yet.
-                </p>
-              )}
+          ) : null}
 
+          <div className="grid gap-3">
+            {hasLinkedReviewer ? (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <CheckCircle2 className="size-4" />
+                Reviewer app linked with {linkedRepositoryCount} repositories
+              </div>
+            ) : isLoadingLinkedState ? (
+              <LoadingState label="Checking linked GitHub installations" />
+            ) : (
+              <p className="text-muted-foreground">
+                No Reviewer GitHub App installation is linked to this Coworker organization yet.
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 disabled={!selectedOrganizationId || isStartingReviewerInstall}
@@ -221,14 +246,48 @@ export default function GitHubSetupClient({
                 ) : (
                   <>
                     <ExternalLink className="size-4" />
-                    {hasLinkedReviewer
-                      ? "Manage Reviewer GitHub App"
-                      : "Install Reviewer GitHub App"}
+                    {hasLinkedReviewer ? "Configure on GitHub" : "Install or configure on GitHub"}
                   </>
                 )}
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!selectedOrganizationId || isLoadingAvailableState}
+                onClick={refreshGitHubState}
+              >
+                {isLoadingAvailableState ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-4" />
+                )}
+                Refresh
+              </Button>
             </div>
-          )}
+          </div>
+
+          <AvailableInstallationsState
+            configured={isGitHubAppConfigured}
+            errorMessage={
+              isAvailableInstallationsError ? availableInstallationsError.message : null
+            }
+            installations={availableInstallations}
+            isClaiming={claimGitHubInstallation.isPending}
+            isLoading={isLoadingAvailableState}
+            pendingInstallationId={pendingInstallationId}
+            onLink={(availableInstallation, setupMode) => {
+              if (!selectedOrganizationId) {
+                toast.error("Select an organization before linking a GitHub installation.");
+                return;
+              }
+
+              claimGitHubInstallation.mutate({
+                installationId: availableInstallation.installationId,
+                organizationId: selectedOrganizationId,
+                setupAction: setupMode,
+              });
+            }}
+          />
 
           {isLinkedInstallationsError ? (
             <p className="text-destructive">{linkedInstallationsError.message}</p>
@@ -271,11 +330,137 @@ type LinkedGitHubInstallation = {
   }[];
 };
 
+type AvailableGitHubInstallation = {
+  installationId: string;
+  accountLogin: string | null;
+  accountType: string | null;
+  repositorySelection: string | null;
+  status: string;
+  repositoryCount: number;
+  repositories: {
+    githubRepositoryId: string;
+    fullName: string;
+    htmlUrl: string | null;
+    defaultBranch: string | null;
+    private: boolean;
+  }[];
+  linkStatus: "available" | "linked" | "linked_to_another_organization";
+};
+
 function LoadingState({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 text-muted-foreground">
       <Loader2 className="size-4 animate-spin" />
       {label}
+    </div>
+  );
+}
+
+function AvailableInstallationsState({
+  configured,
+  errorMessage,
+  installations,
+  isClaiming,
+  isLoading,
+  pendingInstallationId,
+  onLink,
+}: {
+  configured: boolean;
+  errorMessage: string | null;
+  installations: AvailableGitHubInstallation[];
+  isClaiming: boolean;
+  isLoading: boolean;
+  pendingInstallationId: string | null;
+  onLink: (installation: AvailableGitHubInstallation, setupMode: string) => void;
+}) {
+  if (!configured) {
+    return (
+      <p className="text-muted-foreground">
+        Reviewer GitHub App is not configured for this environment.
+      </p>
+    );
+  }
+
+  if (isLoading) {
+    return <LoadingState label="Checking GitHub App installations" />;
+  }
+
+  if (errorMessage) {
+    return <p className="text-destructive">{errorMessage}</p>;
+  }
+
+  if (installations.length === 0) {
+    return (
+      <p className="text-muted-foreground">
+        GitHub has not returned any installations for this Reviewer app.
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-3">
+      {installations.map((installation) => {
+        const isPending = isClaiming && pendingInstallationId === installation.installationId;
+        const isLinked = installation.linkStatus === "linked";
+        const isLinkedElsewhere = installation.linkStatus === "linked_to_another_organization";
+        const visibleRepositories = installation.repositories.slice(0, 5);
+
+        return (
+          <div
+            className="grid gap-3 rounded-md border border-border p-3"
+            key={installation.installationId}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="grid gap-1">
+                <p className="text-sm font-medium">
+                  {installation.accountLogin ?? `Installation ${installation.installationId}`}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {installation.accountType ?? "GitHub account"} · {installation.status} ·{" "}
+                  {installation.repositorySelection ?? "selected"} repos ·{" "}
+                  {installation.repositoryCount} available
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={isLinked ? "outline" : "default"}
+                disabled={isPending || isLinkedElsewhere}
+                onClick={() => onLink(installation, isLinked ? "sync" : "manual_link")}
+              >
+                {isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                {isLinked ? "Sync repos" : isLinkedElsewhere ? "Linked elsewhere" : "Link here"}
+              </Button>
+            </div>
+
+            {visibleRepositories.length > 0 ? (
+              <ul className="grid gap-2">
+                {visibleRepositories.map((repository) => (
+                  <li
+                    className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-xs"
+                    key={repository.githubRepositoryId}
+                  >
+                    <span>{repository.fullName}</span>
+                    <span className="text-muted-foreground">
+                      {repository.private ? "Private" : "Public"}
+                      {repository.defaultBranch ? ` · ${repository.defaultBranch}` : ""}
+                    </span>
+                  </li>
+                ))}
+                {installation.repositories.length > visibleRepositories.length ? (
+                  <li className="border-t border-border pt-2 text-muted-foreground text-xs">
+                    +{installation.repositories.length - visibleRepositories.length} more
+                  </li>
+                ) : null}
+              </ul>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                GitHub returned no repositories for this installation.
+              </p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

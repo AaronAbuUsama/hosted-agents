@@ -331,6 +331,77 @@ async function waitForConnectionStatus(
   throw new Error(`Connection ${connectionId} did not reach ${status}`);
 }
 
+type MockGitHubInstallation = {
+  id: number;
+  account: {
+    id: number;
+    login: string;
+    type: string;
+  };
+  repository_selection: string;
+  suspended_at: string | null;
+};
+
+type MockGitHubRepository = {
+  id: number;
+  name: string;
+  full_name: string;
+  html_url: string;
+  default_branch: string;
+  private: boolean;
+  owner: {
+    login: string;
+  };
+};
+
+function createMockGitHubAppFetch({
+  installations,
+  repositoriesByInstallationId,
+}: {
+  installations: MockGitHubInstallation[];
+  repositoriesByInstallationId: Record<string, MockGitHubRepository[]>;
+}) {
+  return (async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/app/installations" && method === "GET") {
+      return Response.json(installations);
+    }
+
+    const installationMatch = url.pathname.match(/^\/app\/installations\/(\d+)$/);
+    if (installationMatch && method === "GET") {
+      const installation = installations.find(
+        (candidate) => String(candidate.id) === installationMatch[1],
+      );
+
+      if (!installation) {
+        return new Response("installation not found", { status: 404 });
+      }
+
+      return Response.json(installation);
+    }
+
+    const tokenMatch = url.pathname.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
+    if (tokenMatch && method === "POST") {
+      return Response.json({ token: `installation-token-${tokenMatch[1]}` });
+    }
+
+    if (url.pathname === "/installation/repositories" && method === "GET") {
+      const headers = init?.headers as Record<string, string> | undefined;
+      const installationId = headers?.authorization?.replace(/^Bearer installation-token-/, "");
+
+      return Response.json({
+        repositories: installationId ? (repositoriesByInstallationId[installationId] ?? []) : [],
+      });
+    }
+
+    return new Response(`unexpected GitHub API request: ${method} ${url.toString()}`, {
+      status: 500,
+    });
+  }) as typeof fetch;
+}
+
 afterAll(() => {
   client.close();
   rmSync(testDatabaseDirectory, { recursive: true, force: true });
@@ -617,6 +688,247 @@ describe("GitHub App router procedures", () => {
           defaultBranch: "trunk",
           private: true,
           selected: true,
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("availableGitHubInstallations lists personal and organization installs that are not locally linked yet", async () => {
+    await seedUser("github-available-user");
+    await seedSession("github-available-user", "github-available-org");
+    await seedOrganization("github-available-org");
+    await seedMembership("github-available-user", "github-available-org", "owner");
+    const context = memberContext("github-available-user", {
+      activeOrganizationId: "github-available-org",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = createMockGitHubAppFetch({
+      installations: [
+        {
+          id: 101,
+          account: { id: 1001, login: "AaronAbuUsama", type: "User" },
+          repository_selection: "selected",
+          suspended_at: null,
+        },
+        {
+          id: 202,
+          account: { id: 2002, login: "Xelmar-tech", type: "Organization" },
+          repository_selection: "selected",
+          suspended_at: null,
+        },
+      ],
+      repositoriesByInstallationId: {
+        "101": [
+          {
+            id: 10101,
+            name: "personal-repo",
+            full_name: "AaronAbuUsama/personal-repo",
+            html_url: "https://github.com/AaronAbuUsama/personal-repo",
+            default_branch: "main",
+            private: false,
+            owner: { login: "AaronAbuUsama" },
+          },
+        ],
+        "202": [
+          {
+            id: 20201,
+            name: "org-repo",
+            full_name: "Xelmar-tech/org-repo",
+            html_url: "https://github.com/Xelmar-tech/org-repo",
+            default_branch: "main",
+            private: true,
+            owner: { login: "Xelmar-tech" },
+          },
+        ],
+      },
+    });
+
+    try {
+      const result = await createProcedureClient(appRouter.availableGitHubInstallations, {
+        context,
+      })({});
+
+      expect(result.configured).toBe(true);
+      expect(result.installations).toEqual([
+        expect.objectContaining({
+          installationId: "101",
+          accountLogin: "AaronAbuUsama",
+          accountType: "User",
+          linkStatus: "available",
+          repositoryCount: 1,
+        }),
+        expect.objectContaining({
+          installationId: "202",
+          accountLogin: "Xelmar-tech",
+          accountType: "Organization",
+          linkStatus: "available",
+          repositoryCount: 1,
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("claimGitHubInstallation can link personal and organization installs into the same Coworker organization", async () => {
+    await seedUser("github-multi-link-user");
+    await seedSession("github-multi-link-user", "github-multi-link-org");
+    await seedOrganization("github-multi-link-org");
+    await seedMembership("github-multi-link-user", "github-multi-link-org", "owner");
+    const context = memberContext("github-multi-link-user", {
+      activeOrganizationId: "github-multi-link-org",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = createMockGitHubAppFetch({
+      installations: [
+        {
+          id: 303,
+          account: { id: 3003, login: "AaronAbuUsama", type: "User" },
+          repository_selection: "selected",
+          suspended_at: null,
+        },
+        {
+          id: 404,
+          account: { id: 4004, login: "Xelmar-tech", type: "Organization" },
+          repository_selection: "selected",
+          suspended_at: null,
+        },
+      ],
+      repositoriesByInstallationId: {
+        "303": [
+          {
+            id: 30301,
+            name: "personal-alpha",
+            full_name: "AaronAbuUsama/personal-alpha",
+            html_url: "https://github.com/AaronAbuUsama/personal-alpha",
+            default_branch: "main",
+            private: false,
+            owner: { login: "AaronAbuUsama" },
+          },
+        ],
+        "404": [
+          {
+            id: 40401,
+            name: "org-alpha",
+            full_name: "Xelmar-tech/org-alpha",
+            html_url: "https://github.com/Xelmar-tech/org-alpha",
+            default_branch: "trunk",
+            private: true,
+            owner: { login: "Xelmar-tech" },
+          },
+        ],
+      },
+    });
+
+    try {
+      const claim = createProcedureClient(appRouter.claimGitHubInstallation, {
+        context,
+      });
+
+      await expect(
+        claim({ installationId: "303", setupAction: "manual_link" }),
+      ).resolves.toMatchObject({
+        installationId: "303",
+        repositoryCount: 1,
+      });
+      await expect(
+        claim({ installationId: "404", setupAction: "manual_link" }),
+      ).resolves.toMatchObject({
+        installationId: "404",
+        repositoryCount: 1,
+      });
+
+      const linkedInstallations = await createProcedureClient(appRouter.githubInstallations, {
+        context,
+      })({});
+      const linkedAccounts = linkedInstallations.map((installation) => installation.accountLogin);
+
+      expect(linkedInstallations).toHaveLength(2);
+      expect(linkedAccounts).toContain("AaronAbuUsama");
+      expect(linkedAccounts).toContain("Xelmar-tech");
+
+      const available = await createProcedureClient(appRouter.availableGitHubInstallations, {
+        context,
+      })({});
+      expect(available.installations).toEqual([
+        expect.objectContaining({
+          installationId: "303",
+          linkStatus: "linked",
+          localInstallationId: expect.any(String),
+        }),
+        expect.objectContaining({
+          installationId: "404",
+          linkStatus: "linked",
+          localInstallationId: expect.any(String),
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("claimGitHubInstallation sync removes repositories no longer selected on GitHub", async () => {
+    await seedUser("github-sync-user");
+    await seedSession("github-sync-user", "github-sync-org");
+    await seedOrganization("github-sync-org");
+    await seedMembership("github-sync-user", "github-sync-org", "owner");
+    const context = memberContext("github-sync-user", {
+      activeOrganizationId: "github-sync-org",
+    });
+    const repositoriesByInstallationId: Record<string, MockGitHubRepository[]> = {
+      "505": [
+        {
+          id: 50501,
+          name: "kept-repo",
+          full_name: "Xelmar-tech/kept-repo",
+          html_url: "https://github.com/Xelmar-tech/kept-repo",
+          default_branch: "main",
+          private: true,
+          owner: { login: "Xelmar-tech" },
+        },
+        {
+          id: 50502,
+          name: "removed-repo",
+          full_name: "Xelmar-tech/removed-repo",
+          html_url: "https://github.com/Xelmar-tech/removed-repo",
+          default_branch: "main",
+          private: true,
+          owner: { login: "Xelmar-tech" },
+        },
+      ],
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = createMockGitHubAppFetch({
+      installations: [
+        {
+          id: 505,
+          account: { id: 5005, login: "Xelmar-tech", type: "Organization" },
+          repository_selection: "selected",
+          suspended_at: null,
+        },
+      ],
+      repositoriesByInstallationId,
+    });
+
+    try {
+      const claim = createProcedureClient(appRouter.claimGitHubInstallation, {
+        context,
+      });
+
+      await claim({ installationId: "505", setupAction: "manual_link" });
+      repositoriesByInstallationId["505"] = [repositoriesByInstallationId["505"]![0]!];
+      await claim({ installationId: "505", setupAction: "sync" });
+
+      const linkedInstallations = await createProcedureClient(appRouter.githubInstallations, {
+        context,
+      })({});
+      expect(linkedInstallations).toHaveLength(1);
+      expect(linkedInstallations[0]?.repositoryCount).toBe(1);
+      expect(linkedInstallations[0]?.repositories).toEqual([
+        expect.objectContaining({
+          fullName: "Xelmar-tech/kept-repo",
         }),
       ]);
     } finally {
