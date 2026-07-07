@@ -50,6 +50,33 @@ export type AgentRunEventApiRecord = {
   createdAt: string;
 };
 
+export type AgentRunArtifactApiRecord = {
+  id: string;
+  runId: string;
+  name: string;
+  contentType: string;
+  content: string | null;
+  payload: unknown;
+  createdAt: string;
+};
+
+export type RunArtifactKind = "markdown" | "json" | "log" | "text";
+
+export type RunArtifactViewRow = {
+  id: string;
+  runId: string;
+  name: string;
+  label: string;
+  contentType: string;
+  content: string;
+  payload: unknown;
+  createdAt: string;
+  timestamp: string;
+  kind: RunArtifactKind;
+  language: string;
+  sizeLabel: string;
+};
+
 export type RunTimelineEventStatus = "neutral" | "accent" | "warning" | "success" | "error";
 
 export type RunTimelineEventRow = {
@@ -143,6 +170,28 @@ export function mapAgentRunToRunRow(run: AgentRunApiRecord): RunViewModelRow {
     sourceProvider: run.sourceProvider,
     runType: run.runType,
     currentStage: run.currentStage,
+  };
+}
+
+export function mapAgentRunArtifactToArtifactRow(
+  artifact: AgentRunArtifactApiRecord,
+): RunArtifactViewRow {
+  const content = artifact.content ?? formatPayload(artifact.payload);
+  const kind = artifactKind(artifact.name, artifact.contentType);
+
+  return {
+    id: artifact.id,
+    runId: artifact.runId,
+    name: artifact.name,
+    label: artifactLabel(artifact.name),
+    contentType: artifact.contentType,
+    content,
+    payload: artifact.payload,
+    createdAt: artifact.createdAt,
+    timestamp: formatDate(artifact.createdAt),
+    kind,
+    language: artifactLanguage(kind),
+    sizeLabel: formatCharacterCount(content.length),
   };
 }
 
@@ -449,6 +498,51 @@ function toolCallsFromContentParts(parts: unknown[]): RunTranscriptToolCallRow[]
       },
     ];
   });
+}
+
+function artifactLabel(name: string): string {
+  const finalSegment = name.split("/").pop() ?? name;
+  return finalSegment || name;
+}
+
+function artifactKind(name: string, contentType: string): RunArtifactKind {
+  if (contentType.includes("json") || name.endsWith(".json")) {
+    return "json";
+  }
+
+  if (contentType.includes("markdown") || name.endsWith(".md")) {
+    return "markdown";
+  }
+
+  if (contentType.startsWith("text/") || name.endsWith(".log")) {
+    return name.endsWith(".log") ? "log" : "text";
+  }
+
+  return "text";
+}
+
+function artifactLanguage(kind: RunArtifactKind): string {
+  if (kind === "json") {
+    return "json";
+  }
+
+  if (kind === "markdown") {
+    return "markdown";
+  }
+
+  return "text";
+}
+
+function formatCharacterCount(count: number): string {
+  if (count >= 1_000_000) {
+    return `${(count / 1_000_000).toFixed(1)}M chars`;
+  }
+
+  if (count >= 1_000) {
+    return `${(count / 1_000).toFixed(1)}K chars`;
+  }
+
+  return `${count} chars`;
 }
 
 function formatPayload(value: unknown): string {

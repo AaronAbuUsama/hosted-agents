@@ -131,11 +131,16 @@ export default function RunRollout({
                   </HStack>
                 </VStack>
               </StackItem>
-              {githubHref ? (
-                <Link href={githubHref} isStandalone isExternalLink>
-                  Open GitHub
+              <HStack gap={3} vAlign="center" wrap="wrap">
+                <Link href={`/app/runs/${run.id}/workspace`} isStandalone>
+                  Open workspace
                 </Link>
-              ) : null}
+                {githubHref ? (
+                  <Link href={githubHref} isStandalone isExternalLink>
+                    Open GitHub
+                  </Link>
+                ) : null}
+              </HStack>
             </HStack>
 
             <TabList value={activeTab} onChange={(value) => changeTab(value as RunDetailTab)}>

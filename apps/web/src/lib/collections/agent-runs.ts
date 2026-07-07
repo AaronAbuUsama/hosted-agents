@@ -2,11 +2,19 @@ import { createCollection } from "@tanstack/react-db";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 
 import {
+  mapAgentRunArtifactToArtifactRow,
   mapAgentRunToRunRow,
   type AgentRunEventApiRecord,
+  type RunArtifactViewRow,
   type RunViewModelRow,
 } from "@/lib/run-view-model";
 import { client, queryClient } from "@/utils/orpc";
+
+const RUN_COLLECTION_REFETCH_INTERVAL_MS = 5_000;
+
+function refetchRunCollectionInterval(query: { state: { error: unknown } }): number | false {
+  return query.state.error ? false : RUN_COLLECTION_REFETCH_INTERVAL_MS;
+}
 
 export const agentRunsCollection = createCollection(
   queryCollectionOptions<RunViewModelRow, Error, ["agent-runs"], string>({
@@ -18,8 +26,9 @@ export const agentRunsCollection = createCollection(
     },
     queryClient,
     getKey: (run) => run.id,
-    staleTime: 5_000,
-    refetchInterval: 5_000,
+    staleTime: RUN_COLLECTION_REFETCH_INTERVAL_MS,
+    retry: false,
+    refetchInterval: refetchRunCollectionInterval,
   }),
 );
 
@@ -31,8 +40,27 @@ export function createAgentRunEventsCollection(runId: string) {
       queryFn: async () => client.agentRunEvents({ runId }),
       queryClient,
       getKey: (event) => event.id,
-      staleTime: 5_000,
-      refetchInterval: 5_000,
+      staleTime: RUN_COLLECTION_REFETCH_INTERVAL_MS,
+      retry: false,
+      refetchInterval: refetchRunCollectionInterval,
+    }),
+  );
+}
+
+export function createAgentRunArtifactsCollection(runId: string) {
+  return createCollection(
+    queryCollectionOptions<RunArtifactViewRow, Error, ["agent-run-artifacts", string], string>({
+      id: `agent-run-artifacts:${runId}`,
+      queryKey: ["agent-run-artifacts", runId],
+      queryFn: async () => {
+        const records = await client.agentRunArtifacts({ runId });
+        return records.map(mapAgentRunArtifactToArtifactRow);
+      },
+      queryClient,
+      getKey: (artifact) => artifact.id,
+      staleTime: RUN_COLLECTION_REFETCH_INTERVAL_MS,
+      retry: false,
+      refetchInterval: refetchRunCollectionInterval,
     }),
   );
 }

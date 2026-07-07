@@ -9,6 +9,7 @@ import { db } from "@hosted-agents/db";
 import {
   CODE_REVIEW_WORKER_DISPLAY_NAME,
   agentRun,
+  agentRunArtifact,
   agentRunEvent,
 } from "@hosted-agents/db/schema/agent-runs";
 import { member } from "@hosted-agents/db/schema/auth";
@@ -68,6 +69,8 @@ const agentRunEventsInput = z.object({
   organizationId: z.string().optional(),
 });
 
+const agentRunArtifactsInput = agentRunEventsInput;
+
 const organizationScopedInput = z
   .object({
     organizationId: z.string().optional(),
@@ -95,6 +98,8 @@ type SessionWithActiveOrganization = {
     activeOrganizationId?: string | null;
   };
 };
+
+type AgentRunScopedInput = z.infer<typeof agentRunEventsInput>;
 
 function toIsoString(value: Date | null) {
   return value ? value.toISOString() : null;
@@ -210,6 +215,18 @@ function mapAgentRunEvent(row: typeof agentRunEvent.$inferSelect) {
   };
 }
 
+function mapAgentRunArtifact(row: typeof agentRunArtifact.$inferSelect) {
+  return {
+    id: row.id,
+    runId: row.runId,
+    name: row.name,
+    contentType: row.contentType,
+    content: row.content,
+    payload: parsePayload(row.payloadJson),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 function mapProviderCredential(row: typeof agentProviderCredential.$inferSelect) {
   return {
     id: row.id,
@@ -312,6 +329,27 @@ async function getUserOrganizationMembership(userId: string, organizationId: str
     .limit(1);
 
   return row ?? null;
+}
+
+async function assertCanReadAgentRun(userId: string, input: AgentRunScopedInput): Promise<void> {
+  const organizationIds = await getUserOrganizationIds(userId);
+
+  if (organizationIds.length === 0) {
+    throw new ORPCError("FORBIDDEN");
+  }
+
+  const [run] = await db.select().from(agentRun).where(eq(agentRun.id, input.runId)).limit(1);
+
+  if (!run) {
+    throw new ORPCError("NOT_FOUND");
+  }
+
+  if (
+    !organizationIds.includes(run.organizationId) ||
+    (input.organizationId && input.organizationId !== run.organizationId)
+  ) {
+    throw new ORPCError("FORBIDDEN");
+  }
 }
 
 async function assertCanManageOrganizationCredentials(userId: string, organizationId: string) {
@@ -501,24 +539,7 @@ export const appRouter = {
     .input(agentRunEventsInput)
     .handler(async ({ input, context }) => {
       const userId = context.session.user.id;
-      const organizationIds = await getUserOrganizationIds(userId);
-
-      if (organizationIds.length === 0) {
-        throw new ORPCError("FORBIDDEN");
-      }
-
-      const [run] = await db.select().from(agentRun).where(eq(agentRun.id, input.runId)).limit(1);
-
-      if (!run) {
-        throw new ORPCError("NOT_FOUND");
-      }
-
-      if (
-        !organizationIds.includes(run.organizationId) ||
-        (input.organizationId && input.organizationId !== run.organizationId)
-      ) {
-        throw new ORPCError("FORBIDDEN");
-      }
+      await assertCanReadAgentRun(userId, input);
 
       const rows = await db
         .select()
@@ -527,6 +548,20 @@ export const appRouter = {
         .orderBy(asc(agentRunEvent.sequence));
 
       return rows.map(mapAgentRunEvent);
+    }),
+  agentRunArtifacts: protectedProcedure
+    .input(agentRunArtifactsInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      await assertCanReadAgentRun(userId, input);
+
+      const rows = await db
+        .select()
+        .from(agentRunArtifact)
+        .where(eq(agentRunArtifact.runId, input.runId))
+        .orderBy(asc(agentRunArtifact.createdAt));
+
+      return rows.map(mapAgentRunArtifact);
     }),
   providerCredentials: protectedProcedure
     .input(organizationScopedInput)
