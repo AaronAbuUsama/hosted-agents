@@ -1,5 +1,5 @@
 import { Button } from "@astryxdesign/core/Button";
-import { HStack, VStack } from "@astryxdesign/core/Stack";
+import { VStack } from "@astryxdesign/core/Stack";
 import { Heading, Text } from "@astryxdesign/core/Text";
 
 export default function MarketingPage() {
@@ -23,10 +23,7 @@ export default function MarketingPage() {
             </p>
           </VStack>
 
-          <HStack gap={3} hAlign="center" vAlign="center" className="flex-wrap">
-            <Button label="Get Started" href="/signup" variant="primary" size="lg" />
-            <Button label="Sign In" href="/login" variant="secondary" size="lg" />
-          </HStack>
+          <Button label="Get Started" href="/signup" variant="primary" size="lg" />
         </VStack>
       </section>
     </main>
