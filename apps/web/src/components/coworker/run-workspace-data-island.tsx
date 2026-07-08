@@ -14,12 +14,7 @@ import {
   createAgentRunArtifactsCollection,
   createAgentRunEventsCollection,
 } from "@/lib/collections/agent-runs";
-import {
-  mapAgentRunEventToTimelineRow,
-  mapAgentRunEventsToTranscriptRows,
-  sortRunTimelineEvents,
-  type RunViewModelRow,
-} from "@/lib/run-view-model";
+import { mapAgentRunEventsToTranscriptRows, type RunViewModelRow } from "@/lib/run-view-model";
 
 import RunWorkspace from "./run-workspace";
 
@@ -76,7 +71,6 @@ function RunWorkspaceCollectionsIsland({ run }: { run: RunViewModelRow }): React
   return (
     <RunWorkspace
       run={run}
-      events={sortRunTimelineEvents(events.map(mapAgentRunEventToTimelineRow))}
       transcriptRows={mapAgentRunEventsToTranscriptRows(events)}
       artifacts={artifacts}
       eventsState={getCollectionState(eventsError, eventsLoading, events.length)}
