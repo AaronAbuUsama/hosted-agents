@@ -46,7 +46,8 @@ export function getAppRoutePolicy(pathname: string): AppRoutePolicy {
   return { type: "allow" };
 }
 
-export const DEFAULT_ORGANIZATION_NEXT_PATH = SETUP_GITHUB_PATH;
+export const SETUP_RESOLVER_PATH = "/setup" as Route;
+export const DEFAULT_ORGANIZATION_NEXT_PATH = SETUP_RESOLVER_PATH;
 
 type SetupStateInput = {
   hasGitHubInstallation: boolean;

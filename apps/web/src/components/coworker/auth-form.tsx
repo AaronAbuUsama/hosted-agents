@@ -68,12 +68,10 @@ export default function AuthForm({ mode }: AuthFormProps) {
     setIsSigningIn(true);
     setErrorMessage(null);
 
-    const callbackPath = isSignup ? "/onboarding/organization" : "/app";
-
     try {
       await authClient.signIn.social({
         provider: "github",
-        callbackURL: new URL(callbackPath, window.location.origin).toString(),
+        callbackURL: new URL("/setup", window.location.origin).toString(),
       });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "GitHub sign-in failed.");

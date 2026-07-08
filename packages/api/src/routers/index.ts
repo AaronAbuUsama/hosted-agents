@@ -635,6 +635,53 @@ export const appRouter = {
 
     return activeOrganization ? mapOrganizationMembership(activeOrganization) : null;
   }),
+  setupState: protectedProcedure.handler(async ({ context }) => {
+    const contextSession = context.session as SessionWithActiveOrganization;
+    const organizations = await listUserOrganizations(context.session.user.id);
+    const activeOrganization = await resolveActiveOrganization(contextSession, organizations);
+
+    if (!activeOrganization) {
+      return {
+        organization: null,
+        hasGitHubInstallation: false,
+        hasProviderCredential: false,
+      };
+    }
+
+    const [linkedRepositories, credentials] = await Promise.all([
+      db
+        .select({ id: githubRepository.id })
+        .from(githubRepository)
+        .innerJoin(
+          githubInstallation,
+          eq(githubRepository.installationId, githubInstallation.id),
+        )
+        .where(
+          and(
+            eq(githubInstallation.organizationId, activeOrganization.id),
+            eq(githubInstallation.status, "connected"),
+          ),
+        )
+        .limit(1),
+      db
+        .select({ id: agentProviderCredential.id })
+        .from(agentProviderCredential)
+        .where(
+          and(
+            eq(agentProviderCredential.organizationId, activeOrganization.id),
+            eq(agentProviderCredential.provider, OPENAI_CODEX_PROVIDER),
+            eq(agentProviderCredential.status, "connected"),
+          ),
+        )
+        .limit(1),
+    ]);
+
+    return {
+      organization: mapOrganizationMembership(activeOrganization),
+      hasGitHubInstallation: linkedRepositories.length > 0,
+      hasProviderCredential: credentials.length > 0,
+    };
+  }),
   createOrganization: protectedProcedure
     .input(createOrganizationInput)
     .handler(async ({ input, context }) => {

@@ -35,9 +35,9 @@ describe("organization routing helper", () => {
     );
   });
 
-  test("keeps unsafe or empty next paths on the internal GitHub setup route", () => {
+  test("keeps unsafe or empty next paths on the setup resolver route", () => {
     for (const nextPath of [null, undefined, "", "https://evil.test/app", "//evil.test/app", "/"]) {
-      expect(normalizeOrganizationNextPath(nextPath)).toBe("/dashboard/github/setup");
+      expect(String(normalizeOrganizationNextPath(nextPath))).toBe("/setup");
     }
   });
 });
