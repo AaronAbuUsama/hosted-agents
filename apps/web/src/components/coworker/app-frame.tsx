@@ -13,7 +13,7 @@ import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { Divider } from "@astryxdesign/core/Divider";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
-import { Icon } from "@astryxdesign/core/Icon";
+import { Icon, type IconType } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import {
   SideNav,
@@ -29,10 +29,14 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { TopNav } from "@astryxdesign/core/TopNav";
 import {
+  ArrowLeftIcon,
   ArrowRightStartOnRectangleIcon,
   BuildingOffice2Icon,
+  CodeBracketIcon,
   Cog6ToothIcon,
+  CreditCardIcon,
   FolderIcon,
+  KeyIcon,
   MagnifyingGlassIcon,
   PlayCircleIcon,
   PlusIcon,
@@ -59,6 +63,17 @@ const RUNS_PATH = "/app/runs";
 const REVIEWER_PATH = "/app/reviewer";
 const SETTINGS_PATH = "/app/settings";
 const PROJECTS_PATH = "/app/projects";
+
+type SettingsNavItem = { href: string; label: string; icon: IconType };
+
+// Settings is a route group; in a settings route the rail becomes these
+// sections. Keep in sync with the pages under app/(app)/app/settings/.
+const SETTINGS_SECTIONS: SettingsNavItem[] = [
+  { href: "/app/settings/organization", label: "Organization", icon: BuildingOffice2Icon },
+  { href: "/app/settings/github", label: "GitHub & repositories", icon: CodeBracketIcon },
+  { href: "/app/settings/provider", label: "Provider", icon: KeyIcon },
+  { href: "/app/settings/reviewer", label: "Reviewer", icon: ShieldCheckIcon },
+];
 
 type RepoNavItem = {
   id: string;
@@ -195,6 +210,7 @@ export default function AppFrame({
   const query = search.trim().toLowerCase();
   const searching = query.length > 0;
   const visibleRepos = useMemo(() => filterRepoNav(repoNav, query), [repoNav, query]);
+  const isSettingsRoute = isPathSelected(pathname, SETTINGS_PATH);
 
   function handleSignOut(): void {
     authClient.signOut({
@@ -272,36 +288,40 @@ export default function AppFrame({
           }}
           resizable={{ defaultWidth: 300, minWidth: 240, maxWidth: 420 }}
           topContent={
-            <VStack gap={2}>
-              <Button
-                label="New review"
-                variant="primary"
-                size="sm"
-                href={REVIEWER_PATH}
-                icon={<Icon icon={PlusIcon} size="sm" />}
-                style={fullWidthButtonStyle}
-              />
-              <TextInput
-                label="Search repositories"
-                isLabelHidden
-                size="sm"
-                width="100%"
-                startIcon={MagnifyingGlassIcon}
-                hasClear
-                placeholder="Search repositories…"
-                value={search}
-                onChange={setSearch}
-              />
-            </VStack>
+            isSettingsRoute ? null : (
+              <VStack gap={2}>
+                <Button
+                  label="New review"
+                  variant="primary"
+                  size="sm"
+                  href={REVIEWER_PATH}
+                  icon={<Icon icon={PlusIcon} size="sm" />}
+                  style={fullWidthButtonStyle}
+                />
+                <TextInput
+                  label="Search repositories"
+                  isLabelHidden
+                  size="sm"
+                  width="100%"
+                  startIcon={MagnifyingGlassIcon}
+                  hasClear
+                  placeholder="Search repositories…"
+                  value={search}
+                  onChange={setSearch}
+                />
+              </VStack>
+            )
           }
           footer={
             <SideNavSection title="Account" isHeaderHidden>
-              <SideNavItem
-                label="Settings"
-                icon={Cog6ToothIcon}
-                href={SETTINGS_PATH}
-                isSelected={isPathSelected(pathname, SETTINGS_PATH)}
-              />
+              {isSettingsRoute ? null : (
+                <SideNavItem
+                  label="Settings"
+                  icon={Cog6ToothIcon}
+                  href={SETTINGS_PATH}
+                  isSelected={isPathSelected(pathname, SETTINGS_PATH)}
+                />
+              )}
               <SideNavItem
                 label={`${activeRunsCount} active ${activeRunsCount === 1 ? "run" : "runs"}`}
                 icon={PlayCircleIcon}
@@ -316,50 +336,68 @@ export default function AppFrame({
             </SideNavSection>
           }
         >
-          <SideNavSection title="Workspace" isHeaderHidden>
-            <SideNavItem
-              label="Runs"
-              icon={PlayCircleIcon}
-              href={RUNS_PATH}
-              isSelected={pathname === RUNS_PATH}
-            />
-            <SideNavItem
-              label="Reviewer"
-              icon={ShieldCheckIcon}
-              href={REVIEWER_PATH}
-              isSelected={isPathSelected(pathname, REVIEWER_PATH)}
-            />
-          </SideNavSection>
-          <Divider />
-          <SideNavSection title="Repositories">
-            {isReposError ? (
-              <SideNavItem label="Couldn't load repositories" icon={FolderIcon} isDisabled />
-            ) : isReposLoading && repoNav.length === 0 ? (
-              <SideNavItem label="Loading repositories…" icon={FolderIcon} isDisabled />
-            ) : visibleRepos.length === 0 ? (
-              <SideNavItem
-                label={searching ? "No matches" : "No repositories enabled"}
-                icon={FolderIcon}
-                isDisabled
-              />
-            ) : (
-              visibleRepos.map((repo) => {
-                const status = repoStatus(repo.runs);
-                const href = `${PROJECTS_PATH}/${repo.id}`;
-
-                return (
+          {isSettingsRoute ? (
+            <SideNavSection title="Settings">
+              <SideNavItem label="Workspace" icon={ArrowLeftIcon} href={RUNS_PATH} />
+              {SETTINGS_SECTIONS.map((section) => (
+                <SideNavItem
+                  key={section.href}
+                  label={section.label}
+                  icon={section.icon}
+                  href={section.href}
+                  isSelected={isPathSelected(pathname, section.href)}
+                />
+              ))}
+              <SideNavItem label="Billing" icon={CreditCardIcon} isDisabled />
+            </SideNavSection>
+          ) : (
+            <>
+              <SideNavSection title="Workspace" isHeaderHidden>
+                <SideNavItem
+                  label="Runs"
+                  icon={PlayCircleIcon}
+                  href={RUNS_PATH}
+                  isSelected={pathname === RUNS_PATH}
+                />
+                <SideNavItem
+                  label="Reviewer"
+                  icon={ShieldCheckIcon}
+                  href={REVIEWER_PATH}
+                  isSelected={isPathSelected(pathname, REVIEWER_PATH)}
+                />
+              </SideNavSection>
+              <Divider />
+              <SideNavSection title="Repositories">
+                {isReposError ? (
+                  <SideNavItem label="Couldn't load repositories" icon={FolderIcon} isDisabled />
+                ) : isReposLoading && repoNav.length === 0 ? (
+                  <SideNavItem label="Loading repositories…" icon={FolderIcon} isDisabled />
+                ) : visibleRepos.length === 0 ? (
                   <SideNavItem
-                    key={repo.id}
-                    label={repo.label}
+                    label={searching ? "No matches" : "No repositories enabled"}
                     icon={FolderIcon}
-                    href={href}
-                    isSelected={isPathSelected(pathname, href)}
-                    endContent={<StatusDot variant={status.variant} label={status.label} />}
+                    isDisabled
                   />
-                );
-              })
-            )}
-          </SideNavSection>
+                ) : (
+                  visibleRepos.map((repo) => {
+                    const status = repoStatus(repo.runs);
+                    const href = `${PROJECTS_PATH}/${repo.id}`;
+
+                    return (
+                      <SideNavItem
+                        key={repo.id}
+                        label={repo.label}
+                        icon={FolderIcon}
+                        href={href}
+                        isSelected={isPathSelected(pathname, href)}
+                        endContent={<StatusDot variant={status.variant} label={status.label} />}
+                      />
+                    );
+                  })
+                )}
+              </SideNavSection>
+            </>
+          )}
         </SideNav>
       }
     >
