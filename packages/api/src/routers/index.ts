@@ -8,10 +8,14 @@ import {
 import { db } from "@hosted-agents/db";
 import {
   CODE_REVIEW_WORKER_DISPLAY_NAME,
+  CODE_REVIEW_WORKER_ROLE,
+  GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+  LEGACY_CODE_REVIEW_COWORKER_SLUG,
   agentRun,
   agentRunArtifact,
   agentRunEvent,
 } from "@hosted-agents/db/schema/agent-runs";
+import { workerConfig, workerSkill } from "@hosted-agents/db/schema/worker-config";
 import {
   member,
   organization as authOrganization,
@@ -27,8 +31,10 @@ import { z } from "zod";
 import {
   claimGitHubInstallation,
   createGitHubAppInstallUrl,
+  getGitHubPullRequest,
   isGitHubAppConfigured,
   listAvailableGitHubInstallations,
+  listOpenGitHubPullRequests,
 } from "../github-app";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
@@ -199,6 +205,7 @@ function mapAgentRun(row: typeof agentRun.$inferSelect) {
     pullRequestHeadRef: row.pullRequestHeadRef,
     pullRequestHeadSha: row.pullRequestHeadSha,
     status: row.status,
+    model: row.model,
     flueRunId: row.flueRunId,
     sandboxProvider: row.sandboxProvider,
     sandboxId: row.sandboxId,
@@ -507,6 +514,119 @@ async function assertCanManageOrganizationCredentials(userId: string, organizati
       message: "Only organization owners and admins can manage provider credentials.",
     });
   }
+}
+
+const DEFAULT_CODEX_MODEL_ID = "gpt-5.5";
+
+const updateWorkerConfigurationInput = z.object({
+  organizationId: z.string().optional(),
+  displayName: z.string().trim().max(80).nullable().optional(),
+  model: z.string().trim().max(120).nullable().optional(),
+  instructions: z.string().max(20_000).nullable().optional(),
+});
+
+const workerSkillNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+const saveWorkerSkillInput = z.object({
+  organizationId: z.string().optional(),
+  name: z
+    .string()
+    .regex(
+      workerSkillNamePattern,
+      "Skill names must be plain filenames like review-standards.md (letters, digits, dot, dash, underscore).",
+    ),
+  description: z.string().trim().max(300).optional(),
+  content: z.string().max(100_000),
+  enabled: z.boolean().optional(),
+});
+
+const deleteWorkerSkillInput = z.object({
+  organizationId: z.string().optional(),
+  name: z.string().min(1),
+});
+
+const setRepositorySelectedInput = z.object({
+  organizationId: z.string().optional(),
+  repositoryId: z.string().min(1),
+  selected: z.boolean(),
+});
+
+const repositoryScopedInput = z.object({
+  organizationId: z.string().optional(),
+  repositoryId: z.string().min(1),
+});
+
+const triggerCodeReviewRunInput = z.object({
+  organizationId: z.string().optional(),
+  repositoryId: z.string().min(1),
+  pullRequestNumber: z.number().int().positive(),
+});
+
+type ProcedureContext = {
+  session: ({ user: { id: string } } & SessionWithActiveOrganization) | null;
+};
+
+async function requireOrganizationId(
+  context: ProcedureContext,
+  requestedOrganizationId?: string,
+): Promise<string> {
+  const session = context.session;
+
+  if (!session) {
+    throw new ORPCError("UNAUTHORIZED");
+  }
+
+  const organizationId = await resolveOrganizationId(
+    session.user.id,
+    requestedOrganizationId ?? session.session?.activeOrganizationId ?? undefined,
+  );
+
+  if (!organizationId) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: "Create or select an organization first.",
+    });
+  }
+
+  return organizationId;
+}
+
+async function requireOrganizationRepository(organizationId: string, repositoryId: string) {
+  const [row] = await db
+    .select({ repository: githubRepository, installation: githubInstallation })
+    .from(githubRepository)
+    .innerJoin(githubInstallation, eq(githubRepository.installationId, githubInstallation.id))
+    .where(eq(githubRepository.id, repositoryId))
+    .limit(1);
+
+  if (!row || row.installation.organizationId !== organizationId) {
+    throw new ORPCError("NOT_FOUND", {
+      message: "Repository is not linked to this organization.",
+    });
+  }
+
+  return { repository: row.repository, installation: row.installation };
+}
+
+function mapWorkerConfig(row: typeof workerConfig.$inferSelect) {
+  return {
+    id: row.id,
+    workerRole: row.workerRole,
+    displayName: row.displayName,
+    model: row.model,
+    instructions: row.instructions,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function mapWorkerSkill(row: typeof workerSkill.$inferSelect) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    content: row.content,
+    enabled: row.enabled,
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 async function getConnectedOpenAICodexCredential(organizationId: string) {
@@ -1142,6 +1262,352 @@ export const appRouter = {
       }
 
       return mapReviewRun(row);
+    }),
+  workerConfiguration: protectedProcedure
+    .input(organizationScopedInput)
+    .handler(async ({ input, context }) => {
+      const organizationId = await requireOrganizationId(context, input?.organizationId);
+
+      const [config] = await db
+        .select()
+        .from(workerConfig)
+        .where(
+          and(
+            eq(workerConfig.organizationId, organizationId),
+            eq(workerConfig.workerRole, CODE_REVIEW_WORKER_ROLE),
+          ),
+        )
+        .limit(1);
+      const skills = await db
+        .select()
+        .from(workerSkill)
+        .where(
+          and(
+            eq(workerSkill.organizationId, organizationId),
+            eq(workerSkill.workerRole, CODE_REVIEW_WORKER_ROLE),
+          ),
+        )
+        .orderBy(asc(workerSkill.name));
+
+      return {
+        workerRole: CODE_REVIEW_WORKER_ROLE,
+        defaults: {
+          displayName: CODE_REVIEW_WORKER_DISPLAY_NAME,
+          model: DEFAULT_CODEX_MODEL_ID,
+        },
+        config: config ? mapWorkerConfig(config) : null,
+        skills: skills.map(mapWorkerSkill),
+      };
+    }),
+  updateWorkerConfiguration: protectedProcedure
+    .input(updateWorkerConfigurationInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      const now = new Date();
+      const [existing] = await db
+        .select()
+        .from(workerConfig)
+        .where(
+          and(
+            eq(workerConfig.organizationId, organizationId),
+            eq(workerConfig.workerRole, CODE_REVIEW_WORKER_ROLE),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        const [updated] = await db
+          .update(workerConfig)
+          .set({
+            displayName:
+              input.displayName === undefined ? existing.displayName : input.displayName,
+            model: input.model === undefined ? existing.model : input.model,
+            instructions:
+              input.instructions === undefined ? existing.instructions : input.instructions,
+            updatedAt: now,
+          })
+          .where(eq(workerConfig.id, existing.id))
+          .returning();
+
+        if (!updated) {
+          throw new ORPCError("INTERNAL_SERVER_ERROR");
+        }
+
+        return mapWorkerConfig(updated);
+      }
+
+      const [created] = await db
+        .insert(workerConfig)
+        .values({
+          id: crypto.randomUUID(),
+          organizationId,
+          workerRole: CODE_REVIEW_WORKER_ROLE,
+          displayName: input.displayName ?? null,
+          model: input.model ?? null,
+          instructions: input.instructions ?? null,
+        })
+        .returning();
+
+      if (!created) {
+        throw new ORPCError("INTERNAL_SERVER_ERROR");
+      }
+
+      return mapWorkerConfig(created);
+    }),
+  saveWorkerSkill: protectedProcedure
+    .input(saveWorkerSkillInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      const now = new Date();
+      const [existing] = await db
+        .select()
+        .from(workerSkill)
+        .where(
+          and(
+            eq(workerSkill.organizationId, organizationId),
+            eq(workerSkill.workerRole, CODE_REVIEW_WORKER_ROLE),
+            eq(workerSkill.name, input.name),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        const [updated] = await db
+          .update(workerSkill)
+          .set({
+            description: input.description === undefined ? existing.description : input.description,
+            content: input.content,
+            enabled: input.enabled ?? existing.enabled,
+            updatedAt: now,
+          })
+          .where(eq(workerSkill.id, existing.id))
+          .returning();
+
+        if (!updated) {
+          throw new ORPCError("INTERNAL_SERVER_ERROR");
+        }
+
+        return mapWorkerSkill(updated);
+      }
+
+      const [created] = await db
+        .insert(workerSkill)
+        .values({
+          id: crypto.randomUUID(),
+          organizationId,
+          workerRole: CODE_REVIEW_WORKER_ROLE,
+          name: input.name,
+          description: input.description ?? null,
+          content: input.content,
+          enabled: input.enabled ?? true,
+        })
+        .returning();
+
+      if (!created) {
+        throw new ORPCError("INTERNAL_SERVER_ERROR");
+      }
+
+      return mapWorkerSkill(created);
+    }),
+  deleteWorkerSkill: protectedProcedure
+    .input(deleteWorkerSkillInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      await db
+        .delete(workerSkill)
+        .where(
+          and(
+            eq(workerSkill.organizationId, organizationId),
+            eq(workerSkill.workerRole, CODE_REVIEW_WORKER_ROLE),
+            eq(workerSkill.name, input.name),
+          ),
+        );
+
+      return { name: input.name, deleted: true };
+    }),
+  setRepositorySelected: protectedProcedure
+    .input(setRepositorySelectedInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      const repository = await requireOrganizationRepository(organizationId, input.repositoryId);
+
+      const [updated] = await db
+        .update(githubRepository)
+        .set({ selected: input.selected, updatedAt: new Date() })
+        .where(eq(githubRepository.id, repository.repository.id))
+        .returning();
+
+      if (!updated) {
+        throw new ORPCError("INTERNAL_SERVER_ERROR");
+      }
+
+      return {
+        id: updated.id,
+        fullName: updated.fullName,
+        selected: updated.selected,
+      };
+    }),
+  openPullRequests: protectedProcedure
+    .input(repositoryScopedInput)
+    .handler(async ({ input, context }) => {
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      const { repository, installation } = await requireOrganizationRepository(
+        organizationId,
+        input.repositoryId,
+      );
+
+      if (installation.status !== "connected") {
+        throw new ORPCError("BAD_REQUEST", {
+          message: `GitHub installation is ${installation.status}.`,
+        });
+      }
+
+      try {
+        return await listOpenGitHubPullRequests(
+          installation.installationId,
+          repository.owner,
+          repository.name,
+        );
+      } catch (error) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: error instanceof Error ? error.message : "Failed to list open pull requests.",
+        });
+      }
+    }),
+  triggerCodeReviewRun: protectedProcedure
+    .input(triggerCodeReviewRunInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      const { repository, installation } = await requireOrganizationRepository(
+        organizationId,
+        input.repositoryId,
+      );
+
+      if (installation.status !== "connected") {
+        throw new ORPCError("BAD_REQUEST", {
+          message: `GitHub installation is ${installation.status}.`,
+        });
+      }
+
+      if (!repository.selected) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Enable this repository before requesting a review.",
+        });
+      }
+
+      const pullRequest = await getGitHubPullRequest(
+        installation.installationId,
+        repository.owner,
+        repository.name,
+        input.pullRequestNumber,
+      ).catch((error: unknown) => {
+        throw new ORPCError("BAD_REQUEST", {
+          message: error instanceof Error ? error.message : "Failed to load the pull request.",
+        });
+      });
+
+      if (
+        !pullRequest.baseRef ||
+        !pullRequest.baseSha ||
+        !pullRequest.headRef ||
+        !pullRequest.headSha
+      ) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "GitHub did not return complete pull request refs for this pull request.",
+        });
+      }
+
+      const providerCredential = await getConnectedOpenAICodexCredential(organizationId);
+
+      if (!providerCredential && env.NODE_ENV === "production") {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Connect OpenAI Codex before requesting a review.",
+        });
+      }
+
+      const agentRunId = crypto.randomUUID();
+
+      await db.transaction(async (transaction) => {
+        await transaction.insert(agentRun).values({
+          id: agentRunId,
+          organizationId,
+          userId,
+          providerCredentialId: providerCredential?.id ?? null,
+          coworkerSlug: LEGACY_CODE_REVIEW_COWORKER_SLUG,
+          workerRole: CODE_REVIEW_WORKER_ROLE,
+          workerDisplayName: CODE_REVIEW_WORKER_DISPLAY_NAME,
+          runType: GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+          sourceProvider: "github",
+          sourceDeliveryId: null,
+          repositoryOwner: repository.owner,
+          repositoryName: repository.name,
+          repositoryUrl: repository.htmlUrl,
+          branch: pullRequest.headRef,
+          baseBranch: pullRequest.baseRef,
+          githubInstallationId: installation.id,
+          githubRepositoryId: repository.id,
+          pullRequestNumber: pullRequest.number,
+          pullRequestBaseRef: pullRequest.baseRef,
+          pullRequestBaseSha: pullRequest.baseSha,
+          pullRequestHeadRef: pullRequest.headRef,
+          pullRequestHeadSha: pullRequest.headSha,
+          status: "queued",
+          currentStage: "queued",
+          lastHeartbeatAt: new Date(),
+        });
+
+        await transaction.insert(agentRunEvent).values({
+          id: crypto.randomUUID(),
+          runId: agentRunId,
+          sequence: 1,
+          category: "github",
+          type: "github.manual.review_requested",
+          stage: "manual_trigger",
+          message: `Manual review requested for PR #${pullRequest.number}`,
+          payloadJson: JSON.stringify({
+            requestedByUserId: userId,
+            pullRequestNumber: pullRequest.number,
+            repositoryFullName: repository.fullName,
+          }),
+        });
+        await transaction.insert(agentRunEvent).values({
+          id: crypto.randomUUID(),
+          runId: agentRunId,
+          sequence: 2,
+          category: "queue",
+          type: "queue.created",
+          stage: "queued",
+          message: "Queued code review worker run",
+          payloadJson: JSON.stringify({
+            workerRole: CODE_REVIEW_WORKER_ROLE,
+            workerDisplayName: CODE_REVIEW_WORKER_DISPLAY_NAME,
+            runType: GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+          }),
+        });
+      });
+
+      const [row] = await db.select().from(agentRun).where(eq(agentRun.id, agentRunId)).limit(1);
+
+      if (!row) {
+        throw new ORPCError("INTERNAL_SERVER_ERROR");
+      }
+
+      return mapAgentRun(row);
     }),
 };
 export type AppRouter = typeof appRouter;

@@ -206,6 +206,7 @@ async function createTables(testClient: TestClient) {
       "pull_request_head_ref" text,
       "pull_request_head_sha" text,
       "status" text DEFAULT 'queued' NOT NULL,
+      "model" text,
       "flue_run_id" text,
       "sandbox_provider" text,
       "sandbox_id" text,
@@ -241,6 +242,29 @@ async function createTables(testClient: TestClient) {
       "status" text DEFAULT 'connected' NOT NULL,
       "last_error" text,
       "last_used_at" integer,
+      "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+      "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+    );
+
+    CREATE TABLE "worker_config" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "worker_role" text NOT NULL,
+      "display_name" text,
+      "model" text,
+      "instructions" text,
+      "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+      "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+    );
+
+    CREATE TABLE "worker_skill" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "worker_role" text NOT NULL,
+      "name" text NOT NULL,
+      "description" text,
+      "content" text NOT NULL,
+      "enabled" integer DEFAULT 1 NOT NULL,
       "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
       "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
     );
@@ -948,7 +972,7 @@ describe("GitHub App router procedures", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
       throw new Error("GitHub API should not be called for a forbidden organization.");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     try {
       await expectOrpcCode(
