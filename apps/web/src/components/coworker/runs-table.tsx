@@ -327,9 +327,16 @@ function RunTableRow({ run, isCompact, onOpenRun }: RunTableRowProps): ReactElem
             </Text>
           </TableCell>
           <TableCell>
-            <Text type="body" maxLines={1}>
-              {run.result}
-            </Text>
+            <VStack gap={1}>
+              {run.status === "Completed" ? <RunFindingsToken run={run} /> : null}
+              <Text
+                type={run.status === "Completed" ? "supporting" : "body"}
+                color={run.status === "Completed" ? "secondary" : undefined}
+                maxLines={run.status === "Completed" ? 1 : 2}
+              >
+                {run.result}
+              </Text>
+            </VStack>
           </TableCell>
         </>
       ) : null}
@@ -343,6 +350,23 @@ function RunTableRow({ run, isCompact, onOpenRun }: RunTableRowProps): ReactElem
         </Link>
       </TableCell>
     </TableRow>
+  );
+}
+
+function RunFindingsToken({ run }: { run: RunViewModelRow }): ReactElement {
+  const count = run.findings.length;
+
+  if (count === 0) {
+    return <Token label="No findings" color="green" size="sm" />;
+  }
+
+  const hasHighSeverity = run.findings.some((finding) => finding.severity === "high");
+  return (
+    <Token
+      label={`${count} finding${count === 1 ? "" : "s"}`}
+      color={hasHighSeverity ? "red" : "orange"}
+      size="sm"
+    />
   );
 }
 
@@ -361,9 +385,6 @@ function RunPrimaryCell({
           size="sm"
           color="secondary"
         />
-        <Text type="supporting" color="secondary" hasTabularNumbers>
-          {run.id}
-        </Text>
         <Text type="body" weight="semibold" maxLines={1}>
           {run.title}
         </Text>
