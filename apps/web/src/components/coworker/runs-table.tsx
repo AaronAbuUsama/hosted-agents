@@ -7,7 +7,6 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Center } from "@astryxdesign/core/Center";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
-import { Link } from "@astryxdesign/core/Link";
 import {
   HStack,
   Layout,
@@ -39,7 +38,11 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useRouter } from "next/navigation";
 
 import { agentRunsCollection } from "@/lib/collections/agent-runs";
-import { shortModelLabel, type RunViewModelRow, type RunViewModelStatus } from "@/lib/run-view-model";
+import {
+  shortModelLabel,
+  type RunViewModelRow,
+  type RunViewModelStatus,
+} from "@/lib/run-view-model";
 
 const statusDotVariants: Record<RunViewModelStatus, "accent" | "warning" | "success" | "error"> = {
   Queued: "accent",
@@ -83,29 +86,6 @@ function distinct(values: (string | null | undefined)[]): { value: string; label
 }
 
 export default function RunsTable(): ReactElement {
-  const router = useRouter();
-  const [filters, setFilters] = useState<PowerSearchFilter[]>([]);
-  const { data: rows, isError, isLoading } = useLiveQuery(agentRunsCollection);
-
-  const fieldDefs = useMemo(
-    () =>
-      [
-        { key: "title", type: "string", label: "Run" },
-        { key: "status", type: "enum", label: "Status", enumValues: statusFilterValues },
-        { key: "coworkerName", type: "enum", label: "Worker", enumValues: distinct(rows.map((r) => r.coworkerName)) },
-        { key: "repo", type: "enum", label: "Repository", enumValues: distinct(rows.map((r) => r.repo)) },
-        { key: "result", type: "string", label: "Result" },
-      ] as const,
-    [rows],
-  );
-
-  const { config, applyFilters } = usePowerSearchConfig(fieldDefs, "Runs");
-  const searchConfig = useMemo(() => ({ ...config, contentSearchFieldKey: "title" }), [config]);
-  const filtered = useMemo(() => applyFilters(filters, rows), [filters, applyFilters, rows]);
-
-  const hasLoaded = !isError && !isLoading;
-  const hasNoRows = hasLoaded && rows.length === 0;
-
   return (
     <Layout
       height="fill"
@@ -123,83 +103,128 @@ export default function RunsTable(): ReactElement {
           </HStack>
         </LayoutHeader>
       }
-      content={
-        <LayoutContent role="main" isScrollable padding={0} style={tableContentStyle}>
-          {isError ? (
-            <PaddedState>
-              <Banner
-                status="error"
-                title="Runs could not load"
-                description="The server did not return agent runs for this session. Check that the local API is running and the browser has an active organization session."
-                container="section"
-              />
-            </PaddedState>
-          ) : isLoading && rows.length === 0 ? (
-            <PaddedState>
-              <Center>
-                <Text type="supporting" color="secondary">
-                  Loading runs…
-                </Text>
-              </Center>
-            </PaddedState>
-          ) : hasNoRows ? (
-            <PaddedState>
-              <EmptyState
-                title="No runs yet"
-                description="Pull request reviews and worker runs appear here once a webhook or a manual request creates them."
-                headingLevel={2}
-              />
-            </PaddedState>
-          ) : (
-            <VStack gap={0} height="fill">
-              <VStack padding={4}>
-                <PowerSearch
-                  config={searchConfig}
-                  filters={filters}
-                  onChange={(next) => setFilters([...next])}
-                  placeholder="Search runs, or filter by status, worker, or repository…"
-                  resultCount={filtered.length}
-                />
-              </VStack>
-              <StackItem size="fill" style={tableContentStyle}>
-                <Table
-                  columns={columns}
-                  density="balanced"
-                  dividers="rows"
-                  textOverflow="truncate"
-                  hasHover
-                >
-                  <colgroup>
-                    {columns.map((column) => (
-                      <col
-                        key={column.key}
-                        style={resolvedColumnWidths.columns.get(column.key)?.style}
-                      />
-                    ))}
-                  </colgroup>
-                  <thead>
-                    <TableRow>
-                      {columns.map((column) => (
-                        <TableHeaderCell key={column.key}>{column.header}</TableHeaderCell>
-                      ))}
-                    </TableRow>
-                  </thead>
-                  <tbody>
-                    {filtered.map((run) => (
-                      <RunRow
-                        key={run.id}
-                        run={run}
-                        onOpen={() => router.push(`/app/runs/${run.id}`)}
-                      />
-                    ))}
-                  </tbody>
-                </Table>
-              </StackItem>
-            </VStack>
-          )}
-        </LayoutContent>
-      }
+      content={<RunsTableView />}
     />
+  );
+}
+
+// The runs list body — search, table, and loading/empty/error states — with no
+// outer Layout or header, so it composes into both the global Runs page and a
+// repository-scoped project workspace. `repoFilter` narrows to a single repo by
+// its "owner/name" label.
+export function RunsTableView({ repoFilter }: { repoFilter?: string }): ReactElement {
+  const router = useRouter();
+  const [filters, setFilters] = useState<PowerSearchFilter[]>([]);
+  const { data: allRows, isError, isLoading } = useLiveQuery(agentRunsCollection);
+  const rows = useMemo(
+    () => (repoFilter ? allRows.filter((row) => row.repo === repoFilter) : allRows),
+    [allRows, repoFilter],
+  );
+
+  const fieldDefs = useMemo(
+    () =>
+      [
+        { key: "title", type: "string", label: "Run" },
+        { key: "status", type: "enum", label: "Status", enumValues: statusFilterValues },
+        {
+          key: "coworkerName",
+          type: "enum",
+          label: "Worker",
+          enumValues: distinct(rows.map((r) => r.coworkerName)),
+        },
+        {
+          key: "repo",
+          type: "enum",
+          label: "Repository",
+          enumValues: distinct(rows.map((r) => r.repo)),
+        },
+        { key: "result", type: "string", label: "Result" },
+      ] as const,
+    [rows],
+  );
+
+  const { config, applyFilters } = usePowerSearchConfig(fieldDefs, "Runs");
+  const searchConfig = useMemo(() => ({ ...config, contentSearchFieldKey: "title" }), [config]);
+  const filtered = useMemo(() => applyFilters(filters, rows), [filters, applyFilters, rows]);
+
+  const hasLoaded = !isError && !isLoading;
+  const hasNoRows = hasLoaded && rows.length === 0;
+
+  return (
+    <LayoutContent role="main" isScrollable padding={0} style={tableContentStyle}>
+      {isError ? (
+        <PaddedState>
+          <Banner
+            status="error"
+            title="Runs could not load"
+            description="The server did not return agent runs for this session. Check that the local API is running and the browser has an active organization session."
+            container="section"
+          />
+        </PaddedState>
+      ) : isLoading && rows.length === 0 ? (
+        <PaddedState>
+          <Center>
+            <Text type="supporting" color="secondary">
+              Loading runs…
+            </Text>
+          </Center>
+        </PaddedState>
+      ) : hasNoRows ? (
+        <PaddedState>
+          <EmptyState
+            title="No runs yet"
+            description="Pull request reviews and worker runs appear here once a webhook or a manual request creates them."
+            headingLevel={2}
+          />
+        </PaddedState>
+      ) : (
+        <VStack gap={0} height="fill">
+          <VStack padding={4}>
+            <PowerSearch
+              config={searchConfig}
+              filters={filters}
+              onChange={(next) => setFilters([...next])}
+              placeholder="Search runs, or filter by status, worker, or repository…"
+              resultCount={filtered.length}
+            />
+          </VStack>
+          <StackItem size="fill" style={tableContentStyle}>
+            <Table
+              columns={columns}
+              density="balanced"
+              dividers="rows"
+              textOverflow="truncate"
+              hasHover
+            >
+              <colgroup>
+                {columns.map((column) => (
+                  <col
+                    key={column.key}
+                    style={resolvedColumnWidths.columns.get(column.key)?.style}
+                  />
+                ))}
+              </colgroup>
+              <thead>
+                <TableRow>
+                  {columns.map((column) => (
+                    <TableHeaderCell key={column.key}>{column.header}</TableHeaderCell>
+                  ))}
+                </TableRow>
+              </thead>
+              <tbody>
+                {filtered.map((run) => (
+                  <RunRow
+                    key={run.id}
+                    run={run}
+                    onOpen={() => router.push(`/app/runs/${run.id}`)}
+                  />
+                ))}
+              </tbody>
+            </Table>
+          </StackItem>
+        </VStack>
+      )}
+    </LayoutContent>
   );
 }
 
