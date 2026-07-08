@@ -1,14 +1,26 @@
 "use client";
 
-import { Button } from "@hosted-agents/ui/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@hosted-agents/ui/components/card";
-import { Label } from "@hosted-agents/ui/components/label";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckCircle2, ExternalLink, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
-import Link from "next/link";
+import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
 
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { HStack, StackItem, VStack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
+import {
+  ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
+  CheckCircleIcon,
+  CodeBracketIcon,
+} from "@heroicons/react/24/outline";
+import { useMutation, useQuery } from "@tanstack/react-query";
+
+import { SettingsRow, SettingsRows } from "@/components/coworker/settings-rows";
 import { authClient } from "@/lib/auth-client";
 import { client, orpc } from "@/utils/orpc";
 
@@ -22,7 +34,8 @@ export default function GitHubSetupClient({
   installationId,
   setupAction,
   state,
-}: GitHubSetupClientProps) {
+}: GitHubSetupClientProps): ReactElement {
+  const showToast = useToast();
   const organizations = authClient.useListOrganizations();
   const organizationList = useMemo(() => organizations.data ?? [], [organizations.data]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(state ?? "");
@@ -74,7 +87,10 @@ export default function GitHubSetupClient({
   );
   const startReviewerInstall = async () => {
     if (!selectedOrganizationId) {
-      toast.error("Select an organization before installing the Reviewer GitHub App.");
+      showToast({
+        body: "Select an organization before installing the Reviewer GitHub App.",
+        type: "error",
+      });
       return;
     }
 
@@ -84,26 +100,32 @@ export default function GitHubSetupClient({
       const result = await client.githubAppInstallUrl({ organizationId: selectedOrganizationId });
 
       if (!result.configured || !result.installUrl) {
-        toast.error("Reviewer GitHub App is not configured for this environment.");
+        showToast({
+          body: "Reviewer GitHub App is not configured for this environment.",
+          type: "error",
+        });
         setIsStartingReviewerInstall(false);
         return;
       }
 
       window.location.assign(result.installUrl);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to start GitHub install.");
+      showToast({
+        body: error instanceof Error ? error.message : "Unable to start GitHub install.",
+        type: "error",
+      });
       setIsStartingReviewerInstall(false);
     }
   };
   const claimGitHubInstallation = useMutation(
     orpc.claimGitHubInstallation.mutationOptions({
       onSuccess: (result) => {
-        toast.success(`GitHub installation linked with ${result.repositoryCount} repos`);
+        showToast({ body: `GitHub installation linked with ${result.repositoryCount} repos` });
         void refetchLinkedInstallations();
         void refetchAvailableInstallations();
       },
       onError: (error) => {
-        toast.error(error.message);
+        showToast({ body: error.message, type: "error" });
       },
     }),
   );
@@ -154,176 +176,155 @@ export default function GitHubSetupClient({
   };
 
   return (
-    <div className="grid w-full gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Reviewer GitHub App setup</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-5">
-          <div className="grid gap-2">
-            <div className="flex items-center gap-2">
-              <GitPullRequest className="size-4" />
-              <span>
-                {installationId
-                  ? `GitHub returned installation ${installationId}`
-                  : "Install or verify the Reviewer GitHub App"}
-              </span>
-            </div>
-            {setupAction ? <p className="text-muted-foreground">Action: {setupAction}</p> : null}
-            {selectedOrganization ? (
-              <p className="text-muted-foreground">
-                Linking into {selectedOrganization.name}. This Coworker organization can use
-                repositories from multiple GitHub App installations.
-              </p>
-            ) : null}
-          </div>
+    <VStack gap={5}>
+      <VStack gap={2}>
+        <HStack gap={2} vAlign="center">
+          <Icon icon={CodeBracketIcon} size="sm" />
+          <Text weight="semibold">
+            {installationId
+              ? `GitHub returned installation ${installationId}`
+              : "Install or verify the Reviewer GitHub App"}
+          </Text>
+        </HStack>
+        {setupAction ? (
+          <Text type="supporting" color="secondary">
+            Action: {setupAction}
+          </Text>
+        ) : null}
+        {selectedOrganization ? (
+          <Text type="supporting" color="secondary">
+            Linking into {selectedOrganization.name}. This Coworker organization can use
+            repositories from multiple GitHub App installations.
+          </Text>
+        ) : null}
+      </VStack>
 
-          {organizationList.length > 0 ? (
-            <div className="grid gap-2">
-              <Label htmlFor="github-setup-organization">Organization</Label>
-              <select
-                id="github-setup-organization"
-                className="h-8 w-full border border-input bg-background px-2 text-xs"
-                value={selectedOrganizationId}
-                onChange={(event) => {
-                  attemptedClaim.current = false;
-                  setSelectedOrganizationId(event.target.value);
-                }}
-              >
-                {organizationList.map((organization) => (
-                  <option key={organization.id} value={organization.id}>
-                    {organization.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : organizations.isPending ? (
-            <LoadingState label="Loading organizations" />
-          ) : (
-            <div className="grid gap-2">
-              <p className="text-muted-foreground">
-                Create an organization before installing the Reviewer GitHub App.
-              </p>
-              <Button nativeButton={false} render={<Link href="/onboarding/organization" />}>
-                Create organization
-              </Button>
-            </div>
-          )}
+      {organizationList.length > 0 ? (
+        <Selector
+          label="Organization"
+          placeholder="Select an organization"
+          options={organizationList.map((organization) => ({
+            value: organization.id,
+            label: organization.name,
+          }))}
+          value={selectedOrganizationId}
+          onChange={(value) => {
+            attemptedClaim.current = false;
+            setSelectedOrganizationId(value);
+          }}
+        />
+      ) : organizations.isPending ? (
+        <LoadingState label="Loading organizations" />
+      ) : (
+        <VStack gap={2}>
+          <Text type="supporting" color="secondary">
+            Create an organization before installing the Reviewer GitHub App.
+          </Text>
+          <Button label="Create organization" href="/onboarding/organization" variant="secondary" />
+        </VStack>
+      )}
 
-          {installationId ? (
-            <ClaimStatus
-              canRetry={canRetry}
-              errorMessage={
-                claimGitHubInstallation.isError ? claimGitHubInstallation.error.message : null
-              }
-              isPending={claimGitHubInstallation.isPending}
-              isSuccess={claimGitHubInstallation.isSuccess}
-              repositoryCount={claimGitHubInstallation.data?.repositoryCount ?? 0}
-              onRetry={() => {
-                attemptedClaim.current = false;
-                claimGitHubInstallation.reset();
-              }}
-            />
-          ) : null}
+      {installationId ? (
+        <ClaimStatus
+          canRetry={canRetry}
+          errorMessage={
+            claimGitHubInstallation.isError ? claimGitHubInstallation.error.message : null
+          }
+          isPending={claimGitHubInstallation.isPending}
+          isSuccess={claimGitHubInstallation.isSuccess}
+          repositoryCount={claimGitHubInstallation.data?.repositoryCount ?? 0}
+          onRetry={() => {
+            attemptedClaim.current = false;
+            claimGitHubInstallation.reset();
+          }}
+        />
+      ) : null}
 
-          <div className="grid gap-3">
-            {hasLinkedReviewer ? (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <CheckCircle2 className="size-4" />
-                Reviewer app linked with {linkedRepositoryCount} repositories
-              </div>
-            ) : isLoadingLinkedState ? (
-              <LoadingState label="Checking linked GitHub installations" />
-            ) : (
-              <p className="text-muted-foreground">
-                No Reviewer GitHub App installation is linked to this Coworker organization yet.
-              </p>
-            )}
+      <VStack gap={3}>
+        {hasLinkedReviewer ? (
+          <HStack gap={2} vAlign="center">
+            <Icon icon={CheckCircleIcon} size="sm" />
+            <Text color="secondary">
+              Reviewer app linked with {linkedRepositoryCount} repositories
+            </Text>
+          </HStack>
+        ) : isLoadingLinkedState ? (
+          <LoadingState label="Checking linked GitHub installations" />
+        ) : (
+          <Text type="supporting" color="secondary">
+            No Reviewer GitHub App installation is linked to this Coworker organization yet.
+          </Text>
+        )}
 
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                disabled={!selectedOrganizationId || isStartingReviewerInstall}
-                onClick={() => void startReviewerInstall()}
-              >
-                {isStartingReviewerInstall ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Opening GitHub
-                  </>
-                ) : (
-                  <>
-                    <ExternalLink className="size-4" />
-                    {hasLinkedReviewer ? "Configure on GitHub" : "Install or configure on GitHub"}
-                  </>
-                )}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={!selectedOrganizationId || isLoadingAvailableState}
-                onClick={refreshGitHubState}
-              >
-                {isLoadingAvailableState ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="size-4" />
-                )}
-                Refresh
-              </Button>
-            </div>
-          </div>
+        <HStack gap={2} wrap="wrap">
+          <Button
+            label={hasLinkedReviewer ? "Configure on GitHub" : "Install or configure on GitHub"}
+            variant="primary"
+            icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
+            isLoading={isStartingReviewerInstall}
+            isDisabled={!selectedOrganizationId}
+            onClick={() => void startReviewerInstall()}
+          />
+          <Button
+            label="Refresh"
+            variant="secondary"
+            icon={<Icon icon={ArrowPathIcon} size="sm" />}
+            isLoading={isLoadingAvailableState}
+            isDisabled={!selectedOrganizationId}
+            onClick={refreshGitHubState}
+          />
+        </HStack>
+      </VStack>
 
-          {!isGitHubAppConfigured ||
-          isAvailableInstallationsError ||
-          availableInstallations.length > 0 ? (
-            <AvailableInstallationsState
-              configured={isGitHubAppConfigured}
-              errorMessage={
-                isAvailableInstallationsError ? availableInstallationsError.message : null
-              }
-              installations={availableInstallations}
-              isClaiming={claimGitHubInstallation.isPending}
-              isLoading={isLoadingAvailableState}
-              pendingInstallationId={pendingInstallationId}
-              onLink={(availableInstallation, setupMode) => {
-                if (!selectedOrganizationId) {
-                  toast.error("Select an organization before linking a GitHub installation.");
-                  return;
-                }
+      {!isGitHubAppConfigured ||
+      isAvailableInstallationsError ||
+      availableInstallations.length > 0 ? (
+        <AvailableInstallationsState
+          configured={isGitHubAppConfigured}
+          errorMessage={isAvailableInstallationsError ? availableInstallationsError.message : null}
+          installations={availableInstallations}
+          isClaiming={claimGitHubInstallation.isPending}
+          isLoading={isLoadingAvailableState}
+          pendingInstallationId={pendingInstallationId}
+          onLink={(availableInstallation, setupMode) => {
+            if (!selectedOrganizationId) {
+              showToast({
+                body: "Select an organization before linking a GitHub installation.",
+                type: "error",
+              });
+              return;
+            }
 
-                claimGitHubInstallation.mutate({
-                  installationId: availableInstallation.installationId,
-                  organizationId: selectedOrganizationId,
-                  setupAction: setupMode,
-                });
-              }}
-            />
-          ) : null}
+            claimGitHubInstallation.mutate({
+              installationId: availableInstallation.installationId,
+              organizationId: selectedOrganizationId,
+              setupAction: setupMode,
+            });
+          }}
+        />
+      ) : null}
 
-          {isLinkedInstallationsError ? (
-            <p className="text-destructive">{linkedInstallationsError.message}</p>
-          ) : null}
+      {isLinkedInstallationsError ? (
+        <Banner
+          status="error"
+          title="Linked installations failed to load"
+          description={linkedInstallationsError.message}
+          container="section"
+        />
+      ) : null}
 
-          {hasLinkedReviewer ? <LinkedReviewerState installations={installations} /> : null}
+      {hasLinkedReviewer ? <LinkedReviewerState installations={installations} /> : null}
 
-          <div className="flex flex-wrap gap-2">
-            {canContinueToProvider ? (
-              <Button nativeButton={false} render={<Link href="/onboarding/provider" />}>
-                Continue to provider credentials
-              </Button>
-            ) : (
-              <Button type="button" disabled>
-                Continue to provider credentials
-              </Button>
-            )}
-            <Button nativeButton={false} variant="outline" render={<Link href="/app/runs" />}>
-              Open runs
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+      <HStack gap={2} wrap="wrap">
+        <Button
+          label="Continue to provider credentials"
+          variant="primary"
+          href={canContinueToProvider ? "/onboarding/provider" : undefined}
+          isDisabled={!canContinueToProvider}
+        />
+        <Button label="Open runs" variant="secondary" href="/app/runs" />
+      </HStack>
+    </VStack>
   );
 }
 
@@ -359,13 +360,17 @@ type AvailableGitHubInstallation = {
   linkStatus: "available" | "linked" | "linked_to_another_organization";
 };
 
-function LoadingState({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" />
-      {label}
-    </div>
-  );
+function LoadingState({ label }: { label: string }): ReactElement {
+  return <Spinner size="sm" label={label} />;
+}
+
+function repositoryDescription(repository: {
+  private: boolean;
+  defaultBranch: string | null;
+}): string {
+  return `${repository.private ? "Private" : "Public"}${
+    repository.defaultBranch ? ` · ${repository.defaultBranch}` : ""
+  }`;
 }
 
 function AvailableInstallationsState({
@@ -384,12 +389,12 @@ function AvailableInstallationsState({
   isLoading: boolean;
   pendingInstallationId: string | null;
   onLink: (installation: AvailableGitHubInstallation, setupMode: string) => void;
-}) {
+}): ReactElement {
   if (!configured) {
     return (
-      <p className="text-muted-foreground">
+      <Text type="supporting" color="secondary">
         Reviewer GitHub App is not configured for this environment.
-      </p>
+      </Text>
     );
   }
 
@@ -398,82 +403,83 @@ function AvailableInstallationsState({
   }
 
   if (errorMessage) {
-    return <p className="text-destructive">{errorMessage}</p>;
+    return (
+      <Banner
+        status="error"
+        title="GitHub App installations failed to load"
+        description={errorMessage}
+        container="section"
+      />
+    );
   }
 
   if (installations.length === 0) {
     return (
-      <p className="text-muted-foreground">
+      <Text type="supporting" color="secondary">
         GitHub has not returned any installations for this Reviewer app.
-      </p>
+      </Text>
     );
   }
 
   return (
-    <div className="grid gap-3">
+    <VStack gap={3}>
       {installations.map((installation) => {
         const isPending = isClaiming && pendingInstallationId === installation.installationId;
         const isLinked = installation.linkStatus === "linked";
         const isLinkedElsewhere = installation.linkStatus === "linked_to_another_organization";
         const visibleRepositories = installation.repositories.slice(0, 5);
+        const overflow = installation.repositories.length - visibleRepositories.length;
 
         return (
-          <div
-            className="grid gap-3 rounded-md border border-border p-3"
-            key={installation.installationId}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="grid gap-1">
-                <p className="text-sm font-medium">
-                  {installation.accountLogin ?? `Installation ${installation.installationId}`}
-                </p>
-                <p className="text-muted-foreground text-xs">
-                  {installation.accountType ?? "GitHub account"} · {installation.status} ·{" "}
-                  {installation.repositorySelection ?? "selected"} repos ·{" "}
-                  {installation.repositoryCount} available
-                </p>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                variant={isLinked ? "outline" : "default"}
-                disabled={isPending || isLinkedElsewhere}
-                onClick={() => onLink(installation, isLinked ? "sync" : "manual_link")}
-              >
-                {isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-                {isLinked ? "Sync repos" : isLinkedElsewhere ? "Linked elsewhere" : "Link here"}
-              </Button>
-            </div>
+          <Card key={installation.installationId} padding={3}>
+            <VStack gap={3}>
+              <HStack gap={3} vAlign="start" hAlign="between" wrap="wrap">
+                <StackItem size="fill">
+                  <VStack gap={0}>
+                    <Text weight="semibold">
+                      {installation.accountLogin ?? `Installation ${installation.installationId}`}
+                    </Text>
+                    <Text type="supporting" color="secondary">
+                      {installation.accountType ?? "GitHub account"} · {installation.status} ·{" "}
+                      {installation.repositorySelection ?? "selected"} repos ·{" "}
+                      {installation.repositoryCount} available
+                    </Text>
+                  </VStack>
+                </StackItem>
+                <Button
+                  label={
+                    isLinked ? "Sync repos" : isLinkedElsewhere ? "Linked elsewhere" : "Link here"
+                  }
+                  size="sm"
+                  variant={isLinked ? "secondary" : "primary"}
+                  isLoading={isPending}
+                  isDisabled={isPending || isLinkedElsewhere}
+                  onClick={() => onLink(installation, isLinked ? "sync" : "manual_link")}
+                />
+              </HStack>
 
-            {visibleRepositories.length > 0 ? (
-              <ul className="grid gap-2">
-                {visibleRepositories.map((repository) => (
-                  <li
-                    className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-xs"
-                    key={repository.githubRepositoryId}
-                  >
-                    <span>{repository.fullName}</span>
-                    <span className="text-muted-foreground">
-                      {repository.private ? "Private" : "Public"}
-                      {repository.defaultBranch ? ` · ${repository.defaultBranch}` : ""}
-                    </span>
-                  </li>
-                ))}
-                {installation.repositories.length > visibleRepositories.length ? (
-                  <li className="border-t border-border pt-2 text-muted-foreground text-xs">
-                    +{installation.repositories.length - visibleRepositories.length} more
-                  </li>
-                ) : null}
-              </ul>
-            ) : (
-              <p className="text-muted-foreground text-xs">
-                GitHub returned no repositories for this installation.
-              </p>
-            )}
-          </div>
+              {visibleRepositories.length > 0 ? (
+                <SettingsRows>
+                  {visibleRepositories.map((repository, index) => (
+                    <SettingsRow
+                      key={repository.githubRepositoryId}
+                      label={repository.fullName}
+                      value={repositoryDescription(repository)}
+                      isLast={index === visibleRepositories.length - 1 && overflow <= 0}
+                    />
+                  ))}
+                  {overflow > 0 ? <SettingsRow label={`+${overflow} more`} isLast /> : null}
+                </SettingsRows>
+              ) : (
+                <Text type="supporting" color="secondary">
+                  GitHub returned no repositories for this installation.
+                </Text>
+              )}
+            </VStack>
+          </Card>
         );
       })}
-    </div>
+    </VStack>
   );
 }
 
@@ -491,28 +497,31 @@ function ClaimStatus({
   isSuccess: boolean;
   repositoryCount: number;
   onRetry: () => void;
-}) {
+}): ReactElement | null {
   if (isPending) {
     return <LoadingState label="Linking GitHub installation" />;
   }
 
   if (isSuccess) {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <CheckCircle2 className="size-4" />
-        Linked {repositoryCount} repositories
-      </div>
+      <HStack gap={2} vAlign="center">
+        <Icon icon={CheckCircleIcon} size="sm" />
+        <Text color="secondary">Linked {repositoryCount} repositories</Text>
+      </HStack>
     );
   }
 
   if (errorMessage) {
     return (
-      <div className="grid gap-2">
-        <p className="text-destructive">{errorMessage}</p>
-        <Button type="button" variant="outline" disabled={!canRetry} onClick={onRetry}>
-          Retry
-        </Button>
-      </div>
+      <VStack gap={2}>
+        <Banner
+          status="error"
+          title="Could not link installation"
+          description={errorMessage}
+          container="section"
+        />
+        <Button label="Retry" variant="secondary" isDisabled={!canRetry} onClick={onRetry} />
+      </VStack>
     );
   }
 
@@ -523,46 +532,46 @@ function LinkedReviewerState({
   installations,
 }: {
   installations: LinkedGitHubInstallation[];
-}) {
+}): ReactElement {
   return (
-    <div className="grid gap-3 rounded-md border border-border p-3">
+    <VStack gap={3}>
       {installations.map((installation) => (
-        <div className="grid gap-3" key={installation.id}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="grid gap-1">
-              <p className="text-sm font-medium">
-                {installation.accountLogin ?? "GitHub installation"}
-              </p>
-              <p className="text-muted-foreground text-xs">
-                {installation.status} · {installation.repositorySelection ?? "selected"} repos ·{" "}
-                {installation.repositoryCount} persisted
-              </p>
-            </div>
-            <CheckCircle2 className="size-4 text-muted-foreground" />
-          </div>
+        <Card key={installation.id} padding={3}>
+          <VStack gap={3}>
+            <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
+              <StackItem size="fill">
+                <VStack gap={0}>
+                  <Text weight="semibold">
+                    {installation.accountLogin ?? "GitHub installation"}
+                  </Text>
+                  <Text type="supporting" color="secondary">
+                    {installation.status} · {installation.repositorySelection ?? "selected"} repos ·{" "}
+                    {installation.repositoryCount} persisted
+                  </Text>
+                </VStack>
+              </StackItem>
+              <Icon icon={CheckCircleIcon} size="sm" />
+            </HStack>
 
-          {installation.repositories.length > 0 ? (
-            <ul className="grid gap-2">
-              {installation.repositories.map((repository) => (
-                <li
-                  className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-xs"
-                  key={repository.id}
-                >
-                  <span>{repository.fullName}</span>
-                  <span className="text-muted-foreground">
-                    {repository.private ? "Private" : "Public"}
-                    {repository.defaultBranch ? ` · ${repository.defaultBranch}` : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-muted-foreground text-xs">
-              GitHub returned no repositories for this installation.
-            </p>
-          )}
-        </div>
+            {installation.repositories.length > 0 ? (
+              <SettingsRows>
+                {installation.repositories.map((repository, index) => (
+                  <SettingsRow
+                    key={repository.id}
+                    label={repository.fullName}
+                    value={repositoryDescription(repository)}
+                    isLast={index === installation.repositories.length - 1}
+                  />
+                ))}
+              </SettingsRows>
+            ) : (
+              <Text type="supporting" color="secondary">
+                GitHub returned no repositories for this installation.
+              </Text>
+            )}
+          </VStack>
+        </Card>
       ))}
-    </div>
+    </VStack>
   );
 }

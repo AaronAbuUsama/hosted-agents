@@ -1,13 +1,24 @@
 "use client";
 
-import { Button } from "@hosted-agents/ui/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@hosted-agents/ui/components/card";
-import { Label } from "@hosted-agents/ui/components/label";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckCircle2, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
-import Link from "next/link";
+import type { CSSProperties, ReactElement } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
+
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Link } from "@astryxdesign/core/Link";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { HStack, Stack, VStack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
+import {
+  ArrowTopRightOnSquareIcon,
+  CheckCircleIcon,
+  ShieldCheckIcon,
+} from "@heroicons/react/24/outline";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { authClient } from "@/lib/auth-client";
 import { client, orpc } from "@/utils/orpc";
@@ -15,7 +26,18 @@ import { client, orpc } from "@/utils/orpc";
 type ProviderCredential = Awaited<ReturnType<typeof client.providerCredentials>>[number];
 type ProviderConnection = Awaited<ReturnType<typeof client.startOpenAICodexCredentialConnection>>;
 
-export default function ProviderSetupClient() {
+const codeBoxStyle: CSSProperties = {
+  border: "var(--border-width) solid var(--color-border)",
+  borderRadius: "var(--radius-container)",
+  paddingBlock: "var(--spacing-2)",
+  paddingInline: "var(--spacing-3)",
+  fontFamily: "var(--font-family-mono, ui-monospace, SFMono-Regular, monospace)",
+  fontSize: "var(--font-size-large)",
+  letterSpacing: "0.08em",
+};
+
+export default function ProviderSetupClient(): ReactElement {
+  const showToast = useToast();
   const organizations = authClient.useListOrganizations();
   const organizationList = useMemo(() => organizations.data ?? [], [organizations.data]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
@@ -60,11 +82,14 @@ export default function ProviderSetupClient() {
     },
     onSuccess: (result) => {
       setConnection(result);
-      toast.success("OpenAI Codex authorization started.");
+      showToast({ body: "OpenAI Codex authorization started." });
       void credentialsQuery.refetch();
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Unable to start provider connection.");
+      showToast({
+        body: error instanceof Error ? error.message : "Unable to start provider connection.",
+        type: "error",
+      });
     },
   });
 
@@ -87,114 +112,85 @@ export default function ProviderSetupClient() {
   }, [connectionQuery.data, credentialsQuery]);
 
   return (
-    <div className="grid w-full gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>OpenAI Codex provider</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-5">
-          <div className="grid gap-2">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="size-4" />
-              <span>Connect the organization provider account used by reviewer runs.</span>
-            </div>
-            {selectedOrganization ? (
-              <p className="text-muted-foreground">
-                Credentials are scoped to {selectedOrganization.name}. The browser only receives
-                connection state and credential metadata.
-              </p>
-            ) : null}
-          </div>
+    <VStack gap={5}>
+      <VStack gap={2}>
+        <HStack gap={2} vAlign="center">
+          <Icon icon={ShieldCheckIcon} size="sm" />
+          <Text weight="semibold">
+            Connect the organization provider account used by reviewer runs.
+          </Text>
+        </HStack>
+        {selectedOrganization ? (
+          <Text type="supporting" color="secondary">
+            Credentials are scoped to {selectedOrganization.name}. The browser only receives
+            connection state and credential metadata.
+          </Text>
+        ) : null}
+      </VStack>
 
-          {organizationList.length > 0 ? (
-            <div className="grid gap-2">
-              <Label htmlFor="provider-setup-organization">Organization</Label>
-              <select
-                id="provider-setup-organization"
-                className="h-8 w-full border border-input bg-background px-2 text-xs"
-                value={selectedOrganizationId}
-                onChange={(event) => {
-                  setSelectedOrganizationId(event.target.value);
-                  setConnection(null);
-                }}
-              >
-                {organizationList.map((organization) => (
-                  <option key={organization.id} value={organization.id}>
-                    {organization.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : organizations.isPending ? (
-            <LoadingState label="Loading organizations" />
-          ) : (
-            <div className="grid gap-2">
-              <p className="text-muted-foreground">
-                Create an organization before connecting provider credentials.
-              </p>
-              <Button nativeButton={false} render={<Link href="/onboarding/organization" />}>
-                Create organization
-              </Button>
-            </div>
-          )}
+      {organizationList.length > 0 ? (
+        <Selector
+          label="Organization"
+          placeholder="Select an organization"
+          options={organizationList.map((organization) => ({
+            value: organization.id,
+            label: organization.name,
+          }))}
+          value={selectedOrganizationId}
+          onChange={(value) => {
+            setSelectedOrganizationId(value);
+            setConnection(null);
+          }}
+        />
+      ) : organizations.isPending ? (
+        <LoadingState label="Loading organizations" />
+      ) : (
+        <VStack gap={2}>
+          <Text type="supporting" color="secondary">
+            Create an organization before connecting provider credentials.
+          </Text>
+          <Button label="Create organization" href="/onboarding/organization" variant="secondary" />
+        </VStack>
+      )}
 
-          <ProviderCredentialState
-            credentials={credentials}
-            isLoading={credentialsQuery.isPending || credentialsQuery.isFetching}
-          />
+      <ProviderCredentialState
+        credentials={credentials}
+        isLoading={credentialsQuery.isPending || credentialsQuery.isFetching}
+      />
 
-          {connection ? <ConnectionState connection={connection} /> : null}
+      {connection ? <ConnectionState connection={connection} /> : null}
 
-          {connectionQuery.isError ? (
-            <p className="text-destructive">{connectionQuery.error.message}</p>
-          ) : null}
+      {connectionQuery.isError ? (
+        <Banner
+          status="error"
+          title="Authorization check failed"
+          description={connectionQuery.error.message}
+          container="section"
+        />
+      ) : null}
 
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              disabled={
-                !selectedOrganizationId ||
-                startConnection.isPending ||
-                connection?.status === "pending"
-              }
-              onClick={() => startConnection.mutate()}
-            >
-              {startConnection.isPending ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  Starting authorization
-                </>
-              ) : (
-                <>
-                  <ExternalLink className="size-4" />
-                  {connectedOpenAICodexCredential ? "Rotate OpenAI Codex" : "Connect OpenAI Codex"}
-                </>
-              )}
-            </Button>
-
-            {canContinueToRuns ? (
-              <Button nativeButton={false} render={<Link href="/app/runs" />}>
-                Continue to runs
-              </Button>
-            ) : (
-              <Button type="button" disabled>
-                Continue to runs
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+      <HStack gap={2} wrap="wrap">
+        <Button
+          label={connectedOpenAICodexCredential ? "Rotate OpenAI Codex" : "Connect OpenAI Codex"}
+          variant="primary"
+          icon={<Icon icon={ArrowTopRightOnSquareIcon} size="sm" />}
+          isLoading={startConnection.isPending}
+          isDisabled={!selectedOrganizationId || connection?.status === "pending"}
+          onClick={() => startConnection.mutate()}
+        />
+        <Button
+          label="Continue to runs"
+          variant="secondary"
+          href={canContinueToRuns ? "/app/runs" : undefined}
+          isDisabled={!canContinueToRuns}
+        />
+      </HStack>
+    </VStack>
   );
 }
 
-function LoadingState({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" />
-      {label}
-    </div>
-  );
+function LoadingState({ label }: { label: string }): ReactElement {
+  return <Spinner size="sm" label={label} />;
 }
 
 function ProviderCredentialState({
@@ -203,86 +199,92 @@ function ProviderCredentialState({
 }: {
   credentials: ProviderCredential[];
   isLoading: boolean;
-}) {
+}): ReactElement {
   if (isLoading) {
     return <LoadingState label="Checking provider credentials" />;
   }
 
   if (credentials.length === 0) {
     return (
-      <p className="text-muted-foreground">
+      <Text type="supporting" color="secondary">
         No OpenAI Codex credential is connected for this organization yet.
-      </p>
+      </Text>
     );
   }
 
   return (
-    <div className="grid gap-2">
+    <VStack gap={2}>
       {credentials.map((credential) => (
-        <div
-          key={credential.id}
-          className="grid gap-1 rounded-md border border-border bg-background p-3 text-sm"
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            {credential.status === "connected" ? <CheckCircle2 className="size-4" /> : null}
-            <span className="font-medium">{credential.provider}</span>
-            <span className="text-muted-foreground">{credential.status}</span>
-          </div>
-          <p className="text-muted-foreground">
-            Type: {credential.credentialType}
-            {credential.expiresAt ? ` · Expires: ${new Date(credential.expiresAt).toLocaleString()}` : ""}
-          </p>
-          <p className="text-muted-foreground">
-            Updated: {new Date(credential.updatedAt).toLocaleString()}
-          </p>
-          {credential.lastError ? <p className="text-destructive">{credential.lastError}</p> : null}
-        </div>
+        <Card key={credential.id} variant="muted" padding={3}>
+          <VStack gap={1}>
+            <HStack gap={2} vAlign="center" wrap="wrap">
+              {credential.status === "connected" ? <Icon icon={CheckCircleIcon} size="sm" /> : null}
+              <Text weight="semibold">{credential.provider}</Text>
+              <Text type="supporting" color="secondary">
+                {credential.status}
+              </Text>
+            </HStack>
+            <Text type="supporting" color="secondary">
+              Type: {credential.credentialType}
+              {credential.expiresAt
+                ? ` · Expires: ${new Date(credential.expiresAt).toLocaleString()}`
+                : ""}
+            </Text>
+            <Text type="supporting" color="secondary">
+              Updated: {new Date(credential.updatedAt).toLocaleString()}
+            </Text>
+            {credential.lastError ? (
+              <Text type="supporting" color="secondary">
+                Error: {credential.lastError}
+              </Text>
+            ) : null}
+          </VStack>
+        </Card>
       ))}
-    </div>
+    </VStack>
   );
 }
 
-function ConnectionState({ connection }: { connection: ProviderConnection }) {
+function ConnectionState({ connection }: { connection: ProviderConnection }): ReactElement {
   if (connection.status === "connected") {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <CheckCircle2 className="size-4" />
-        OpenAI Codex credential connected.
-      </div>
+      <HStack gap={2} vAlign="center">
+        <Icon icon={CheckCircleIcon} size="sm" />
+        <Text color="secondary">OpenAI Codex credential connected.</Text>
+      </HStack>
     );
   }
 
   if (connection.status === "failed") {
     return (
-      <p className="text-destructive">
-        {connection.errorMessage ?? "OpenAI Codex authorization failed."}
-      </p>
+      <Banner
+        status="error"
+        title="Authorization failed"
+        description={connection.errorMessage ?? "OpenAI Codex authorization failed."}
+        container="section"
+      />
     );
   }
 
   return (
-    <div className="grid gap-3 rounded-md border border-border bg-background p-3">
-      <LoadingState label="Waiting for OpenAI Codex authorization" />
-      {connection.deviceCode ? (
-        <div className="grid gap-2 text-sm">
-          <p className="text-muted-foreground">
-            Open the verification URL and enter the user code shown below. This page never displays
-            access tokens or refresh tokens.
-          </p>
-          <a
-            className="inline-flex items-center gap-2 text-primary underline"
-            href={connection.deviceCode.verificationUri}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {connection.deviceCode.verificationUri}
-            <ExternalLink className="size-4" />
-          </a>
-          <div className="rounded-md border border-border px-3 py-2 font-mono text-lg tracking-normal">
-            {connection.deviceCode.userCode}
-          </div>
-        </div>
-      ) : null}
-    </div>
+    <Card variant="muted" padding={3}>
+      <VStack gap={3}>
+        <LoadingState label="Waiting for OpenAI Codex authorization" />
+        {connection.deviceCode ? (
+          <VStack gap={2}>
+            <Text type="supporting" color="secondary">
+              Open the verification URL and enter the user code shown below. This page never
+              displays access tokens or refresh tokens.
+            </Text>
+            <Link href={connection.deviceCode.verificationUri} isStandalone isExternalLink>
+              {connection.deviceCode.verificationUri}
+            </Link>
+            <Stack style={codeBoxStyle}>
+              <Text>{connection.deviceCode.userCode}</Text>
+            </Stack>
+          </VStack>
+        ) : null}
+      </VStack>
+    </Card>
   );
 }
