@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@hosted-agents/ui/components/card";
+import { Checkbox } from "@hosted-agents/ui/components/checkbox";
 import {
   CheckCircle2,
   CircleAlert,
@@ -19,7 +20,8 @@ import {
   Settings2,
 } from "lucide-react";
 import Link from "next/link";
-import type { ReactElement, ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
+import { toast } from "sonner";
 
 import { client } from "@/utils/orpc";
 
@@ -143,13 +145,15 @@ export default function SettingsConfigurationClient({
             {githubInstallations.length > 0 ? (
               <div className="grid gap-2 pt-2">
                 {githubInstallations.map((installation) => (
-                  <ConfigurationRow
-                    key={installation.id}
-                    title={installation.accountLogin ?? "GitHub installation"}
-                    description={`${pluralize(installation.repositoryCount, "repository")} linked`}
-                    status={installation.status}
-                    tone={installation.status === "connected" ? "success" : "neutral"}
-                  />
+                  <div key={installation.id} className="grid gap-2">
+                    <ConfigurationRow
+                      title={installation.accountLogin ?? "GitHub installation"}
+                      description={`${pluralize(installation.repositoryCount, "repository")} linked`}
+                      status={installation.status}
+                      tone={installation.status === "connected" ? "success" : "neutral"}
+                    />
+                    <RepositoryToggleList repositories={installation.repositories} />
+                  </div>
                 ))}
               </div>
             ) : (
@@ -198,15 +202,20 @@ export default function SettingsConfigurationClient({
 
           <SettingsSection
             id="reviewer-rules"
-            title="Reviewer rules"
-            description="Rules will control what the reviewer should check, when it should comment, and how it should report results."
+            title="Reviewer behavior"
+            description="The reviewer's prompt, model, and skills are configured on the Reviewer page and apply to every new run."
             icon={<CircleDashed className="size-4" />}
+            action={
+              <Button nativeButton={false} variant="outline" render={<Link href="/app/reviewer" />}>
+                <ExternalLink className="size-4" />
+                Configure reviewer
+              </Button>
+            }
           >
-            <SettingsRow label="Production rule store" value="Not configured yet" />
-            <SettingsRow label="Current reviewer behavior" value="Default code-review run policy" />
-            <EmptyConfiguration
-              title="Rule editing has not been cut over"
-              description="This section is reserved for production-backed reviewer policy, not local demo toggles."
+            <SettingsRow label="Prompt and skills" value="Managed on the Reviewer page" />
+            <SettingsRow
+              label="Triggers"
+              value="PR opened, reopened, synchronized, ready for review, and manual requests"
             />
           </SettingsSection>
 
@@ -289,6 +298,69 @@ function SettingsSection({
       </CardHeader>
       <CardContent className="grid gap-2 text-sm">{children}</CardContent>
     </Card>
+  );
+}
+
+type InstallationRepository = GitHubInstallation["repositories"][number];
+
+function RepositoryToggleList({
+  repositories,
+}: {
+  repositories: InstallationRepository[];
+}): ReactElement | null {
+  const [selections, setSelections] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(repositories.map((repository) => [repository.id, repository.selected])),
+  );
+  const [pendingRepositoryId, setPendingRepositoryId] = useState<string | null>(null);
+
+  if (repositories.length === 0) {
+    return null;
+  }
+
+  async function toggleRepository(repositoryId: string, selected: boolean): Promise<void> {
+    setPendingRepositoryId(repositoryId);
+    try {
+      const updated = await client.setRepositorySelected({ repositoryId, selected });
+      setSelections((current) => ({ ...current, [updated.id]: updated.selected }));
+      toast.success(
+        updated.selected
+          ? `${updated.fullName} enabled for reviewer runs.`
+          : `${updated.fullName} disabled. New pull requests will be ignored.`,
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update the repository.");
+    } finally {
+      setPendingRepositoryId(null);
+    }
+  }
+
+  return (
+    <div className="grid gap-1 border border-border bg-background p-3">
+      <div className="pb-1 text-xs font-medium text-muted-foreground">
+        Repositories the reviewer runs on
+      </div>
+      {repositories.map((repository) => (
+        <label
+          key={repository.id}
+          className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0"
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium">{repository.fullName}</span>
+            <span className="block text-xs text-muted-foreground">
+              {repository.private ? "Private" : "Public"}
+              {repository.defaultBranch ? ` · ${repository.defaultBranch}` : ""}
+            </span>
+          </span>
+          <Checkbox
+            checked={selections[repository.id] ?? repository.selected}
+            disabled={pendingRepositoryId === repository.id}
+            onCheckedChange={(checked) => {
+              void toggleRepository(repository.id, checked === true);
+            }}
+          />
+        </label>
+      ))}
+    </div>
   );
 }
 
