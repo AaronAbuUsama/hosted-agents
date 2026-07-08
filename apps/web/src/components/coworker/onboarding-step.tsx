@@ -6,7 +6,7 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text, Heading } from "@astryxdesign/core/Text";
 
 type OnboardingStepProps = {
-  eyebrow: string;
+  step: 1 | 2 | 3;
   title: string;
   body: string;
   primaryHref?: string;
@@ -16,10 +16,10 @@ type OnboardingStepProps = {
   children?: React.ReactNode;
 };
 
-const setupSteps = ["Organization", "GitHub", "Provider", "Coworkers", "Rules"] as const;
+const setupSteps = ["Organization", "GitHub", "Provider"] as const;
 
 export default function OnboardingStep({
-  eyebrow,
+  step,
   title,
   body,
   primaryHref,
@@ -28,7 +28,8 @@ export default function OnboardingStep({
   secondaryLabel,
   children,
 }: OnboardingStepProps) {
-  const activeStep = Number(eyebrow.match(/\d+/)?.[0] ?? "1");
+  const activeStep = step;
+  const eyebrow = `Step ${step} of ${setupSteps.length}`;
 
   return (
     <main className="min-h-dvh bg-body p-6 text-primary">

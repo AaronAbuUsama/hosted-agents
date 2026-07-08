@@ -58,7 +58,15 @@ export default function GitHubSetupClient({
       enabled: Boolean(selectedOrganizationId),
     }),
   );
-  const availableInstallations = availableInstallationData?.installations ?? [];
+  const linkedInstallationIds = new Set(
+    (linkedInstallationData ?? []).map((installation) => installation.installationId),
+  );
+  // The GitHub API lists every installation of the app; only offer the ones
+  // that are not already linked to this organization so the two lists never
+  // show the same installation twice.
+  const availableInstallations = (availableInstallationData?.installations ?? []).filter(
+    (installation) => !linkedInstallationIds.has(installation.installationId),
+  );
   const isGitHubAppConfigured = availableInstallationData?.configured ?? true;
   const linkedRepositoryCount = installations.reduce(
     (count, installation) => count + installation.repositoryCount,
@@ -146,7 +154,7 @@ export default function GitHubSetupClient({
   };
 
   return (
-    <div className="mx-auto grid w-full max-w-2xl gap-4 p-4">
+    <div className="grid w-full gap-4">
       <Card>
         <CardHeader>
           <CardTitle>Reviewer GitHub App setup</CardTitle>
@@ -266,28 +274,32 @@ export default function GitHubSetupClient({
             </div>
           </div>
 
-          <AvailableInstallationsState
-            configured={isGitHubAppConfigured}
-            errorMessage={
-              isAvailableInstallationsError ? availableInstallationsError.message : null
-            }
-            installations={availableInstallations}
-            isClaiming={claimGitHubInstallation.isPending}
-            isLoading={isLoadingAvailableState}
-            pendingInstallationId={pendingInstallationId}
-            onLink={(availableInstallation, setupMode) => {
-              if (!selectedOrganizationId) {
-                toast.error("Select an organization before linking a GitHub installation.");
-                return;
+          {!isGitHubAppConfigured ||
+          isAvailableInstallationsError ||
+          availableInstallations.length > 0 ? (
+            <AvailableInstallationsState
+              configured={isGitHubAppConfigured}
+              errorMessage={
+                isAvailableInstallationsError ? availableInstallationsError.message : null
               }
+              installations={availableInstallations}
+              isClaiming={claimGitHubInstallation.isPending}
+              isLoading={isLoadingAvailableState}
+              pendingInstallationId={pendingInstallationId}
+              onLink={(availableInstallation, setupMode) => {
+                if (!selectedOrganizationId) {
+                  toast.error("Select an organization before linking a GitHub installation.");
+                  return;
+                }
 
-              claimGitHubInstallation.mutate({
-                installationId: availableInstallation.installationId,
-                organizationId: selectedOrganizationId,
-                setupAction: setupMode,
-              });
-            }}
-          />
+                claimGitHubInstallation.mutate({
+                  installationId: availableInstallation.installationId,
+                  organizationId: selectedOrganizationId,
+                  setupAction: setupMode,
+                });
+              }}
+            />
+          ) : null}
 
           {isLinkedInstallationsError ? (
             <p className="text-destructive">{linkedInstallationsError.message}</p>

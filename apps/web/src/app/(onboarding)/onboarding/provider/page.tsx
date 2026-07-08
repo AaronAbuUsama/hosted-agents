@@ -39,9 +39,9 @@ export default async function ProviderStepPage() {
 
   return (
     <OnboardingStep
-      eyebrow="Step 3 of 5"
+      step={3}
       title="Connect a provider account"
-      body="Coworker uses the customer provider account for Codex/OpenAI work. Credentials are scoped by organization and can later be overridden per coworker."
+      body="Coworker uses your provider account for Codex/OpenAI work. Credentials are scoped to the organization and used by every reviewer run."
       secondaryHref="/app/settings"
       secondaryLabel="Configure later"
     >

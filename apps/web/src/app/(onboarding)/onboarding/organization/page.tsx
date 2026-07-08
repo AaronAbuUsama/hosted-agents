@@ -36,7 +36,7 @@ export default async function OrganizationStepPage({
 
   return (
     <OnboardingStep
-      eyebrow="Step 1 of 5"
+      step={1}
       title="Create your Coworker organization"
       body="The organization owns provider credentials, GitHub installations, rules, workers, runs, and billing."
     >
