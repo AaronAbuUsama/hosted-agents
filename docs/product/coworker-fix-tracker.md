@@ -39,7 +39,7 @@ P2 (backlog). Effort: S/M/L. Add items freely under "Aaron's additions".
 
 ## R. Runs list
 
-- [ ] **R1 — Runs view → `table-page`, not `table-grouped`** · P1 · M
+- [x] **R1 — Runs view → `table-page`, not `table-grouped`** · DONE (branch `claude/runs-table-page`)
   Drop the status-lane grouping. Runs are a log, not a pipeline. Rebuild on the
   `table-page` template: flat `Table` + `PowerSearch` (filter by status / worker
   / repo) + toolbar. Richer columns: worker, repo, PR/issue, status, findings
@@ -51,7 +51,7 @@ P2 (backlog). Effort: S/M/L. Add items freely under "Aaron's additions".
 
 ## C. Run workspace
 
-- [ ] **C1 — Double-width overflow bug** · P0 · S
+- [x] **C1 — Double-width overflow bug** · DONE (branch `claude/runs-table-page`)
   Measured: `astryx-layout-content` scrollWidth 2160px vs 1645px viewport. The
   workspace `Layout` has no `contentWidth` and the content track lacks
   `min-width: 0`, so wide `CodeBlock`s blow the column out. Chat should be
