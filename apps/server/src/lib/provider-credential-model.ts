@@ -16,7 +16,10 @@ function toCredentialProviderId(credentialId: string) {
   return `openai-codex-credential-${credentialId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
-export async function registerOpenAICodexCredentialModel(credentialId: string) {
+export async function registerOpenAICodexCredentialModel(
+  credentialId: string,
+  modelId: string = OPENAI_CODEX_MODEL_ID,
+) {
   const [row] = await db
     .select()
     .from(agentProviderCredential)
@@ -57,5 +60,5 @@ export async function registerOpenAICodexCredentialModel(credentialId: string) {
     maxTokens: 128000,
   });
 
-  return `${providerId}/${OPENAI_CODEX_MODEL_ID}`;
+  return `${providerId}/${modelId}`;
 }

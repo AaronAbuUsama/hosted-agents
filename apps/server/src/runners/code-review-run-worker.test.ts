@@ -130,6 +130,7 @@ async function createTables(client: TestClient) {
       "pull_request_head_ref" text,
       "pull_request_head_sha" text,
       "status" text DEFAULT 'queued' NOT NULL,
+      "model" text,
       "flue_run_id" text,
       "sandbox_provider" text,
       "sandbox_id" text,
@@ -180,6 +181,29 @@ async function createTables(client: TestClient) {
       "content" text,
       "payload_json" text,
       "created_at" integer DEFAULT 0 NOT NULL
+    );
+
+    CREATE TABLE "worker_config" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "worker_role" text NOT NULL,
+      "display_name" text,
+      "model" text,
+      "instructions" text,
+      "created_at" integer DEFAULT 0 NOT NULL,
+      "updated_at" integer DEFAULT 0 NOT NULL
+    );
+
+    CREATE TABLE "worker_skill" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "worker_role" text NOT NULL,
+      "name" text NOT NULL,
+      "description" text,
+      "content" text NOT NULL,
+      "enabled" integer DEFAULT 1 NOT NULL,
+      "created_at" integer DEFAULT 0 NOT NULL,
+      "updated_at" integer DEFAULT 0 NOT NULL
     );
   `);
 }
@@ -301,6 +325,7 @@ describe("code review run worker", () => {
         return {
           sandboxProvider: "fake-sandbox",
           sandboxId: "sandbox-1",
+          model: "openai-codex/gpt-5.5",
           summary: "Review completed.",
           findingsJson: JSON.stringify([{ title: "Bug", severity: "high", detail: "Bad bug." }]),
           artifacts: [{ name: "review.md", contentType: "text/markdown", content: "# Review" }],

@@ -20,6 +20,7 @@ import { createGitHubCodeReviewTools } from "./github-code-review-tools";
 const DEFAULT_CODEX_MODEL = "openai-codex/gpt-5.5";
 const REPOSITORY_PATH = "repo";
 const REVIEW_CONTEXT_PATH = "coworker-review-context.md";
+const SKILLS_PATH = "skills";
 const MAX_DIFF_CHARS = 180_000;
 
 const severitySchema = v.picklist(["low", "medium", "high", "critical"]);
@@ -154,6 +155,8 @@ async function runFlueReview({
   onFlueEvent?: (event: unknown) => void | Promise<void>;
 }): Promise<ReviewResult> {
   const githubTools = createGitHubCodeReviewTools(input);
+  const skillNames = (input.skills ?? []).map((skill) => skill.name);
+  const configuredInstructions = input.configuredInstructions?.trim();
   const agent = defineAgent(() => ({
     model,
     sandbox: daytona(sandbox),
@@ -166,12 +169,20 @@ async function runFlueReview({
       "First call start_github_review before inspecting files or running shell commands.",
       "Review the checked-out pull request inside the sandbox workspace.",
       `Read ../${REVIEW_CONTEXT_PATH} first, then inspect repository files as needed.`,
+      ...(skillNames.length > 0
+        ? [
+            `Then read every team skill file under ../${SKILLS_PATH}/ (${skillNames.join(", ")}) and apply them as review guidance.`,
+          ]
+        : []),
       "Return only supported findings. Do not invent files, tests, or execution proof.",
       "Prefer high-signal findings about correctness, security, data loss, migrations, runtime behavior, and test gaps.",
       "Submit your review through submit_pull_request_review. Use inline comments only when you can anchor them to the diff.",
       "Use comment_on_pull_request only as a fallback or for additional top-level context.",
       "After submitting the review, call complete_review_check with the final conclusion and summary.",
       "If there is no actionable issue, return a concise summary and an empty findings array.",
+      ...(configuredInstructions
+        ? ["", "Team review guidance (configured by the organization):", configuredInstructions]
+        : []),
     ].join("\n"),
   }));
   const ctx = createFlueContext({
@@ -390,10 +401,26 @@ export class DaytonaCodeReviewSandboxRunner implements CodeReviewSandboxRunner {
       });
       await sandbox.fs.uploadFile(Buffer.from(reviewContext, "utf8"), REVIEW_CONTEXT_PATH);
 
+      const skills = input.skills ?? [];
+      if (skills.length > 0) {
+        await emitStage("skills_uploading", "Uploading worker skills into sandbox", {
+          skills: skills.map((skill) => skill.name),
+        });
+        for (const skill of skills) {
+          await sandbox.fs.uploadFile(
+            Buffer.from(skill.content, "utf8"),
+            `${SKILLS_PATH}/${skill.name}`,
+          );
+        }
+      }
+
       await emitStage("model_resolving", "Resolving Codex model credential");
+      const configuredModelId = input.configuredModel?.trim() || undefined;
       const model = input.providerCredentialId
-        ? await registerOpenAICodexCredentialModel(input.providerCredentialId)
-        : DEFAULT_CODEX_MODEL;
+        ? await registerOpenAICodexCredentialModel(input.providerCredentialId, configuredModelId)
+        : configuredModelId
+          ? `openai-codex/${configuredModelId}`
+          : DEFAULT_CODEX_MODEL;
       await emitStage("flue_review", "Starting Flue code review session", { model });
       const review = await runFlueReview({
         sandbox,
@@ -414,6 +441,7 @@ export class DaytonaCodeReviewSandboxRunner implements CodeReviewSandboxRunner {
       completedResult = {
         sandboxProvider: "daytona",
         sandboxId,
+        model,
         summary: review.summary,
         findingsJson: JSON.stringify(review.findings),
         artifacts: [

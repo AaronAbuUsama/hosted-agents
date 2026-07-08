@@ -49,6 +49,7 @@ export const agentRun = sqliteTable(
     pullRequestHeadRef: text("pull_request_head_ref"),
     pullRequestHeadSha: text("pull_request_head_sha"),
     status: text("status").default("queued").notNull(),
+    model: text("model"),
     flueRunId: text("flue_run_id"),
     sandboxProvider: text("sandbox_provider"),
     sandboxId: text("sandbox_id"),

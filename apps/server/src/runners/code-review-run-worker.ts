@@ -7,6 +7,7 @@ import {
   agentRun,
 } from "@hosted-agents/db/schema/agent-runs";
 import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
+import { workerConfig, workerSkill } from "@hosted-agents/db/schema/worker-config";
 import { and, asc, eq, isNull, lt, or } from "drizzle-orm";
 
 import {
@@ -394,6 +395,59 @@ export async function runNextQueuedCodeReview({
     await recordAgentRunStage(database, {
       runId: run.id,
       category: "worker",
+      type: "worker.config_lookup",
+      stage: "config_lookup",
+      message: "Loading worker configuration and skills",
+      status: "running",
+    });
+
+    const [configuration] = await database
+      .select()
+      .from(workerConfig)
+      .where(
+        and(
+          eq(workerConfig.organizationId, run.organizationId),
+          eq(workerConfig.workerRole, run.workerRole),
+        ),
+      )
+      .limit(1);
+    const enabledSkills = await database
+      .select()
+      .from(workerSkill)
+      .where(
+        and(
+          eq(workerSkill.organizationId, run.organizationId),
+          eq(workerSkill.workerRole, run.workerRole),
+          eq(workerSkill.enabled, true),
+        ),
+      )
+      .orderBy(asc(workerSkill.name));
+
+    const workerDisplayName =
+      configuration?.displayName?.trim() || metadata.workerDisplayName;
+
+    await appendAgentRunEvent(database, {
+      runId: run.id,
+      category: "worker",
+      type: "worker.config_loaded",
+      stage: "config_lookup",
+      message:
+        enabledSkills.length > 0
+          ? `Loaded worker configuration with ${enabledSkills.length} skill${
+              enabledSkills.length === 1 ? "" : "s"
+            }`
+          : "Loaded worker configuration",
+      payload: {
+        hasConfiguration: Boolean(configuration),
+        configuredModel: configuration?.model ?? null,
+        hasInstructions: Boolean(configuration?.instructions?.trim()),
+        skills: enabledSkills.map((skill) => skill.name),
+      },
+    });
+
+    await recordAgentRunStage(database, {
+      runId: run.id,
+      category: "worker",
       type: "worker.installation_token",
       stage: "installation_token",
       message: "Creating GitHub installation access token",
@@ -407,7 +461,10 @@ export async function runNextQueuedCodeReview({
       agentRunId: run.id,
       organizationId: run.organizationId,
       workerRole: metadata.workerRole,
-      workerDisplayName: metadata.workerDisplayName,
+      workerDisplayName,
+      configuredModel: configuration?.model ?? undefined,
+      configuredInstructions: configuration?.instructions ?? undefined,
+      skills: enabledSkills.map((skill) => ({ name: skill.name, content: skill.content })),
       providerCredentialId: run.providerCredentialId ?? undefined,
       githubInstallationId: metadata.githubInstallationId,
       githubRepositoryId: metadata.githubRepositoryId,
@@ -443,6 +500,8 @@ export async function runNextQueuedCodeReview({
       .update(agentRun)
       .set({
         status: "completed",
+        model: result.model,
+        workerDisplayName,
         sandboxProvider: result.sandboxProvider,
         sandboxId: result.sandboxId,
         currentStage: "completed",
@@ -463,8 +522,9 @@ export async function runNextQueuedCodeReview({
       message: "Code review completed",
       payload: {
         sandboxId: result.sandboxId,
+        model: result.model,
         workerRole: metadata.workerRole,
-        workerDisplayName: metadata.workerDisplayName,
+        workerDisplayName,
         findingsCount: JSON.parse(result.findingsJson || "[]").length,
       },
     });

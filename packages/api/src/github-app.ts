@@ -203,6 +203,74 @@ export async function createGitHubInstallationAccessToken(installationId: string
   return response.token;
 }
 
+type GitHubPullRequestResponse = {
+  number: number;
+  title?: string | null;
+  html_url?: string | null;
+  draft?: boolean;
+  updated_at?: string | null;
+  user?: { login?: string | null } | null;
+  base?: { ref?: string | null; sha?: string | null } | null;
+  head?: { ref?: string | null; sha?: string | null } | null;
+};
+
+export type GitHubPullRequestSummary = {
+  number: number;
+  title: string;
+  htmlUrl: string | null;
+  authorLogin: string | null;
+  draft: boolean;
+  updatedAt: string | null;
+  baseRef: string | null;
+  baseSha: string | null;
+  headRef: string | null;
+  headSha: string | null;
+};
+
+function mapPullRequestSummary(pullRequest: GitHubPullRequestResponse): GitHubPullRequestSummary {
+  return {
+    number: pullRequest.number,
+    title: pullRequest.title ?? `PR #${pullRequest.number}`,
+    htmlUrl: pullRequest.html_url ?? null,
+    authorLogin: pullRequest.user?.login ?? null,
+    draft: Boolean(pullRequest.draft),
+    updatedAt: pullRequest.updated_at ?? null,
+    baseRef: pullRequest.base?.ref ?? null,
+    baseSha: pullRequest.base?.sha ?? null,
+    headRef: pullRequest.head?.ref ?? null,
+    headSha: pullRequest.head?.sha ?? null,
+  };
+}
+
+export async function listOpenGitHubPullRequests(
+  installationId: string,
+  owner: string,
+  repo: string,
+): Promise<GitHubPullRequestSummary[]> {
+  const token = await createGitHubInstallationAccessToken(installationId);
+  const response = await fetchGitHubJson<GitHubPullRequestResponse[]>(
+    `/repos/${owner}/${repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`,
+    { token },
+  );
+
+  return response.map(mapPullRequestSummary);
+}
+
+export async function getGitHubPullRequest(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullRequestNumber: number,
+): Promise<GitHubPullRequestSummary> {
+  const token = await createGitHubInstallationAccessToken(installationId);
+  const response = await fetchGitHubJson<GitHubPullRequestResponse>(
+    `/repos/${owner}/${repo}/pulls/${pullRequestNumber}`,
+    { token },
+  );
+
+  return mapPullRequestSummary(response);
+}
+
 async function listInstallationRepositories(installationId: string) {
   const token = await createGitHubInstallationAccessToken(installationId);
   const response = await fetchGitHubJson<GitHubInstallationRepositoriesResponse>(

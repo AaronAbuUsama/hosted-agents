@@ -1,8 +1,16 @@
+export type CodeReviewWorkerSkill = {
+  name: string;
+  content: string;
+};
+
 export type CodeReviewSandboxRunInput = {
   agentRunId: string;
   organizationId: string;
   workerRole: string;
   workerDisplayName: string;
+  configuredModel?: string;
+  configuredInstructions?: string;
+  skills?: CodeReviewWorkerSkill[];
   providerCredentialId?: string;
   githubInstallationId: string;
   githubRepositoryId: string;
@@ -27,6 +35,7 @@ export type CodeReviewSandboxArtifact = {
 export type CodeReviewSandboxRunResult = {
   sandboxProvider: string;
   sandboxId: string;
+  model: string;
   summary: string;
   findingsJson: string;
   artifacts: CodeReviewSandboxArtifact[];

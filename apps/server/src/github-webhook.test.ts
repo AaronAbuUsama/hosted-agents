@@ -207,6 +207,7 @@ async function createTables(client: TestClient) {
       "pull_request_head_ref" text,
       "pull_request_head_sha" text,
       "status" text DEFAULT 'queued' NOT NULL,
+      "model" text,
       "flue_run_id" text,
       "sandbox_provider" text,
       "sandbox_id" text,
