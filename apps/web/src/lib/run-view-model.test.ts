@@ -36,6 +36,7 @@ function agentRun(overrides: Partial<AgentRunApiRecord> = {}): AgentRunApiRecord
     pullRequestHeadRef: "feature/slice-1",
     pullRequestHeadSha: "head-sha-456",
     status: "running",
+    model: null,
     flueRunId: "flue-run-1",
     sandboxProvider: "daytona",
     sandboxId: "sandbox-1",
