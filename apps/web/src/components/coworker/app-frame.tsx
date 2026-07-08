@@ -58,15 +58,10 @@ type AppFrameProps = {
 const RUNS_PATH = "/app/runs";
 const REVIEWER_PATH = "/app/reviewer";
 const SETTINGS_PATH = "/app/settings";
+const PROJECTS_PATH = "/app/projects";
 
-// How many runs to surface under each repository before deferring to the full
-// Runs table, and the repo count above which groups start collapsed to keep the
-// rail scannable as more repositories (and later, more workers) are added.
-const RECENT_RUNS_PER_REPO = 5;
-const COLLAPSE_REPOS_ABOVE = 4;
-
-type RepoGroup = {
-  key: string;
+type RepoNavItem = {
+  id: string;
   label: string;
   runs: RunViewModelRow[];
 };
@@ -105,11 +100,6 @@ function isPathSelected(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function isRunSelected(pathname: string, runId: string): boolean {
-  const runHref = `${RUNS_PATH}/${runId}`;
-  return pathname === runHref || pathname.startsWith(`${runHref}/`);
-}
-
 // A repository's dot reflects its most relevant run: an in-flight run wins
 // (accent), otherwise the latest run's outcome; a repo with no runs is neutral.
 function repoStatus(runs: RunViewModelRow[]): { variant: StatusDotVariant; label: string } {
@@ -125,14 +115,13 @@ function repoStatus(runs: RunViewModelRow[]): { variant: StatusDotVariant; label
   return { variant: runStatusDotVariants[latest.status], label: latest.status };
 }
 
-// Groups runs under the repositories a worker is configured to watch. Enabled
-// repositories (the settings toggle) come first and are always shown, even with
-// no runs yet; any repository that only appears in run history is appended so no
-// run is orphaned. Ordered by most-recent activity.
-function buildRepoGroups(
+// Lists the repositories a worker is configured to watch (the settings toggle),
+// each carrying its runs so the rail can show a status dot. Ordered by
+// most-recent run activity, then alphabetically.
+function buildRepoNav(
   installations: { repositories: { id: string; fullName: string; selected: boolean }[] }[],
   runs: RunViewModelRow[],
-): RepoGroup[] {
+): RepoNavItem[] {
   const runsByRepo = new Map<string, RunViewModelRow[]>();
   const firstSeenIndex = new Map<string, number>();
 
@@ -146,28 +135,20 @@ function buildRepoGroups(
     }
   });
 
-  const groups: RepoGroup[] = [];
+  const items: RepoNavItem[] = [];
   const seen = new Set<string>();
 
   for (const installation of installations) {
     for (const repo of installation.repositories) {
-      if (!repo.selected || seen.has(repo.fullName)) {
+      if (!repo.selected || seen.has(repo.id)) {
         continue;
       }
-      seen.add(repo.fullName);
-      groups.push({ key: repo.id, label: repo.fullName, runs: runsByRepo.get(repo.fullName) ?? [] });
+      seen.add(repo.id);
+      items.push({ id: repo.id, label: repo.fullName, runs: runsByRepo.get(repo.fullName) ?? [] });
     }
   }
 
-  for (const [label, repoRuns] of runsByRepo) {
-    if (seen.has(label)) {
-      continue;
-    }
-    seen.add(label);
-    groups.push({ key: `repo:${label}`, label, runs: repoRuns });
-  }
-
-  return groups.sort((left, right) => {
+  return items.sort((left, right) => {
     const leftRank = firstSeenIndex.get(left.label) ?? Number.POSITIVE_INFINITY;
     const rightRank = firstSeenIndex.get(right.label) ?? Number.POSITIVE_INFINITY;
     if (leftRank !== rightRank) {
@@ -177,27 +158,13 @@ function buildRepoGroups(
   });
 }
 
-// When searching, a repo matches by name (keep all its runs) or by any run
-// title (keep only matching runs); non-matching repos drop out.
-function filterRepoGroups(groups: RepoGroup[], query: string): RepoGroup[] {
+// When searching, keep repositories whose name matches the query.
+function filterRepoNav(items: RepoNavItem[], query: string): RepoNavItem[] {
   if (!query) {
-    return groups;
+    return items;
   }
 
-  const matches: RepoGroup[] = [];
-  for (const group of groups) {
-    if (group.label.toLowerCase().includes(query)) {
-      matches.push(group);
-      continue;
-    }
-
-    const matchedRuns = group.runs.filter((run) => run.title.toLowerCase().includes(query));
-    if (matchedRuns.length > 0) {
-      matches.push({ ...group, runs: matchedRuns });
-    }
-  }
-
-  return matches;
+  return items.filter((item) => item.label.toLowerCase().includes(query));
 }
 
 export default function AppFrame({
@@ -223,15 +190,11 @@ export default function AppFrame({
     () => runs.filter((run) => run.status === "Running" || run.status === "Queued").length,
     [runs],
   );
-  const repoGroups = useMemo(
-    () => buildRepoGroups(installations, runs),
-    [installations, runs],
-  );
+  const repoNav = useMemo(() => buildRepoNav(installations, runs), [installations, runs]);
 
   const query = search.trim().toLowerCase();
   const searching = query.length > 0;
-  const visibleGroups = useMemo(() => filterRepoGroups(repoGroups, query), [repoGroups, query]);
-  const collapseByDefault = repoGroups.length > COLLAPSE_REPOS_ABOVE;
+  const visibleRepos = useMemo(() => filterRepoNav(repoNav, query), [repoNav, query]);
 
   function handleSignOut(): void {
     authClient.signOut({
@@ -319,13 +282,13 @@ export default function AppFrame({
                 style={fullWidthButtonStyle}
               />
               <TextInput
-                label="Search runs and repositories"
+                label="Search repositories"
                 isLabelHidden
                 size="sm"
                 width="100%"
                 startIcon={MagnifyingGlassIcon}
                 hasClear
-                placeholder="Search repos & runs…"
+                placeholder="Search repositories…"
                 value={search}
                 onChange={setSearch}
               />
@@ -371,56 +334,28 @@ export default function AppFrame({
           <SideNavSection title="Repositories">
             {isReposError ? (
               <SideNavItem label="Couldn't load repositories" icon={FolderIcon} isDisabled />
-            ) : isReposLoading && repoGroups.length === 0 ? (
+            ) : isReposLoading && repoNav.length === 0 ? (
               <SideNavItem label="Loading repositories…" icon={FolderIcon} isDisabled />
-            ) : visibleGroups.length === 0 ? (
+            ) : visibleRepos.length === 0 ? (
               <SideNavItem
                 label={searching ? "No matches" : "No repositories enabled"}
                 icon={FolderIcon}
                 isDisabled
               />
             ) : (
-              visibleGroups.map((group) => {
-                const status = repoStatus(group.runs);
-                const isActive = group.runs.some((run) => isRunSelected(pathname, run.id));
-                const expanded = searching || isActive || !collapseByDefault;
-                const shownRuns = group.runs.slice(0, RECENT_RUNS_PER_REPO);
-                const overflowCount = group.runs.length - shownRuns.length;
+              visibleRepos.map((repo) => {
+                const status = repoStatus(repo.runs);
+                const href = `${PROJECTS_PATH}/${repo.id}`;
 
                 return (
                   <SideNavItem
-                    key={`${group.key}:${expanded ? "open" : "closed"}`}
-                    label={group.label}
+                    key={repo.id}
+                    label={repo.label}
                     icon={FolderIcon}
+                    href={href}
+                    isSelected={isPathSelected(pathname, href)}
                     endContent={<StatusDot variant={status.variant} label={status.label} />}
-                    collapsible={{ defaultIsCollapsed: !expanded }}
-                  >
-                    <VStack gap={0.5}>
-                      {group.runs.length === 0 ? (
-                        <SideNavItem label="No runs yet" isDisabled />
-                      ) : (
-                        <>
-                          {shownRuns.map((run) => (
-                            <SideNavItem
-                              key={run.id}
-                              label={run.title}
-                              href={`${RUNS_PATH}/${run.id}`}
-                              isSelected={isRunSelected(pathname, run.id)}
-                              endContent={
-                                <StatusDot
-                                  variant={runStatusDotVariants[run.status]}
-                                  label={run.status}
-                                />
-                              }
-                            />
-                          ))}
-                          {overflowCount > 0 ? (
-                            <SideNavItem label={`+${overflowCount} more`} href={RUNS_PATH} />
-                          ) : null}
-                        </>
-                      )}
-                    </VStack>
-                  </SideNavItem>
+                  />
                 );
               })
             )}
