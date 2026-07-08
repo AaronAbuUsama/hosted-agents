@@ -16,6 +16,7 @@ export const SETUP_PROVIDER_PATH = "/onboarding/provider" as Route;
 
 const workspaceNavItems: WorkspaceNavItem[] = [
   { href: APP_LANDING_PATH, label: "Runs" },
+  { href: "/app/reviewer" as Route, label: "Reviewer" },
   { href: "/app/settings" as Route, label: "Settings" },
 ];
 

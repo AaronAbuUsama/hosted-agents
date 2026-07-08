@@ -98,8 +98,9 @@ describe("truthful app shell routing", () => {
   test("exposes real workspace navigation without mock links or fake counts", () => {
     const navItems = getWorkspaceNavItems();
 
-    expect(navItems).toEqual([
+    expect(navItems.map((item) => ({ href: String(item.href), label: item.label }))).toEqual([
       { href: "/app/runs", label: "Runs" },
+      { href: "/app/reviewer", label: "Reviewer" },
       { href: "/app/settings", label: "Settings" },
     ]);
     expect(navItems.some((item) => item.href.startsWith("/app/projects"))).toBe(false);
