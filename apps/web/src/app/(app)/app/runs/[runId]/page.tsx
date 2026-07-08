@@ -11,11 +11,11 @@ type RunDetailPageProps = {
 };
 
 function parseRunDetailTab(value?: string): RunDetailTab {
-  if (value === "transcript" || value === "github") {
+  if (value === "timeline" || value === "github") {
     return value;
   }
 
-  return "timeline";
+  return "review";
 }
 
 export default async function RunDetailPage({

@@ -5,17 +5,9 @@ import { useState, type ReactElement } from "react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Center } from "@astryxdesign/core/Center";
+import { Code } from "@astryxdesign/core/Code";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
-import {
-  ChatMessage,
-  ChatMessageBubble,
-  ChatMessageList,
-  ChatMessageMetadata,
-  ChatToolCalls,
-  type ChatToolCallItem,
-} from "@astryxdesign/core/Chat";
-import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
 import {
@@ -32,13 +24,13 @@ import { Section } from "@astryxdesign/core/Section";
 import { StatusDot, type StatusDotVariant } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
-import { Token } from "@astryxdesign/core/Token";
+import { Token, type TokenProps } from "@astryxdesign/core/Token";
 import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 
 import type {
+  RunFindingRow,
+  RunFindingSeverity,
   RunTimelineEventRow,
-  RunTranscriptRow,
-  RunTranscriptToolCallRow,
   RunViewModelRow,
   RunViewModelStatus,
 } from "@/lib/run-view-model";
@@ -49,11 +41,10 @@ type RunRolloutProps = {
   initialTab?: RunDetailTab;
   run: RunViewModelRow;
   events: RunTimelineEventRow[];
-  transcriptRows: RunTranscriptRow[];
   timelineState: TimelineState;
 };
 
-export type RunDetailTab = "timeline" | "transcript" | "github";
+export type RunDetailTab = "review" | "timeline" | "github";
 
 const statusDotVariants: Record<RunViewModelStatus, StatusDotVariant> = {
   Queued: "neutral",
@@ -63,12 +54,22 @@ const statusDotVariants: Record<RunViewModelStatus, StatusDotVariant> = {
   Unknown: "warning",
 };
 
-const defaultTab: RunDetailTab = "timeline";
-const toolInputTargetKeys = ["path", "command", "query", "url", "file"] as const;
+const severityTokens: Record<RunFindingSeverity, { label: string; color: TokenProps["color"] }> = {
+  high: { label: "High", color: "red" },
+  medium: { label: "Medium", color: "orange" },
+  low: { label: "Low", color: "yellow" },
+  info: { label: "Info", color: "gray" },
+};
+
+const defaultTab: RunDetailTab = "review";
 
 function getGitHubHref(run: RunViewModelRow): string | null {
   if (run.sourceProvider !== "github" || run.repo === "Unknown repository") {
     return null;
+  }
+
+  if (typeof run.pullRequestNumber === "number") {
+    return `https://github.com/${run.repo}/pull/${run.pullRequestNumber}`;
   }
 
   return `https://github.com/${run.repo}/tree/${run.branch}`;
@@ -78,7 +79,6 @@ export default function RunRollout({
   initialTab = defaultTab,
   run,
   events,
-  transcriptRows,
   timelineState,
 }: RunRolloutProps): ReactElement {
   const [activeTab, setActiveTab] = useState<RunDetailTab>(initialTab);
@@ -143,9 +143,20 @@ export default function RunRollout({
               </HStack>
             </HStack>
 
+            {run.status === "Failed" ? (
+              <Banner
+                status="error"
+                title="Run failed"
+                description={run.errorMessage ?? "No error message was recorded for this run."}
+                endContent={
+                  run.currentStage ? <Token label={`Stage: ${run.currentStage}`} /> : undefined
+                }
+              />
+            ) : null}
+
             <TabList value={activeTab} onChange={(value) => changeTab(value as RunDetailTab)}>
+              <Tab value="review" label="Review" />
               <Tab value="timeline" label="Timeline" />
-              <Tab value="transcript" label="Transcript" />
               <Tab value="github" label="GitHub" />
             </TabList>
           </VStack>
@@ -153,20 +164,139 @@ export default function RunRollout({
       }
       content={
         <LayoutContent role="main" isScrollable padding={5}>
+          {activeTab === "review" ? <ReviewTab run={run} githubHref={githubHref} /> : null}
           {activeTab === "timeline" ? (
             <TimelineTab events={events} timelineState={timelineState} />
-          ) : null}
-          {activeTab === "transcript" ? (
-            <TranscriptTab
-              rows={transcriptRows}
-              timelineState={timelineState}
-              coworkerName={run.coworkerName}
-            />
           ) : null}
           {activeTab === "github" ? <GitHubTab run={run} githubHref={githubHref} /> : null}
         </LayoutContent>
       }
     />
+  );
+}
+
+function ReviewTab({
+  run,
+  githubHref,
+}: {
+  run: RunViewModelRow;
+  githubHref: string | null;
+}): ReactElement {
+  if (run.status === "Queued" || run.status === "Running") {
+    return (
+      <Section variant="section" padding={4}>
+        <EmptyState
+          title={run.status === "Queued" ? "Run is queued" : "Review in progress"}
+          description={
+            run.currentStage
+              ? `Current stage: ${run.currentStage}. The report appears when the run completes.`
+              : "The report appears when the run completes."
+          }
+          headingLevel={2}
+        />
+      </Section>
+    );
+  }
+
+  return (
+    <VStack gap={4}>
+      <Section variant="section" padding={4}>
+        <VStack gap={3}>
+          <HStack gap={4} hAlign="between" vAlign="center" wrap="wrap">
+            <Heading level={2}>Summary</Heading>
+            {githubHref ? (
+              <Link href={githubHref} isStandalone isExternalLink>
+                <HStack gap={1} vAlign="center">
+                  <Icon icon={ArrowTopRightOnSquareIcon} size="sm" />
+                  <Text type="body">View review on GitHub</Text>
+                </HStack>
+              </Link>
+            ) : null}
+          </HStack>
+          {run.summary ? (
+            <Markdown density="compact">{run.summary}</Markdown>
+          ) : (
+            <Text type="supporting" color="secondary">
+              No summary was recorded for this run.
+            </Text>
+          )}
+        </VStack>
+      </Section>
+
+      <Section variant="section" padding={4}>
+        <VStack gap={4}>
+          <VStack gap={1}>
+            <Heading level={2}>
+              {run.findings.length === 0
+                ? "Findings"
+                : `Findings (${run.findings.length})`}
+            </Heading>
+            <Text type="supporting" color="secondary">
+              Structured review output submitted to GitHub by the reviewer.
+            </Text>
+          </VStack>
+          <FindingsContent run={run} />
+        </VStack>
+      </Section>
+    </VStack>
+  );
+}
+
+function FindingsContent({ run }: { run: RunViewModelRow }): ReactElement {
+  if (run.findings.length === 0) {
+    if (run.status === "Failed") {
+      return (
+        <EmptyState
+          title="No review produced"
+          description="The run failed before submitting a review. See the error above and the timeline for details."
+          headingLevel={3}
+        />
+      );
+    }
+
+    return (
+      <EmptyState
+        title="No actionable findings"
+        description="The reviewer completed without raising issues on this pull request."
+        headingLevel={3}
+      />
+    );
+  }
+
+  return (
+    <List hasDividers density="balanced">
+      {run.findings.map((finding) => (
+        <ListItem
+          key={finding.id}
+          label={finding.title}
+          description={<FindingDescription finding={finding} />}
+          startContent={
+            <Token
+              label={severityTokens[finding.severity].label}
+              color={severityTokens[finding.severity].color}
+            />
+          }
+        />
+      ))}
+    </List>
+  );
+}
+
+function FindingDescription({ finding }: { finding: RunFindingRow }): ReactElement {
+  return (
+    <VStack gap={2}>
+      {finding.file ? (
+        <HStack gap={2} vAlign="center" wrap="wrap">
+          <Code>{finding.line === null ? finding.file : `${finding.file}:${finding.line}`}</Code>
+        </HStack>
+      ) : null}
+      {finding.detail ? <Text type="supporting">{finding.detail}</Text> : null}
+      {finding.recommendation ? (
+        <Text type="supporting" color="secondary">
+          Recommendation: {finding.recommendation}
+        </Text>
+      ) : null}
+    </VStack>
   );
 }
 
@@ -183,7 +313,8 @@ function TimelineTab({
         <VStack gap={1}>
           <Heading level={2}>Timeline</Heading>
           <Text type="supporting" color="secondary">
-            Ordered durable events from webhook admission through the latest worker output.
+            Run milestones from webhook admission to result. The full event stream lives in the
+            workspace.
           </Text>
         </VStack>
         <TimelineContent events={events} timelineState={timelineState} />
@@ -231,7 +362,7 @@ function TimelineContent({
   }
 
   return (
-    <List hasDividers density="balanced" header="Run timeline">
+    <List hasDividers density="balanced">
       {events.map((event) => (
         <ListItem
           key={event.id}
@@ -246,215 +377,16 @@ function TimelineContent({
 
 function TimelineEventDescription({ event }: { event: RunTimelineEventRow }): ReactElement {
   return (
-    <VStack gap={1}>
-      <HStack gap={2} vAlign="center" wrap="wrap">
-        <Text type="supporting" color="secondary" hasTabularNumbers>
-          {event.sequenceLabel}
-        </Text>
-        <Token label={event.categoryLabel} />
-        <Text type="supporting" color="secondary">
-          {event.stageLabel}
-        </Text>
-        <Text type="supporting" color="secondary" hasTabularNumbers>
-          {event.timestamp}
-        </Text>
-      </HStack>
+    <HStack gap={2} vAlign="center" wrap="wrap">
+      <Token label={event.categoryLabel} />
       <Text type="supporting" color="secondary">
-        {event.typeLabel}
+        {event.stageLabel}
       </Text>
-    </VStack>
+      <Text type="supporting" color="secondary" hasTabularNumbers>
+        {event.timestamp}
+      </Text>
+    </HStack>
   );
-}
-
-function TranscriptTab({
-  rows,
-  timelineState,
-  coworkerName,
-}: {
-  rows: RunTranscriptRow[];
-  timelineState: TimelineState;
-  coworkerName: string;
-}): ReactElement {
-  return (
-    <Section variant="section" padding={4}>
-      <VStack gap={4}>
-        <VStack gap={1}>
-          <Heading level={2}>Agent conversation</Heading>
-          <Text type="supporting" color="secondary">
-            Complete run history: prompt, reasoning, tool calls, and tool results.
-          </Text>
-        </VStack>
-        <TranscriptContent rows={rows} timelineState={timelineState} coworkerName={coworkerName} />
-      </VStack>
-    </Section>
-  );
-}
-
-function TranscriptContent({
-  rows,
-  timelineState,
-  coworkerName,
-}: {
-  rows: RunTranscriptRow[];
-  timelineState: TimelineState;
-  coworkerName: string;
-}): ReactElement {
-  if (timelineState === "error") {
-    return (
-      <Banner
-        status="error"
-        title="Transcript could not load"
-        description="The server did not return Flue event payloads for this run."
-        container="section"
-      />
-    );
-  }
-
-  if (timelineState === "loading") {
-    return (
-      <Center>
-        <Text type="supporting" color="secondary">
-          Loading transcript…
-        </Text>
-      </Center>
-    );
-  }
-
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        title="No transcript events yet"
-        description="This run has durable events, but no Flue message_end events are available to reconstruct a transcript."
-        headingLevel={3}
-      />
-    );
-  }
-
-  return (
-    <ChatMessageList density="compact" gap={4}>
-      {rows.map((row) => (
-        <TranscriptMessage key={row.id} row={row} coworkerName={coworkerName} />
-      ))}
-    </ChatMessageList>
-  );
-}
-
-function TranscriptMessage({
-  row,
-  coworkerName,
-}: {
-  row: RunTranscriptRow;
-  coworkerName: string;
-}): ReactElement {
-  if (row.role === "tool") {
-    return (
-      <ChatMessage
-        sender="assistant"
-        avatar={<Avatar name={row.toolName ?? "Tool"} size="small" />}
-        name={row.toolName ? `${row.toolName} result` : "Tool result"}
-        metadata={
-          <ChatMessageMetadata
-            timestamp={row.timestamp}
-            footer={row.isError ? "Failed tool result" : "Tool result"}
-          />
-        }
-      >
-        <CodeBlock
-          code={row.content || "No tool output."}
-          language={codeLanguage(row.content)}
-          hasCopyButton
-          isWrapped
-          width="100%"
-        />
-      </ChatMessage>
-    );
-  }
-
-  return (
-    <ChatMessage
-      sender={row.role}
-      avatar={row.role === "assistant" ? <Avatar name={coworkerName} size="small" /> : undefined}
-      metadata={
-        <ChatMessageMetadata
-          timestamp={row.timestamp}
-          footer={row.model ?? (row.thinking ? "Reasoning included" : undefined)}
-        />
-      }
-    >
-      {row.thinking ? (
-        <ChatMessageBubble
-          variant="ghost"
-          name={row.role === "assistant" ? coworkerName : undefined}
-        >
-          <VStack gap={2}>
-            <Text type="supporting" color="secondary">
-              Thinking
-            </Text>
-            <Markdown density="compact">{row.thinking}</Markdown>
-          </VStack>
-        </ChatMessageBubble>
-      ) : null}
-      {row.content ? (
-        <ChatMessageBubble
-          variant={row.role === "assistant" ? "ghost" : "filled"}
-          name={!row.thinking && row.role === "assistant" ? coworkerName : undefined}
-        >
-          <Markdown density="compact">{row.content}</Markdown>
-        </ChatMessageBubble>
-      ) : null}
-      {row.toolCalls.length > 0 ? (
-        <ChatToolCalls calls={row.toolCalls.map(mapTranscriptToolCall)} defaultIsExpanded />
-      ) : null}
-    </ChatMessage>
-  );
-}
-
-function mapTranscriptToolCall(toolCall: RunTranscriptToolCallRow): ChatToolCallItem {
-  return {
-    key: toolCall.id,
-    name: toolCall.name,
-    status: "complete",
-    target: targetForToolInput(toolCall.input),
-    resultDetail: (
-      <CodeBlock
-        code={formatUnknown(toolCall.input)}
-        language="json"
-        title="Arguments"
-        hasCopyButton
-        isWrapped
-        width="100%"
-      />
-    ),
-  };
-}
-
-function targetForToolInput(input: unknown): string | undefined {
-  if (!input || typeof input !== "object") {
-    return undefined;
-  }
-
-  const record = input as Record<string, unknown>;
-  for (const key of toolInputTargetKeys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-  }
-
-  return undefined;
-}
-
-function formatUnknown(value: unknown): string {
-  return typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "");
-}
-
-function codeLanguage(value: string): string {
-  try {
-    JSON.parse(value);
-    return "json";
-  } catch {
-    return "text";
-  }
 }
 
 function GitHubTab({

@@ -11,8 +11,8 @@ import { useLiveQuery } from "@tanstack/react-db";
 
 import { agentRunsCollection, createAgentRunEventsCollection } from "@/lib/collections/agent-runs";
 import {
+  isMilestoneRunEvent,
   mapAgentRunEventToTimelineRow,
-  mapAgentRunEventsToTranscriptRows,
   sortRunTimelineEvents,
   type RunViewModelRow,
 } from "@/lib/run-view-model";
@@ -71,8 +71,9 @@ function RunDetailEventsIsland({
   return (
     <RunRollout
       run={run}
-      events={sortRunTimelineEvents(events.map(mapAgentRunEventToTimelineRow))}
-      transcriptRows={mapAgentRunEventsToTranscriptRows(events)}
+      events={sortRunTimelineEvents(
+        events.filter(isMilestoneRunEvent).map(mapAgentRunEventToTimelineRow),
+      )}
       timelineState={timelineState}
       initialTab={initialTab}
     />

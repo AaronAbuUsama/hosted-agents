@@ -117,6 +117,18 @@ export type RunTranscriptRow = {
 
 export type RunViewModelStatus = "Queued" | "Running" | "Completed" | "Failed" | "Unknown";
 
+export type RunFindingSeverity = "high" | "medium" | "low" | "info";
+
+export type RunFindingRow = {
+  id: string;
+  title: string;
+  severity: RunFindingSeverity;
+  file: string | null;
+  line: number | null;
+  detail: string | null;
+  recommendation: string | null;
+};
+
 export type RunViewModelRow = {
   id: string;
   title: string;
@@ -131,6 +143,10 @@ export type RunViewModelRow = {
   sourceProvider: string;
   runType: string;
   currentStage: string | null;
+  summary: string | null;
+  errorMessage: string | null;
+  findings: RunFindingRow[];
+  pullRequestNumber: number | null;
 };
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -170,7 +186,64 @@ export function mapAgentRunToRunRow(run: AgentRunApiRecord): RunViewModelRow {
     sourceProvider: run.sourceProvider,
     runType: run.runType,
     currentStage: run.currentStage,
+    summary: nonEmpty(run.summary),
+    errorMessage: nonEmpty(run.errorMessage),
+    findings: mapAgentRunFindings(run.findings),
+    pullRequestNumber: typeof run.pullRequestNumber === "number" ? run.pullRequestNumber : null,
   };
+}
+
+const findingSeverities: Record<string, RunFindingSeverity> = {
+  critical: "high",
+  high: "high",
+  medium: "medium",
+  moderate: "medium",
+  low: "low",
+  info: "info",
+  informational: "info",
+};
+
+export function mapAgentRunFindings(findings: unknown[]): RunFindingRow[] {
+  if (!Array.isArray(findings)) {
+    return [];
+  }
+
+  return findings.map((finding, index) => {
+    const record = asRecord(finding);
+    const severityToken = stringValue(record.severity)?.toLowerCase() ?? "";
+    const line = typeof record.line === "number" && Number.isFinite(record.line) ? record.line : null;
+
+    return {
+      id: `finding-${index}`,
+      title: stringValue(record.title) ?? `Finding ${index + 1}`,
+      severity: findingSeverities[severityToken] ?? "info",
+      file: stringValue(record.file) ?? stringValue(record.path),
+      line,
+      detail: stringValue(record.detail) ?? stringValue(record.description),
+      recommendation: stringValue(record.recommendation),
+    };
+  });
+}
+
+// Raw Flue protocol events (model turns, message boundaries, low-level tool
+// frames) are durable evidence but read as noise on the report timeline. Keep
+// lifecycle milestones; the workspace transcript owns the protocol detail.
+const milestoneFlueTypes = new Set(["stage.flue_review", "flue.agent_start", "flue.agent_end"]);
+
+export function isMilestoneRunEvent(event: AgentRunEventApiRecord): boolean {
+  if (event.category === "model") {
+    return false;
+  }
+
+  if (event.category === "tool") {
+    return event.type.startsWith("github.tool.");
+  }
+
+  if (event.category === "flue") {
+    return milestoneFlueTypes.has(event.type);
+  }
+
+  return true;
 }
 
 export function mapAgentRunArtifactToArtifactRow(
