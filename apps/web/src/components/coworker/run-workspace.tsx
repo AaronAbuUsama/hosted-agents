@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { useState, type CSSProperties, type ReactElement } from "react";
 
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -63,6 +63,9 @@ const statusDotVariants: Record<RunViewModelStatus, StatusDotVariant> = {
 
 const toolInputTargetKeys = ["path", "command", "query", "url", "file"] as const;
 
+const fillMinWidth: CSSProperties = { minWidth: 0 };
+const transcriptClip: CSSProperties = { minWidth: 0, maxWidth: "100%", overflowX: "hidden" };
+
 export default function RunWorkspace({
   run,
   transcriptRows,
@@ -121,8 +124,8 @@ export default function RunWorkspace({
         </LayoutPanel>
       }
       content={
-        <LayoutContent role="main" isScrollable padding={5}>
-          <VStack gap={4}>
+        <LayoutContent role="main" isScrollable padding={5} style={fillMinWidth}>
+          <VStack gap={4} style={fillMinWidth}>
             <VStack gap={1}>
               <Heading level={2}>Session transcript</Heading>
               <Text type="supporting" color="secondary">
@@ -324,12 +327,17 @@ function TranscriptContent({
     );
   }
 
+  // Tool-call targets (e.g. a long `git diff <sha>..HEAD`) and code blocks can
+  // exceed the column; clip at the column edge so they scroll/wrap inside their
+  // own box instead of widening the whole page.
   return (
-    <ChatMessageList density="compact" gap={4}>
-      {rows.map((row) => (
-        <TranscriptMessage key={row.id} row={row} coworkerName={coworkerName} />
-      ))}
-    </ChatMessageList>
+    <VStack gap={4} style={transcriptClip}>
+      <ChatMessageList density="compact" gap={4}>
+        {rows.map((row) => (
+          <TranscriptMessage key={row.id} row={row} coworkerName={coworkerName} />
+        ))}
+      </ChatMessageList>
+    </VStack>
   );
 }
 

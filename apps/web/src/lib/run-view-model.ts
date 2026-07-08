@@ -22,6 +22,7 @@ export type AgentRunApiRecord = {
   pullRequestHeadRef: string | null;
   pullRequestHeadSha: string | null;
   status: AgentRunApiStatus;
+  model: string | null;
   flueRunId: string | null;
   sandboxProvider: string | null;
   sandboxId: string | null;
@@ -147,6 +148,7 @@ export type RunViewModelRow = {
   errorMessage: string | null;
   findings: RunFindingRow[];
   pullRequestNumber: number | null;
+  model: string | null;
 };
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -190,7 +192,19 @@ export function mapAgentRunToRunRow(run: AgentRunApiRecord): RunViewModelRow {
     errorMessage: nonEmpty(run.errorMessage),
     findings: mapAgentRunFindings(run.findings),
     pullRequestNumber: typeof run.pullRequestNumber === "number" ? run.pullRequestNumber : null,
+    model: nonEmpty(run.model),
   };
+}
+
+export function shortModelLabel(model: string | null): string | null {
+  const value = nonEmpty(model);
+  if (!value) {
+    return null;
+  }
+  // Runtime model ids look like "openai-codex-credential-<uuid>/gpt-5.5" or
+  // "openai-codex/gpt-5.5" — the last path segment is the human-meaningful part.
+  const segment = value.split("/").pop() ?? value;
+  return segment || value;
 }
 
 const findingSeverities: Record<string, RunFindingSeverity> = {
