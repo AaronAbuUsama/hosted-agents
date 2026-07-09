@@ -16,22 +16,33 @@ P2 (backlog). Effort: S/M/L. Add items freely under "Aaron's additions".
 
 ## B. Reviewer configuration
 
-- [ ] **B1 — Skills use the wrong mechanism** · P0 · L · *the big one*
-  Today: one skill = one text blob typed into a textarea, uploaded as a flat
-  `skills/<name>` file, with a prompt line telling the agent to read it. Flue
-  has a first-class skills system we're bypassing: `defineSkill` →
-  `SkillReference`, `PackagedSkillDirectory` (a **multi-file bundle** with a
-  `SKILL.md` entry + description), auto-discovery from `.agents/skills/<name>/`,
-  and `session.skill()` invocation by name. Rework: skills become uploadable
-  bundles; runner registers them on `defineAgent({ skills })` and writes them to
-  `.agents/skills/`; UI becomes IDE-shaped (see design proposal).
-- [ ] **B2 — Model is free text** · P1 · S
-  Raw string → `${provider}/${modelId}` with no validation. Make it a `Selector`
-  dropdown over a curated Codex model list we define (scoped to the connected
-  provider). Free-typing garbage currently fails at the OpenAI API.
-- [ ] **B3 — Triggers are hardcoded text** · P1 · S
-  Render as `Badge`/`Token` chips, not a plain text list. Editing them is a
-  later schema+planner change — read-only badges are fine for now.
+- [x] **B1 — Skills use the wrong mechanism** · DONE (branch `claude/skill-bundles`)
+  Skills are now multi-file markdown bundles: `worker_skill_file` table
+  (skill_id, path, content; unique per path) with `SKILL.md` as the enforced
+  entry file; old `worker_skill.content` backfilled into a `SKILL.md` row and
+  the column dropped (migration `0005`; local.db transformed by hand since it
+  is push-managed). API saves/loads whole bundles (replace-all semantics).
+  UI is IDE-shaped: file tree with folders, tabbed markdown editor, bundle
+  details (description/enabled/save/delete), per-bundle "Add file" and
+  drag-drop upload of a folder's `.md` files; New skill accepts an uploaded
+  folder (generates a starter `SKILL.md` if missing). Runner uploads
+  `skills/<name>/<path>` — the block in
+  `daytona-code-review-sandbox-runner.ts` is marked **FLUE ADAPTER** for the
+  Eve swap. Verified end to end: create-from-upload, edit, save, reload,
+  DB rows, and a live run (`0e376269…`) whose `skills_uploading` event lists
+  both bundles with all files; the run then failed at the model step on the
+  Codex usage limit (quota, not code).
+- [x] **B2 — Model is free text** · DONE (branch `claude/model-selector`)
+  Model is now an Astryx `Selector` over a curated Codex list (`gpt-5.5`,
+  `gpt-5.5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`) with per-option
+  descriptions; clear (×) restores the platform default (saves `null`). A
+  legacy free-text value still renders as an extra option. Verified: select →
+  save → reload sticks; clear → save returns to default.
+- [x] **B3 — Triggers are hardcoded text** · DONE (branch `claude/trigger-chips`)
+  Triggers render as read-only `Token` chips in the Reviewer worker-facts
+  panel and the Settings→Reviewer row (right-aligned `endContent`). The list
+  moved to a shared `reviewer-triggers.ts` so both surfaces stay in sync.
+  Editing stays a later schema+planner change.
 - [x] Display name — verified working end to end (flows to the GitHub check
   name + review comments). No action.
 - [x] Multiple enabled skills — already supported (per-skill toggle; worker
@@ -56,11 +67,15 @@ P2 (backlog). Effort: S/M/L. Add items freely under "Aaron's additions".
   workspace `Layout` has no `contentWidth` and the content track lacks
   `min-width: 0`, so wide `CodeBlock`s blow the column out. Chat should be
   contained and scroll inside its own box.
-- [ ] **C2 — Tool calls all render as generic fallback** · P1 · M
-  `ChatToolCalls` supports `additions/deletions/node/stats/duration/errorMessage`
-  but we pass minimal fields + `status: "complete"` for every call. Map real
-  tool semantics (read → file target, shell → command+output, github tools →
-  review/check result, status from success/failure). No invented tools.
+- [x] **C2 — Tool calls all render as generic fallback** · DONE (branch `claude/tool-call-semantics`)
+  Tool results are joined onto their calls by `toolCallId`: real targets per
+  tool (read/write → path, bash → command, grep/glob → pattern in path,
+  activate_skill → name, submit_pull_request_review → event,
+  complete_review_check → conclusion, finish → summary), status/errorMessage
+  from `isError`, and the output rendered inside the expandable call row
+  (capped at 6k chars). Matched standalone "tool result" messages no longer
+  render twice. Verified on run f89b9c6a (PR #773) incl. a real failed grep.
+  Mapped tool names are the ones observed in run events — revisit after Eve.
 
 ## D. Settings
 
