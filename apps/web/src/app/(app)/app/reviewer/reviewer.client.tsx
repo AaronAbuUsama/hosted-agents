@@ -21,6 +21,7 @@ import { Token } from "@astryxdesign/core/Token";
 import { useRouter } from "next/navigation";
 import { notify } from "@/lib/toast-bridge";
 
+import { TRIGGER_EVENTS } from "@/components/coworker/reviewer-triggers";
 import { client } from "@/utils/orpc";
 
 type WorkerConfiguration = Awaited<ReturnType<typeof client.workerConfiguration>>;
@@ -36,14 +37,6 @@ type ReviewerClientProps = {
 type EditorSelection = { kind: "prompt" } | { kind: "skill"; name: string } | { kind: "new" };
 
 const SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-
-const TRIGGER_EVENTS = [
-  "PR opened",
-  "PR reopened",
-  "PR synchronized",
-  "PR ready for review",
-  "Manual request",
-];
 
 // Curated Codex models for the connected OpenAI provider. Runs prefix these
 // with "openai-codex/" — only ids the Codex API accepts belong here.
@@ -154,13 +147,11 @@ export default function ReviewerClient({
                   {config?.model?.trim() || `${defaults.model} (default)`}
                 </MetadataListItem>
                 <MetadataListItem label="Triggers">
-                  <VStack gap={1}>
+                  <HStack gap={1} wrap="wrap">
                     {TRIGGER_EVENTS.map((trigger) => (
-                      <Text key={trigger} type="supporting">
-                        {trigger}
-                      </Text>
+                      <Token key={trigger} label={trigger} size="sm" />
                     ))}
-                  </VStack>
+                  </HStack>
                 </MetadataListItem>
                 <MetadataListItem label="Repositories">
                   <VStack gap={1}>

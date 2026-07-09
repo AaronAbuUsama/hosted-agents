@@ -1,8 +1,11 @@
 import type { ReactElement } from "react";
 
 import { Button } from "@astryxdesign/core/Button";
+import { HStack } from "@astryxdesign/core/Stack";
+import { Token } from "@astryxdesign/core/Token";
 
 import CoworkerPage from "@/components/coworker/coworker-page";
+import { TRIGGER_EVENTS } from "@/components/coworker/reviewer-triggers";
 import { SettingsRow, SettingsRows } from "@/components/coworker/settings-rows";
 import { client } from "@/utils/orpc";
 
@@ -30,7 +33,14 @@ export default async function ReviewerSettingsPage(): Promise<ReactElement> {
         <SettingsRow label="Prompt and skills" value="Managed on the Reviewer page" />
         <SettingsRow
           label="Triggers"
-          value="Pull request opened, reopened, synchronized, ready for review, and manual requests"
+          value="Pull request events that queue a review"
+          endContent={
+            <HStack gap={1} wrap="wrap" hAlign="end">
+              {TRIGGER_EVENTS.map((trigger) => (
+                <Token key={trigger} label={trigger} size="sm" />
+              ))}
+            </HStack>
+          }
         />
         <SettingsRow label="Default run type" value="GitHub pull request review" />
         <SettingsRow
