@@ -11,7 +11,7 @@ import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { Section } from "@astryxdesign/core/Section";
-import { Selector } from "@astryxdesign/core/Selector";
+import { Selector, SelectorOption } from "@astryxdesign/core/Selector";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Stack";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Heading, Text } from "@astryxdesign/core/Text";
@@ -43,6 +43,15 @@ const TRIGGER_EVENTS = [
   "PR synchronized",
   "PR ready for review",
   "Manual request",
+];
+
+// Curated Codex models for the connected OpenAI provider. Runs prefix these
+// with "openai-codex/" — only ids the Codex API accepts belong here.
+const CODEX_MODELS: { value: string; description: string }[] = [
+  { value: "gpt-5.5", description: "Flagship Codex model — platform default" },
+  { value: "gpt-5.5-codex", description: "Tuned for agentic coding and review depth" },
+  { value: "gpt-5.1-codex", description: "Previous-generation Codex, proven and stable" },
+  { value: "gpt-5.1-codex-mini", description: "Fastest and lightest for quick passes" },
 ];
 
 function errorText(error: unknown): string {
@@ -230,6 +239,15 @@ function BasePromptEditor({
   const [instructions, setInstructions] = useState(config?.instructions ?? "");
   const [isSaving, setIsSaving] = useState(false);
 
+  // Keep a previously saved free-text model visible even if it left the curated list.
+  const modelOptions =
+    CODEX_MODELS.some((entry) => entry.value === model) || !model
+      ? CODEX_MODELS.map((entry) => ({ value: entry.value, label: entry.value }))
+      : [
+          ...CODEX_MODELS.map((entry) => ({ value: entry.value, label: entry.value })),
+          { value: model, label: model },
+        ];
+
   async function save(): Promise<void> {
     setIsSaving(true);
     try {
@@ -267,12 +285,23 @@ function BasePromptEditor({
             />
           </StackItem>
           <StackItem size="fill">
-            <TextInput
+            <Selector
               label="Model"
-              value={model}
-              onChange={(value) => setModel(value)}
+              value={model || null}
+              onChange={(value) => setModel(value ?? "")}
+              hasClear
               placeholder={`${defaults.model} (default)`}
-              description="Codex model id used for review runs."
+              description="Codex model used for review runs. Clear to use the platform default."
+              options={modelOptions}
+              renderOption={(option) => (
+                <SelectorOption
+                  label={option.label}
+                  description={
+                    CODEX_MODELS.find((entry) => entry.value === option.value)?.description ??
+                    "Custom model id saved earlier"
+                  }
+                />
+              )}
             />
           </StackItem>
         </HStack>
