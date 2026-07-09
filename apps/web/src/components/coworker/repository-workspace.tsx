@@ -3,12 +3,10 @@
 import { useState, type ReactElement } from "react";
 
 import { Button } from "@astryxdesign/core/Button";
-import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import {
   HStack,
   Layout,
-  LayoutContent,
   LayoutHeader,
   StackItem,
   VStack,
@@ -17,20 +15,32 @@ import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { PlusIcon } from "@heroicons/react/24/outline";
 
-import { RunsTableView } from "./runs-table";
+import IssuesBoard from "./issues-board";
+// Runs is the secondary tab. The repo-filtered RunsTableView lives on the
+// runs-table-page stack; on this branch the base RunsTable shows the run log.
+import RunsTable from "./runs-table";
 
-type ProjectView = "runs" | "issues";
+// Issue-centric: opening a repository lands on its issues board; runs are the
+// secondary execution log (see issue #19).
+type ProjectView = "issues" | "runs";
 
 type RepositoryWorkspaceProps = {
   // The repository's "owner/name" label. Runs are grouped by this in the run
   // view-model, so it doubles as the filter key for this project's runs.
   fullName: string;
+  // github_repository.id + the active organization — the board queries by these.
+  repositoryId: string;
+  organizationId: string;
 };
 
 const REVIEWER_PATH = "/app/reviewer";
 
-export default function RepositoryWorkspace({ fullName }: RepositoryWorkspaceProps): ReactElement {
-  const [view, setView] = useState<ProjectView>("runs");
+export default function RepositoryWorkspace({
+  fullName,
+  repositoryId,
+  organizationId,
+}: RepositoryWorkspaceProps): ReactElement {
+  const [view, setView] = useState<ProjectView>("issues");
 
   return (
     <Layout
@@ -46,7 +56,7 @@ export default function RepositoryWorkspace({ fullName }: RepositoryWorkspacePro
                   </Text>
                   <Heading level={1}>{fullName}</Heading>
                   <Text type="supporting" color="secondary">
-                    Code reviews today; issue work arrives with the coding agent.
+                    Issues grouped by pipeline stage. Runs are the execution log.
                   </Text>
                 </VStack>
               </StackItem>
@@ -59,23 +69,17 @@ export default function RepositoryWorkspace({ fullName }: RepositoryWorkspacePro
               />
             </HStack>
             <TabList value={view} onChange={(next) => setView(next as ProjectView)} size="sm">
-              <Tab value="runs" label="Runs" />
               <Tab value="issues" label="Issues" />
+              <Tab value="runs" label="Runs" />
             </TabList>
           </VStack>
         </LayoutHeader>
       }
       content={
-        view === "runs" ? (
-          <RunsTableView repoFilter={fullName} />
+        view === "issues" ? (
+          <IssuesBoard organizationId={organizationId} repositoryId={repositoryId} />
         ) : (
-          <LayoutContent role="main" isScrollable padding={4}>
-            <EmptyState
-              title="Issues arrive with the coding agent"
-              description="This is where the implementation worker's issue board will live — issues grouped by pipeline stage. The Reviewer runs on pull requests; the coding agent will run on issues."
-              headingLevel={2}
-            />
-          </LayoutContent>
+          <RunsTable />
         )
       }
     />

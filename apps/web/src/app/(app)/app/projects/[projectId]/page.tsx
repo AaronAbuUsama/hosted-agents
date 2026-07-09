@@ -40,7 +40,11 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
 
   return (
     <CoworkerPage variant="workspace" width="full">
-      <RepositoryWorkspaceClient fullName={repository.fullName} />
+      <RepositoryWorkspaceClient
+        fullName={repository.fullName}
+        repositoryId={repository.id}
+        organizationId={activeOrganization.id}
+      />
     </CoworkerPage>
   );
 }

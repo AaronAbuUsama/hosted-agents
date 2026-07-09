@@ -33,8 +33,18 @@ function RepositoryWorkspaceLoading(): ReactElement {
 
 export default function RepositoryWorkspaceClient({
   fullName,
+  repositoryId,
+  organizationId,
 }: {
   fullName: string;
+  repositoryId: string;
+  organizationId: string;
 }): ReactElement {
-  return <RepositoryWorkspace fullName={fullName} />;
+  return (
+    <RepositoryWorkspace
+      fullName={fullName}
+      repositoryId={repositoryId}
+      organizationId={organizationId}
+    />
+  );
 }
