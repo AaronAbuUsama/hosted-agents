@@ -15,7 +15,7 @@ import {
   agentRunArtifact,
   agentRunEvent,
 } from "@hosted-agents/db/schema/agent-runs";
-import { workerConfig, workerSkill } from "@hosted-agents/db/schema/worker-config";
+import { workerConfig, workerSkill, workerSkillFile } from "@hosted-agents/db/schema/worker-config";
 import {
   member,
   organization as authOrganization,
@@ -527,17 +527,47 @@ const updateWorkerConfigurationInput = z.object({
 
 const workerSkillNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
+// Bundle-relative markdown paths like "SKILL.md" or "checklists/security.md":
+// plain segments only, no leading slash, no "..", and a .md suffix.
+const workerSkillFilePathPattern =
+  /^[A-Za-z0-9][A-Za-z0-9._ -]*(\/[A-Za-z0-9][A-Za-z0-9._ -]*)*\.md$/i;
+
+const workerSkillFileInput = z.object({
+  path: z
+    .string()
+    .max(200)
+    .regex(
+      workerSkillFilePathPattern,
+      "Skill files must be bundle-relative markdown paths like SKILL.md or checklists/security.md.",
+    )
+    .refine((path) => !path.split("/").includes(".."), "Skill file paths cannot traverse upward."),
+  content: z.string().max(100_000),
+});
+
+const SKILL_ENTRY_FILE = "SKILL.md";
+
 const saveWorkerSkillInput = z.object({
   organizationId: z.string().optional(),
   name: z
     .string()
     .regex(
       workerSkillNamePattern,
-      "Skill names must be plain filenames like review-standards.md (letters, digits, dot, dash, underscore).",
+      "Skill names must be plain directory names like review-standards (letters, digits, dot, dash, underscore).",
     ),
   description: z.string().trim().max(300).optional(),
-  content: z.string().max(100_000),
   enabled: z.boolean().optional(),
+  files: z
+    .array(workerSkillFileInput)
+    .min(1)
+    .max(50)
+    .refine(
+      (files) => files.some((file) => file.path === SKILL_ENTRY_FILE),
+      `A skill bundle needs a ${SKILL_ENTRY_FILE} entry file.`,
+    )
+    .refine(
+      (files) => new Set(files.map((file) => file.path)).size === files.length,
+      "Skill bundle file paths must be unique.",
+    ),
 });
 
 const deleteWorkerSkillInput = z.object({
@@ -618,15 +648,59 @@ function mapWorkerConfig(row: typeof workerConfig.$inferSelect) {
   };
 }
 
-function mapWorkerSkill(row: typeof workerSkill.$inferSelect) {
+function mapWorkerSkill(
+  row: typeof workerSkill.$inferSelect,
+  files: (typeof workerSkillFile.$inferSelect)[],
+) {
   return {
     id: row.id,
     name: row.name,
     description: row.description,
-    content: row.content,
     enabled: row.enabled,
     updatedAt: row.updatedAt.toISOString(),
+    files: files.map((file) => ({
+      path: file.path,
+      content: file.content,
+      updatedAt: file.updatedAt.toISOString(),
+    })),
   };
+}
+
+// Entry file (SKILL.md) first, then the rest alphabetically — the order the
+// bundle reads in every surface.
+function sortSkillFiles<T extends { path: string }>(files: T[]): T[] {
+  return [...files].sort((left, right) => {
+    if (left.path === SKILL_ENTRY_FILE) return -1;
+    if (right.path === SKILL_ENTRY_FILE) return 1;
+    return left.path.localeCompare(right.path);
+  });
+}
+
+async function loadSkillFilesBySkillId(
+  skillIds: string[],
+): Promise<Map<string, (typeof workerSkillFile.$inferSelect)[]>> {
+  const bySkillId = new Map<string, (typeof workerSkillFile.$inferSelect)[]>();
+  if (skillIds.length === 0) {
+    return bySkillId;
+  }
+
+  const rows = await db
+    .select()
+    .from(workerSkillFile)
+    .where(inArray(workerSkillFile.skillId, skillIds));
+  for (const row of rows) {
+    const list = bySkillId.get(row.skillId);
+    if (list) {
+      list.push(row);
+    } else {
+      bySkillId.set(row.skillId, [row]);
+    }
+  }
+  for (const [skillId, list] of bySkillId) {
+    bySkillId.set(skillId, sortSkillFiles(list));
+  }
+
+  return bySkillId;
 }
 
 async function getConnectedOpenAICodexCredential(organizationId: string) {
@@ -772,10 +846,7 @@ export const appRouter = {
       db
         .select({ id: githubRepository.id })
         .from(githubRepository)
-        .innerJoin(
-          githubInstallation,
-          eq(githubRepository.installationId, githubInstallation.id),
-        )
+        .innerJoin(githubInstallation, eq(githubRepository.installationId, githubInstallation.id))
         .where(
           and(
             eq(githubInstallation.organizationId, activeOrganization.id),
@@ -1288,6 +1359,7 @@ export const appRouter = {
           ),
         )
         .orderBy(asc(workerSkill.name));
+      const filesBySkillId = await loadSkillFilesBySkillId(skills.map((skill) => skill.id));
 
       return {
         workerRole: CODE_REVIEW_WORKER_ROLE,
@@ -1296,7 +1368,7 @@ export const appRouter = {
           model: DEFAULT_CODEX_MODEL_ID,
         },
         config: config ? mapWorkerConfig(config) : null,
-        skills: skills.map(mapWorkerSkill),
+        skills: skills.map((skill) => mapWorkerSkill(skill, filesBySkillId.get(skill.id) ?? [])),
       };
     }),
   updateWorkerConfiguration: protectedProcedure
@@ -1322,8 +1394,7 @@ export const appRouter = {
         const [updated] = await db
           .update(workerConfig)
           .set({
-            displayName:
-              input.displayName === undefined ? existing.displayName : input.displayName,
+            displayName: input.displayName === undefined ? existing.displayName : input.displayName,
             model: input.model === undefined ? existing.model : input.model,
             instructions:
               input.instructions === undefined ? existing.instructions : input.instructions,
@@ -1377,43 +1448,48 @@ export const appRouter = {
         )
         .limit(1);
 
+      let skillRow: typeof workerSkill.$inferSelect | undefined;
       if (existing) {
         const [updated] = await db
           .update(workerSkill)
           .set({
             description: input.description === undefined ? existing.description : input.description,
-            content: input.content,
             enabled: input.enabled ?? existing.enabled,
             updatedAt: now,
           })
           .where(eq(workerSkill.id, existing.id))
           .returning();
-
-        if (!updated) {
-          throw new ORPCError("INTERNAL_SERVER_ERROR");
-        }
-
-        return mapWorkerSkill(updated);
+        skillRow = updated;
+      } else {
+        const [created] = await db
+          .insert(workerSkill)
+          .values({
+            id: crypto.randomUUID(),
+            organizationId,
+            workerRole: CODE_REVIEW_WORKER_ROLE,
+            name: input.name,
+            description: input.description ?? null,
+            enabled: input.enabled ?? true,
+          })
+          .returning();
+        skillRow = created;
       }
 
-      const [created] = await db
-        .insert(workerSkill)
-        .values({
-          id: crypto.randomUUID(),
-          organizationId,
-          workerRole: CODE_REVIEW_WORKER_ROLE,
-          name: input.name,
-          description: input.description ?? null,
-          content: input.content,
-          enabled: input.enabled ?? true,
-        })
-        .returning();
-
-      if (!created) {
+      if (!skillRow) {
         throw new ORPCError("INTERNAL_SERVER_ERROR");
       }
 
-      return mapWorkerSkill(created);
+      // Saving replaces the whole bundle: the payload is the bundle.
+      await db.delete(workerSkillFile).where(eq(workerSkillFile.skillId, skillRow.id));
+      const fileRows = sortSkillFiles(input.files).map((file) => ({
+        id: crypto.randomUUID(),
+        skillId: skillRow.id,
+        path: file.path,
+        content: file.content,
+      }));
+      const insertedFiles = await db.insert(workerSkillFile).values(fileRows).returning();
+
+      return mapWorkerSkill(skillRow, sortSkillFiles(insertedFiles));
     }),
   deleteWorkerSkill: protectedProcedure
     .input(deleteWorkerSkillInput)
@@ -1422,15 +1498,24 @@ export const appRouter = {
       const organizationId = await requireOrganizationId(context, input.organizationId);
       await assertCanManageOrganizationCredentials(userId, organizationId);
 
-      await db
-        .delete(workerSkill)
+      const [existing] = await db
+        .select()
+        .from(workerSkill)
         .where(
           and(
             eq(workerSkill.organizationId, organizationId),
             eq(workerSkill.workerRole, CODE_REVIEW_WORKER_ROLE),
             eq(workerSkill.name, input.name),
           ),
-        );
+        )
+        .limit(1);
+
+      if (existing) {
+        // Explicit file delete first: SQLite only honors the FK cascade when
+        // foreign_keys is on, which libsql does not guarantee.
+        await db.delete(workerSkillFile).where(eq(workerSkillFile.skillId, existing.id));
+        await db.delete(workerSkill).where(eq(workerSkill.id, existing.id));
+      }
 
       return { name: input.name, deleted: true };
     }),

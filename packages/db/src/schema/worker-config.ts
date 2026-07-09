@@ -31,9 +31,11 @@ export const workerConfig = sqliteTable(
   ],
 );
 
-// Named instruction files uploaded into the worker sandbox before a run
-// starts. The worker is told to read enabled skills alongside its base
-// instructions, so skill content shapes behavior without code changes.
+// A named skill bundle uploaded into the worker sandbox before a run starts.
+// A skill is a directory of markdown files with a SKILL.md entry file (the
+// same shape Flue's PackagedSkillDirectory and Eve's skills/ directory load),
+// so skill content shapes behavior without code changes. The bundle's files
+// live in worker_skill_file.
 export const workerSkill = sqliteTable(
   "worker_skill",
   {
@@ -44,7 +46,6 @@ export const workerSkill = sqliteTable(
     workerRole: text("worker_role").notNull(),
     name: text("name").notNull(),
     description: text("description"),
-    content: text("content").notNull(),
     enabled: integer("enabled", { mode: "boolean" }).default(true).notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
@@ -61,5 +62,31 @@ export const workerSkill = sqliteTable(
       table.name,
     ),
     index("worker_skill_organizationId_idx").on(table.organizationId),
+  ],
+);
+
+// One markdown file inside a skill bundle. `path` is relative to the bundle
+// root (e.g. "SKILL.md", "checklists/security.md"); every bundle has a
+// SKILL.md entry file, which the API enforces on save.
+export const workerSkillFile = sqliteTable(
+  "worker_skill_file",
+  {
+    id: text("id").primaryKey(),
+    skillId: text("skill_id")
+      .notNull()
+      .references(() => workerSkill.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    content: text("content").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("worker_skill_file_skill_path_idx").on(table.skillId, table.path),
+    index("worker_skill_file_skillId_idx").on(table.skillId),
   ],
 );

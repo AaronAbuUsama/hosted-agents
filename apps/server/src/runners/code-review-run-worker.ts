@@ -7,8 +7,8 @@ import {
   agentRun,
 } from "@hosted-agents/db/schema/agent-runs";
 import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
-import { workerConfig, workerSkill } from "@hosted-agents/db/schema/worker-config";
-import { and, asc, eq, isNull, lt, or } from "drizzle-orm";
+import { workerConfig, workerSkill, workerSkillFile } from "@hosted-agents/db/schema/worker-config";
+import { and, asc, eq, inArray, isNull, lt, or } from "drizzle-orm";
 
 import {
   appendAgentRunEvent,
@@ -422,9 +422,29 @@ export async function runNextQueuedCodeReview({
         ),
       )
       .orderBy(asc(workerSkill.name));
+    // A skill is a bundle of markdown files with a SKILL.md entry; load every
+    // file of every enabled bundle for the sandbox upload.
+    const skillFiles =
+      enabledSkills.length > 0
+        ? await database
+            .select()
+            .from(workerSkillFile)
+            .where(
+              inArray(
+                workerSkillFile.skillId,
+                enabledSkills.map((skill) => skill.id),
+              ),
+            )
+            .orderBy(asc(workerSkillFile.path))
+        : [];
+    const skillBundles = enabledSkills.map((skill) => ({
+      name: skill.name,
+      files: skillFiles
+        .filter((file) => file.skillId === skill.id)
+        .map((file) => ({ path: file.path, content: file.content })),
+    }));
 
-    const workerDisplayName =
-      configuration?.displayName?.trim() || metadata.workerDisplayName;
+    const workerDisplayName = configuration?.displayName?.trim() || metadata.workerDisplayName;
 
     await appendAgentRunEvent(database, {
       runId: run.id,
@@ -464,7 +484,7 @@ export async function runNextQueuedCodeReview({
       workerDisplayName,
       configuredModel: configuration?.model ?? undefined,
       configuredInstructions: configuration?.instructions ?? undefined,
-      skills: enabledSkills.map((skill) => ({ name: skill.name, content: skill.content })),
+      skills: skillBundles,
       providerCredentialId: run.providerCredentialId ?? undefined,
       githubInstallationId: metadata.githubInstallationId,
       githubRepositoryId: metadata.githubRepositoryId,

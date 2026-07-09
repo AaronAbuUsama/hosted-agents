@@ -104,7 +104,6 @@ const callAgentRunArtifacts = (userId: string) =>
     context: memberContext(userId),
   });
 
-
 async function createTables(testClient: TestClient) {
   await testClient.executeMultiple(`
     CREATE TABLE "user" (
@@ -263,8 +262,16 @@ async function createTables(testClient: TestClient) {
       "worker_role" text NOT NULL,
       "name" text NOT NULL,
       "description" text,
-      "content" text NOT NULL,
       "enabled" integer DEFAULT 1 NOT NULL,
+      "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+      "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+    );
+
+    CREATE TABLE "worker_skill_file" (
+      "id" text PRIMARY KEY,
+      "skill_id" text NOT NULL,
+      "path" text NOT NULL,
+      "content" text NOT NULL,
       "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
       "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
     );
@@ -1144,9 +1151,12 @@ describe("provider credential router procedures", () => {
       activeOrganizationId: "provider-connect-org",
     });
 
-    const pendingConnection = await createProcedureClient(appRouter.startOpenAICodexCredentialConnection, {
-      context,
-    })({});
+    const pendingConnection = await createProcedureClient(
+      appRouter.startOpenAICodexCredentialConnection,
+      {
+        context,
+      },
+    )({});
 
     expect(pendingConnection).toMatchObject({
       organizationId: "provider-connect-org",

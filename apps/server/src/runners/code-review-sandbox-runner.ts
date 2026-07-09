@@ -1,6 +1,14 @@
+// A skill bundle: a directory of markdown files with a SKILL.md entry file.
+// Mirrors Flue's PackagedSkillDirectory and Eve's skills/ directory layout,
+// so the shape survives the runtime migration.
+export type CodeReviewWorkerSkillFile = {
+  path: string;
+  content: string;
+};
+
 export type CodeReviewWorkerSkill = {
   name: string;
-  content: string;
+  files: CodeReviewWorkerSkillFile[];
 };
 
 export type CodeReviewSandboxRunInput = {

@@ -171,7 +171,7 @@ async function runFlueReview({
       `Read ../${REVIEW_CONTEXT_PATH} first, then inspect repository files as needed.`,
       ...(skillNames.length > 0
         ? [
-            `Then read every team skill file under ../${SKILLS_PATH}/ (${skillNames.join(", ")}) and apply them as review guidance.`,
+            `Then load every team skill under ../${SKILLS_PATH}/ (${skillNames.join(", ")}): each is a directory whose SKILL.md entry describes the skill and references any sibling files. Apply them as review guidance.`,
           ]
         : []),
       "Return only supported findings. Do not invent files, tests, or execution proof.",
@@ -401,16 +401,29 @@ export class DaytonaCodeReviewSandboxRunner implements CodeReviewSandboxRunner {
       });
       await sandbox.fs.uploadFile(Buffer.from(reviewContext, "utf8"), REVIEW_CONTEXT_PATH);
 
+      // FLUE ADAPTER — runtime skill registration seam.
+      // Writes each enabled skill bundle into the sandbox skills dir as
+      // skills/<name>/<file path> (SKILL.md entry + sibling markdown files)
+      // and the instructions line above points the agent at it. This is the
+      // only place that binds bundles to the Flue runtime; when the runner
+      // moves to Eve (eve.dev), swap this block to write the same files into
+      // Eve's skills/ directory — the bundle shape maps 1:1, so nothing
+      // outside apps/server/src/runners should change.
       const skills = input.skills ?? [];
       if (skills.length > 0) {
-        await emitStage("skills_uploading", "Uploading worker skills into sandbox", {
-          skills: skills.map((skill) => skill.name),
+        await emitStage("skills_uploading", "Uploading worker skill bundles into sandbox", {
+          skills: skills.map((skill) => ({
+            name: skill.name,
+            files: skill.files.map((file) => file.path),
+          })),
         });
         for (const skill of skills) {
-          await sandbox.fs.uploadFile(
-            Buffer.from(skill.content, "utf8"),
-            `${SKILLS_PATH}/${skill.name}`,
-          );
+          for (const file of skill.files) {
+            await sandbox.fs.uploadFile(
+              Buffer.from(file.content, "utf8"),
+              `${SKILLS_PATH}/${skill.name}/${file.path}`,
+            );
+          }
         }
       }
 
