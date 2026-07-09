@@ -168,9 +168,11 @@ async function fetchGitHubJson<T>(
   {
     token,
     method = "GET",
+    body,
   }: {
     token: string;
     method?: "GET" | "POST";
+    body?: unknown;
   },
 ) {
   const response = await fetch(`${GITHUB_API_BASE_URL}${path}`, {
@@ -180,7 +182,9 @@ async function fetchGitHubJson<T>(
       authorization: `Bearer ${token}`,
       "user-agent": "hosted-agents-local",
       "x-github-api-version": GITHUB_API_VERSION,
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
     },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 
   if (!response.ok) {
@@ -269,6 +273,168 @@ export async function getGitHubPullRequest(
   );
 
   return mapPullRequestSummary(response);
+}
+
+type GitHubIssueLabel = { name?: string | null } | string;
+
+type GitHubIssueResponse = {
+  number: number;
+  node_id?: string | null;
+  id?: number | null;
+  title?: string | null;
+  body?: string | null;
+  state?: string | null;
+  html_url?: string | null;
+  comments?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  user?: { login?: string | null; avatar_url?: string | null } | null;
+  labels?: GitHubIssueLabel[] | null;
+  // Present only when the "issue" is actually a pull request.
+  pull_request?: unknown;
+};
+
+export type GitHubIssueSummary = {
+  number: number;
+  nodeId: string | null;
+  githubId: string | null;
+  title: string;
+  body: string | null;
+  state: "open" | "closed";
+  htmlUrl: string | null;
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  labels: string[];
+  commentCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+function issueLabelNames(labels: GitHubIssueResponse["labels"]): string[] {
+  if (!labels) {
+    return [];
+  }
+
+  return labels
+    .map((label) => (typeof label === "string" ? label : (label?.name ?? null)))
+    .filter((name): name is string => Boolean(name));
+}
+
+function mapIssueSummary(issue: GitHubIssueResponse): GitHubIssueSummary {
+  return {
+    number: issue.number,
+    nodeId: issue.node_id ?? null,
+    githubId: issue.id != null ? String(issue.id) : null,
+    title: issue.title ?? `Issue #${issue.number}`,
+    body: issue.body ?? null,
+    state: issue.state === "closed" ? "closed" : "open",
+    htmlUrl: issue.html_url ?? null,
+    authorLogin: issue.user?.login ?? null,
+    authorAvatarUrl: issue.user?.avatar_url ?? null,
+    labels: issueLabelNames(issue.labels),
+    commentCount: issue.comments ?? 0,
+    createdAt: issue.created_at ?? null,
+    updatedAt: issue.updated_at ?? null,
+  };
+}
+
+// GitHub shares one number space between issues and pull requests, and the issues
+// endpoint returns both; a `pull_request` field marks the PRs, which we exclude.
+function isPullRequest(issue: GitHubIssueResponse): boolean {
+  return issue.pull_request != null;
+}
+
+export async function listGitHubIssues(
+  installationId: string,
+  owner: string,
+  repo: string,
+): Promise<GitHubIssueSummary[]> {
+  const token = await createGitHubInstallationAccessToken(installationId);
+  const response = await fetchGitHubJson<GitHubIssueResponse[]>(
+    `/repos/${owner}/${repo}/issues?state=all&per_page=100&sort=updated&direction=desc`,
+    { token },
+  );
+
+  return response.filter((issue) => !isPullRequest(issue)).map(mapIssueSummary);
+}
+
+export async function getGitHubIssue(
+  installationId: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<GitHubIssueSummary> {
+  const token = await createGitHubInstallationAccessToken(installationId);
+  const response = await fetchGitHubJson<GitHubIssueResponse>(
+    `/repos/${owner}/${repo}/issues/${issueNumber}`,
+    { token },
+  );
+
+  return mapIssueSummary(response);
+}
+
+type GitHubIssueCommentResponse = {
+  id?: number | null;
+  body?: string | null;
+  html_url?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  user?: { login?: string | null; avatar_url?: string | null } | null;
+};
+
+export type GitHubIssueCommentSummary = {
+  githubId: string | null;
+  body: string;
+  htmlUrl: string | null;
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+function mapIssueCommentSummary(
+  comment: GitHubIssueCommentResponse,
+): GitHubIssueCommentSummary {
+  return {
+    githubId: comment.id != null ? String(comment.id) : null,
+    body: comment.body ?? "",
+    htmlUrl: comment.html_url ?? null,
+    authorLogin: comment.user?.login ?? null,
+    authorAvatarUrl: comment.user?.avatar_url ?? null,
+    createdAt: comment.created_at ?? null,
+    updatedAt: comment.updated_at ?? null,
+  };
+}
+
+export async function listGitHubIssueComments(
+  installationId: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<GitHubIssueCommentSummary[]> {
+  const token = await createGitHubInstallationAccessToken(installationId);
+  const response = await fetchGitHubJson<GitHubIssueCommentResponse[]>(
+    `/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+    { token },
+  );
+
+  return response.map(mapIssueCommentSummary);
+}
+
+export async function createGitHubIssueComment(
+  installationId: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  body: string,
+): Promise<GitHubIssueCommentSummary> {
+  const token = await createGitHubInstallationAccessToken(installationId);
+  const response = await fetchGitHubJson<GitHubIssueCommentResponse>(
+    `/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    { method: "POST", token, body: { body } },
+  );
+
+  return mapIssueCommentSummary(response);
 }
 
 async function listInstallationRepositories(installationId: string) {
