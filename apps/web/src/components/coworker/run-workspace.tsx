@@ -137,6 +137,7 @@ export default function RunWorkspace({
               rows={transcriptRows}
               eventsState={eventsState}
               coworkerName={run.coworkerName}
+              isRunActive={run.status === "Running" || run.status === "Queued"}
             />
           </VStack>
         </LayoutContent>
@@ -291,10 +292,12 @@ function TranscriptContent({
   rows,
   eventsState,
   coworkerName,
+  isRunActive,
 }: {
   rows: RunTranscriptRow[];
   eventsState: CollectionState;
   coworkerName: string;
+  isRunActive: boolean;
 }): ReactElement {
   if (eventsState === "error") {
     return (
@@ -327,14 +330,34 @@ function TranscriptContent({
     );
   }
 
+  // Join tool results back onto the calls that produced them so each call row
+  // can show real status and output; matched results then collapse into the
+  // call row instead of rendering as a second standalone message.
+  const resultsByCallId = new Map<string, RunTranscriptRow>();
+  for (const row of rows) {
+    if (row.role === "tool" && row.toolCallId) {
+      resultsByCallId.set(row.toolCallId, row);
+    }
+  }
+  const callIds = new Set(rows.flatMap((row) => row.toolCalls.map((call) => call.id)));
+  const visibleRows = rows.filter(
+    (row) => !(row.role === "tool" && row.toolCallId && callIds.has(row.toolCallId)),
+  );
+
   // Tool-call targets (e.g. a long `git diff <sha>..HEAD`) and code blocks can
   // exceed the column; clip at the column edge so they scroll/wrap inside their
   // own box instead of widening the whole page.
   return (
     <VStack gap={4} style={transcriptClip}>
       <ChatMessageList density="compact" gap={4}>
-        {rows.map((row) => (
-          <TranscriptMessage key={row.id} row={row} coworkerName={coworkerName} />
+        {visibleRows.map((row) => (
+          <TranscriptMessage
+            key={row.id}
+            row={row}
+            coworkerName={coworkerName}
+            resultsByCallId={resultsByCallId}
+            isRunActive={isRunActive}
+          />
         ))}
       </ChatMessageList>
     </VStack>
@@ -344,9 +367,13 @@ function TranscriptContent({
 function TranscriptMessage({
   row,
   coworkerName,
+  resultsByCallId,
+  isRunActive,
 }: {
   row: RunTranscriptRow;
   coworkerName: string;
+  resultsByCallId: Map<string, RunTranscriptRow>;
+  isRunActive: boolean;
 }): ReactElement {
   if (row.role === "tool") {
     return (
@@ -405,29 +432,111 @@ function TranscriptMessage({
         </ChatMessageBubble>
       ) : null}
       {row.toolCalls.length > 0 ? (
-        <ChatToolCalls calls={row.toolCalls.map(mapTranscriptToolCall)} defaultIsExpanded />
+        <ChatToolCalls
+          calls={row.toolCalls.map((call) =>
+            mapTranscriptToolCall(call, resultsByCallId.get(call.id), isRunActive),
+          )}
+          defaultIsExpanded
+        />
       ) : null}
     </ChatMessage>
   );
 }
 
-function mapTranscriptToolCall(toolCall: RunTranscriptToolCallRow): ChatToolCallItem {
+// Cap the joined tool output so one huge `read` result cannot make the
+// expanded call row unscrollably tall.
+const TOOL_OUTPUT_PREVIEW_LIMIT = 6000;
+
+function mapTranscriptToolCall(
+  toolCall: RunTranscriptToolCallRow,
+  result: RunTranscriptRow | undefined,
+  isRunActive: boolean,
+): ChatToolCallItem {
+  const input = recordFromUnknown(toolCall.input);
+  const hasArguments = Object.keys(input).length > 0;
+  const output = result?.content.trim() ?? "";
+
   return {
     key: toolCall.id,
     name: toolCall.name,
-    status: "complete",
-    target: targetForToolInput(toolCall.input),
-    resultDetail: (
-      <CodeBlock
-        code={formatUnknown(toolCall.input)}
-        language="json"
-        title="Arguments"
-        hasCopyButton
-        isWrapped
-        width="100%"
-      />
-    ),
+    status: result ? (result.isError ? "error" : "complete") : isRunActive ? "running" : "pending",
+    target: targetForToolCall(toolCall.name, input),
+    errorMessage: result?.isError
+      ? (output.split("\n")[0] || "Tool call failed.").slice(0, 200)
+      : undefined,
+    resultDetail:
+      hasArguments || output ? (
+        <VStack gap={2}>
+          {hasArguments ? (
+            <CodeBlock
+              code={formatUnknown(toolCall.input)}
+              language="json"
+              title="Arguments"
+              hasCopyButton
+              isWrapped
+              width="100%"
+            />
+          ) : null}
+          {output ? (
+            <CodeBlock
+              code={
+                output.length > TOOL_OUTPUT_PREVIEW_LIMIT
+                  ? `${output.slice(0, TOOL_OUTPUT_PREVIEW_LIMIT)}\n… (truncated)`
+                  : output
+              }
+              language={codeLanguage(output)}
+              title={result?.isError ? "Error output" : "Output"}
+              hasCopyButton
+              isWrapped
+              width="100%"
+            />
+          ) : null}
+        </VStack>
+      ) : undefined,
   };
+}
+
+// Real tool names observed in run events: the Flue runtime's file/shell tools
+// (read, write, bash, grep, glob, activate_skill, finish) plus the review
+// workflow's custom GitHub tools. Unknown names fall back to the generic
+// input-key scan. Expect small changes here after the Eve runtime migration.
+function targetForToolCall(name: string, input: Record<string, unknown>): string | undefined {
+  switch (name) {
+    case "read":
+    case "write":
+      return stringField(input, "path");
+    case "bash":
+      return stringField(input, "command");
+    case "grep":
+    case "glob": {
+      const pattern = stringField(input, "pattern");
+      const path = stringField(input, "path");
+      return pattern && path ? `${pattern} in ${path}` : (pattern ?? path);
+    }
+    case "activate_skill":
+      return stringField(input, "name");
+    case "submit_pull_request_review":
+      return stringField(input, "event");
+    case "complete_review_check":
+      return stringField(input, "conclusion");
+    case "finish": {
+      const summary = stringField(input, "summary");
+      return summary && summary.length > 120 ? `${summary.slice(0, 120)}…` : summary;
+    }
+    default:
+      return targetForToolInput(input);
+  }
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function targetForToolInput(input: unknown): string | undefined {
