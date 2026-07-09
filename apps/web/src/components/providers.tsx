@@ -11,28 +11,22 @@ import Link from "next/link";
 import ToastBridgeMount from "@/components/toast-bridge-mount";
 import { queryClient } from "@/utils/orpc";
 
-import { ThemeProvider } from "./theme-provider";
-
+// The app is permanently dark: the theme is set statically via `data-theme` on
+// <html> (see layout.tsx) and Astryx renders `mode="dark"`. next-themes used to
+// wrap this, but it was configured for `attribute="class"` — a class nothing
+// reads — so it only added a post-mount hydration mutation. Removed.
 export default function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider
-      attribute="class"
-      defaultTheme="dark"
-      forcedTheme="dark"
-      enableSystem={false}
-      disableTransitionOnChange
-    >
-      <AstryxTheme theme={neutralTheme} mode="dark">
-        <LayerProvider>
-          <LinkProvider component={Link}>
-            <QueryClientProvider client={queryClient}>
-              {children}
-              <ReactQueryDevtools />
-              <ToastBridgeMount />
-            </QueryClientProvider>
-          </LinkProvider>
-        </LayerProvider>
-      </AstryxTheme>
-    </ThemeProvider>
+    <AstryxTheme theme={neutralTheme} mode="dark">
+      <LayerProvider>
+        <LinkProvider component={Link}>
+          <QueryClientProvider client={queryClient}>
+            {children}
+            <ReactQueryDevtools />
+            <ToastBridgeMount />
+          </QueryClientProvider>
+        </LinkProvider>
+      </LayerProvider>
+    </AstryxTheme>
   );
 }
