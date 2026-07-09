@@ -57,9 +57,16 @@ export type StageInput = {
   blocked?: boolean;
 };
 
+// Match labels tolerant of separator + case, so the product's "ready for agent"
+// and a tracker's "ready-for-agent" / "ready_for_agent" all count as the same
+// gating label (the exact string is configurable per #19).
+function normalizeLabel(label: string): string {
+  return label.trim().toLowerCase().replace(/[\s_-]+/g, " ");
+}
+
 function hasLabel(labels: readonly string[], target: string): boolean {
-  const normalized = target.trim().toLowerCase();
-  return labels.some((label) => label.trim().toLowerCase() === normalized);
+  const normalized = normalizeLabel(target);
+  return labels.some((label) => normalizeLabel(label) === normalized);
 }
 
 // Order matters: Failed / Blocked wins from any stage, then terminal PR states,

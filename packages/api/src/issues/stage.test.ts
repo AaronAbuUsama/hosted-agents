@@ -72,6 +72,11 @@ describe("deriveStage", () => {
     expect(deriveStage(input({ labels: ["  Ready For Agent "] }))).toBe("ready_for_agent");
   });
 
+  test("label matching is separator-insensitive (hyphen / underscore)", () => {
+    expect(deriveStage(input({ labels: ["ready-for-agent"] }))).toBe("ready_for_agent");
+    expect(deriveStage(input({ labels: ["ready_for_agent"] }))).toBe("ready_for_agent");
+  });
+
   test("Merged wins over an open-PR signal when the PR is merged", () => {
     // closed+merged PR must resolve to Merged, not In PR.
     expect(
