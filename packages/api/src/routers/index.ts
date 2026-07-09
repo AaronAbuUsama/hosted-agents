@@ -35,7 +35,12 @@ import {
   isGitHubAppConfigured,
   listAvailableGitHubInstallations,
   listOpenGitHubPullRequests,
+  listGitHubIssues,
+  getGitHubIssue,
+  listGitHubIssueComments,
+  createGitHubIssueComment,
 } from "../github-app";
+import { listBoard, type GitHubIssuesClient } from "../issues/service";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
 
@@ -584,6 +589,14 @@ const setRepositorySelectedInput = z.object({
 const repositoryScopedInput = z.object({
   organizationId: z.string().optional(),
   repositoryId: z.string().min(1),
+});
+
+const issueScopedInput = repositoryScopedInput.extend({
+  issueNumber: z.number().int().positive(),
+});
+
+const postIssueCommentInput = issueScopedInput.extend({
+  body: z.string().min(1),
 });
 
 const triggerCodeReviewRunInput = z.object({
@@ -1568,6 +1581,107 @@ export const appRouter = {
       } catch (error) {
         throw new ORPCError("BAD_REQUEST", {
           message: error instanceof Error ? error.message : "Failed to list open pull requests.",
+        });
+      }
+    }),
+  listRepositoryIssues: protectedProcedure
+    .input(repositoryScopedInput)
+    .handler(async ({ input, context }) => {
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      const { repository, installation } = await requireOrganizationRepository(
+        organizationId,
+        input.repositoryId,
+      );
+
+      if (installation.status !== "connected") {
+        throw new ORPCError("BAD_REQUEST", {
+          message: `GitHub installation is ${installation.status}.`,
+        });
+      }
+
+      const client: GitHubIssuesClient = {
+        listIssues: listGitHubIssues,
+        getIssue: getGitHubIssue,
+      };
+
+      try {
+        return await listBoard(client, {
+          installationId: installation.installationId,
+          owner: repository.owner,
+          repo: repository.name,
+        });
+      } catch (error) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: error instanceof Error ? error.message : "Failed to list repository issues.",
+        });
+      }
+    }),
+  getRepositoryIssue: protectedProcedure
+    .input(issueScopedInput)
+    .handler(async ({ input, context }) => {
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      const { repository, installation } = await requireOrganizationRepository(
+        organizationId,
+        input.repositoryId,
+      );
+
+      if (installation.status !== "connected") {
+        throw new ORPCError("BAD_REQUEST", {
+          message: `GitHub installation is ${installation.status}.`,
+        });
+      }
+
+      try {
+        const [issue, comments] = await Promise.all([
+          getGitHubIssue(
+            installation.installationId,
+            repository.owner,
+            repository.name,
+            input.issueNumber,
+          ),
+          listGitHubIssueComments(
+            installation.installationId,
+            repository.owner,
+            repository.name,
+            input.issueNumber,
+          ),
+        ]);
+        return { issue, comments };
+      } catch (error) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: error instanceof Error ? error.message : "Failed to load the issue.",
+        });
+      }
+    }),
+  postIssueComment: protectedProcedure
+    .input(postIssueCommentInput)
+    .handler(async ({ input, context }) => {
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      const { repository, installation } = await requireOrganizationRepository(
+        organizationId,
+        input.repositoryId,
+      );
+
+      if (installation.status !== "connected") {
+        throw new ORPCError("BAD_REQUEST", {
+          message: `GitHub installation is ${installation.status}.`,
+        });
+      }
+
+      // Phase 1 posts through the installation (the app/bot identity). Posting as
+      // the member needs user-scoped GitHub auth — the identity follow-up tracked
+      // in #19; true authorship is recorded on our side.
+      try {
+        return await createGitHubIssueComment(
+          installation.installationId,
+          repository.owner,
+          repository.name,
+          input.issueNumber,
+          input.body,
+        );
+      } catch (error) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: error instanceof Error ? error.message : "Failed to post the comment.",
         });
       }
     }),
