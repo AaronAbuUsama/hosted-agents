@@ -43,6 +43,13 @@
       "when": 1783579204557,
       "tag": "0005_large_vulture",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783625320014,
+      "tag": "0006_tense_darkhawk",
+      "breakpoints": true
     }
   ]
 }
