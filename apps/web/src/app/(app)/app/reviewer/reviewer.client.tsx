@@ -19,7 +19,7 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { notify } from "@/lib/toast-bridge";
 
 import { client } from "@/utils/orpc";
 
@@ -239,9 +239,9 @@ function BasePromptEditor({
         instructions: instructions.trim() || null,
       });
       onSaved(saved);
-      toast.success("Reviewer configuration saved. New runs pick it up immediately.");
+      notify({ body: "Reviewer configuration saved. New runs pick it up immediately." });
     } catch (error) {
-      toast.error(errorText(error));
+      notify({ body: errorText(error), type: "error" });
     } finally {
       setIsSaving(false);
     }
@@ -324,9 +324,9 @@ function SkillEditor({
         enabled,
       });
       onSaved(saved);
-      toast.success(`Skill ${skill.name} saved.`);
+      notify({ body: `Skill ${skill.name} saved.` });
     } catch (error) {
-      toast.error(errorText(error));
+      notify({ body: errorText(error), type: "error" });
     } finally {
       setIsSaving(false);
     }
@@ -336,10 +336,10 @@ function SkillEditor({
     setIsDeleting(true);
     try {
       await client.deleteWorkerSkill({ name: skill.name });
-      toast.success(`Skill ${skill.name} deleted.`);
+      notify({ body: `Skill ${skill.name} deleted.` });
       onDeleted(skill.name);
     } catch (error) {
-      toast.error(errorText(error));
+      notify({ body: errorText(error), type: "error" });
       setIsDeleting(false);
     }
   }
@@ -419,10 +419,10 @@ function NewSkillEditor({
         content,
         enabled: true,
       });
-      toast.success(`Skill ${created.name} created.`);
+      notify({ body: `Skill ${created.name} created.` });
       onCreated(created);
     } catch (error) {
-      toast.error(errorText(error));
+      notify({ body: errorText(error), type: "error" });
     } finally {
       setIsSaving(false);
     }
@@ -519,11 +519,11 @@ function RequestReviewDialog({
         repositoryId,
         pullRequestNumber: selectedNumber,
       });
-      toast.success(`Review queued for PR #${selectedNumber}.`);
+      notify({ body: `Review queued for PR #${selectedNumber}.` });
       onOpenChange(false);
       router.push(`/app/runs/${run.id}`);
     } catch (error) {
-      toast.error(errorText(error));
+      notify({ body: errorText(error), type: "error" });
       setIsTriggering(false);
     }
   }
