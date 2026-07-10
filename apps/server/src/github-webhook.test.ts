@@ -17,6 +17,9 @@ process.env.BETTER_AUTH_SECRET = "test-better-auth-secret-32-bytes";
 process.env.BETTER_AUTH_URL = "http://localhost:3000";
 process.env.CORS_ORIGIN = "http://localhost:3000";
 process.env.NODE_ENV = "test";
+// The Coder app shares this webhook channel; admission maps an installation's
+// recorded app slug to its worker role, so configure the Coder app slug here.
+process.env.GITHUB_CODER_APP_SLUG = "coder-app";
 
 // github-webhook creates the production db/env singletons at module load, so this
 // test imports it only after installing hermetic environment variables above.
@@ -32,6 +35,8 @@ type PullRequestWebhookDelivery = Extract<FlueGitHubWebhookDelivery, { name: "pu
 const WEBHOOK_SECRET = "slice-1-webhook-secret";
 const INSTALLATION_ID = 123_456;
 const GITHUB_REPOSITORY_ID = 987_654;
+const CODER_INSTALLATION_ID = 654_321;
+const CODER_GITHUB_REPOSITORY_ID = 456_789;
 const ADMITTED_PULL_REQUEST_ACTIONS = [
   "opened",
   "reopened",
@@ -288,6 +293,37 @@ async function seedLinkedPullRequestTarget(database: TestDatabase) {
   });
 }
 
+// Seeds the same repository linked through the Coder app's installation (its
+// app slug is GITHUB_CODER_APP_SLUG), so a pull_request delivery arrives from an
+// installation whose worker role is implementation rather than code_review.
+async function seedCoderInstallationTarget(database: TestDatabase) {
+  await database.insert(schema.githubInstallation).values({
+    id: "installation-record-coder",
+    organizationId: "org-1",
+    installationId: String(CODER_INSTALLATION_ID),
+    appSlug: "coder-app",
+    accountId: "111",
+    accountLogin: "octo-org",
+    accountType: "Organization",
+    repositorySelection: "selected",
+    status: "connected",
+    installedByUserId: "user-1",
+  });
+
+  await database.insert(schema.githubRepository).values({
+    id: "repository-record-coder",
+    installationId: "installation-record-coder",
+    githubRepositoryId: String(CODER_GITHUB_REPOSITORY_ID),
+    owner: "octo-org",
+    name: "widgets",
+    fullName: "octo-org/widgets",
+    htmlUrl: "https://github.com/octo-org/widgets",
+    defaultBranch: "main",
+    private: false,
+    selected: true,
+  });
+}
+
 function createWebhookApp(database: TestDatabase) {
   const channel = createGitHubWebhookChannel({
     database,
@@ -374,6 +410,22 @@ function pullRequestPayload(action: string) {
         ref: "feature/slice-1",
         sha: "head-sha-456",
       },
+    },
+  };
+}
+
+function coderPullRequestPayload(action: string) {
+  return {
+    ...pullRequestPayload(action),
+    installation: { id: CODER_INSTALLATION_ID },
+    repository: {
+      id: CODER_GITHUB_REPOSITORY_ID,
+      full_name: "octo-org/widgets",
+      owner: { login: "octo-org" },
+      name: "widgets",
+      html_url: "https://github.com/octo-org/widgets",
+      private: false,
+      default_branch: "main",
     },
   };
 }
@@ -586,6 +638,49 @@ describe("GitHub webhook admission", () => {
       expect(delivery).toMatchObject({
         id: deliveryId,
         status: "ignored:installation_not_connected",
+        agentRunId: null,
+        reviewRunId: null,
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("ignores a pull_request delivery from the Coder app installation without creating a review run", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      const app = createWebhookApp(database);
+      const deliveryId = "delivery-coder-app-installation";
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId,
+        payload: coderPullRequestPayload("opened"),
+      });
+
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        ok: true,
+        accepted: false,
+        duplicate: false,
+        event: "pull_request",
+        action: "opened",
+        deliveryId,
+        reason: "installation_app_not_reviewer",
+      });
+      // No review run is queued for the Coder app's copy of the delivery.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+      expect(delivery).toMatchObject({
+        id: deliveryId,
+        status: "ignored:installation_app_not_reviewer",
         agentRunId: null,
         reviewRunId: null,
       });

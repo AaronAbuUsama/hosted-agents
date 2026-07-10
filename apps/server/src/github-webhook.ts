@@ -1,5 +1,10 @@
+import { resolveGitHubAppWorkerRole } from "@hosted-agents/api/github-app";
 import { db } from "@hosted-agents/db";
-import { agentRun, agentRunEvent } from "@hosted-agents/db/schema/agent-runs";
+import {
+  agentRun,
+  agentRunEvent,
+  IMPLEMENTATION_WORKER_ROLE,
+} from "@hosted-agents/db/schema/agent-runs";
 import {
   githubInstallation,
   githubRepository,
@@ -310,6 +315,20 @@ export async function admitGitHubWebhookDelivery(
         action,
         deliveryId: delivery.deliveryId,
         reason: "installation_not_linked",
+      });
+    }
+
+    // The Coder app is subscribed to pull_request events too, so its installation
+    // delivers the same opened/synchronize events to this channel with a distinct
+    // delivery id. Only the reviewer app's installation triggers a review run;
+    // admitting the Coder app's copy would double-review every pull request.
+    if (resolveGitHubAppWorkerRole(installation.appSlug) === IMPLEMENTATION_WORKER_ROLE) {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_app_not_reviewer");
+      return ignoredDelivery({
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        reason: "installation_app_not_reviewer",
       });
     }
 
