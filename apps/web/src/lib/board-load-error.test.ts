@@ -28,6 +28,21 @@ describe("mapBoardLoadError", () => {
     });
   });
 
+  test("maps the API's missing-Issues-permission error (silent 200-with-only-PRs) to the CTA", () => {
+    // The message packages/api throws from listGitHubIssues when the installation
+    // token lacks issues:read but has pull_requests:read — the documented silent
+    // failure. It must land on the same named cause + fix CTA as a live 403.
+    const content = mapBoardLoadError(
+      new Error(
+        "Resource not accessible by integration: the GitHub App installation is missing Issues (read) access. Grant the app Issues access on the installation, then reload the board.",
+      ),
+      { installationSettingsUrl: "https://github.com/settings/installations/7" },
+    );
+
+    expect(content.title).toBe("This installation doesn't have Issues access");
+    expect(content.cta?.href).toBe("https://github.com/settings/installations/7");
+  });
+
   test("matches the forbidden message case-insensitively regardless of surrounding text", () => {
     const content = mapBoardLoadError(new Error("resource not accessible by integration"), {
       installationSettingsUrl: "https://github.com/settings/installations/7",
