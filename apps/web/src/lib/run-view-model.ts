@@ -173,6 +173,18 @@ export function mapAgentRunToRunRow(run: AgentRunApiRecord): RunViewModelRow {
   };
 }
 
+// A project's Runs tab must show only that project's runs. Runs are grouped in
+// the view model by their "owner/name" repository label (see `repositoryLabel`),
+// which is the same value a linked repository carries as its `fullName`. Scoping
+// a project's runs is therefore an exact match on that group key, so one
+// project's board never bleeds another project's runs (spec #19, story 27).
+export function filterRunsByRepository(
+  rows: RunViewModelRow[],
+  repositoryFullName: string,
+): RunViewModelRow[] {
+  return rows.filter((row) => row.repo === repositoryFullName);
+}
+
 export function mapAgentRunArtifactToArtifactRow(
   artifact: AgentRunArtifactApiRecord,
 ): RunArtifactViewRow {
