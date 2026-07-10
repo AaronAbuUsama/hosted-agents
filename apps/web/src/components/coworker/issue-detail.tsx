@@ -28,7 +28,6 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Token } from "@astryxdesign/core/Token";
-import type { IssueStage } from "@hosted-agents/api/issues/stage";
 import {
   ArrowLeftIcon,
   ArrowTopRightOnSquareIcon,
@@ -39,11 +38,13 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 
 import {
   classifyIssueAuthor,
+  createPostCommentHandlers,
   formatIssueDate,
   issueAuthorDisplayName,
   issueClaimable,
-  issueStage,
+  issueStageDotVariant,
   issueStageLabel,
+  normalizeCommentBody,
 } from "@/lib/issue-detail-view-model";
 import { client, orpc } from "@/utils/orpc";
 
@@ -61,15 +62,6 @@ type IssueDetailProps = {
 type RepositoryIssue = Awaited<ReturnType<typeof client.getRepositoryIssue>>;
 type IssueSummary = RepositoryIssue["issue"];
 type IssueComment = RepositoryIssue["comments"][number];
-
-const stageDotVariants: Record<IssueStage, "neutral" | "accent" | "warning" | "success"> = {
-  backlog: "neutral",
-  ready_for_agent: "accent",
-  executing: "warning",
-  in_pr: "accent",
-  merged: "success",
-  failed_blocked: "warning",
-};
 
 const contentStyle: CSSProperties = {
   minWidth: 0,
@@ -112,7 +104,7 @@ function IssueMetadata({
       <VStack gap={2}>
         <Text type="label">Stage</Text>
         <HStack gap={2} vAlign="center">
-          <StatusDot variant={stageDotVariants[issueStage(issue)]} label={issueStageLabel(issue)} />
+          <StatusDot variant={issueStageDotVariant(issue)} label={issueStageLabel(issue)} />
           <Text>{issueStageLabel(issue)}</Text>
         </HStack>
       </VStack>
@@ -190,20 +182,14 @@ export default function IssueDetail({
   const issueQuery = useQuery(orpc.getRepositoryIssue.queryOptions({ input }));
 
   const postComment = useMutation(
-    orpc.postIssueComment.mutationOptions({
-      onSuccess: async () => {
-        setDraft("");
+    orpc.postIssueComment.mutationOptions(
+      createPostCommentHandlers({
+        setDraft,
         // Re-read the thread so the confirmed comment lands in order (story 23).
-        await issueQuery.refetch();
-        showToast({ body: "Comment posted to GitHub." });
-      },
-      onError: (error) => {
-        showToast({
-          body: error instanceof Error ? error.message : "Couldn't post the comment.",
-          type: "error",
-        });
-      },
-    }),
+        refetch: () => issueQuery.refetch(),
+        showToast,
+      }),
+    ),
   );
 
   if (issueQuery.isLoading) {
@@ -257,11 +243,11 @@ export default function IssueDetail({
   const { issue, comments } = issueQuery.data;
   const stageLabel = issueStageLabel(issue);
   const authorName = issueAuthorDisplayName(issue.authorLogin);
-  const canPost = draft.trim().length > 0;
+  const canPost = normalizeCommentBody(draft) !== null;
   const claimable = issueClaimable(issue);
 
   async function submitComment(): Promise<void> {
-    const body = draft.trim();
+    const body = normalizeCommentBody(draft);
     if (!body) {
       return;
     }
@@ -293,7 +279,7 @@ export default function IssueDetail({
                 <Text type="supporting" color="secondary" hasTabularNumbers>
                   #{issue.number}
                 </Text>
-                <StatusDot variant={stageDotVariants[issueStage(issue)]} label={stageLabel} />
+                <StatusDot variant={issueStageDotVariant(issue)} label={stageLabel} />
                 <Text type="supporting" color="secondary">
                   {stageLabel}
                 </Text>

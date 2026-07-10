@@ -4,13 +4,18 @@ import { describe, expect, test } from "bun:test";
 
 import {
   classifyIssueAuthor,
+  createPostCommentHandlers,
   formatIssueDate,
   issueAuthorDisplayName,
   issueClaimable,
   issueStage,
+  issueStageDotVariant,
   issueStageLabel,
+  normalizeCommentBody,
+  stageDotVariant,
   type StageDerivable,
 } from "./issue-detail-view-model";
+import type { IssueStage } from "@hosted-agents/api/issues/stage";
 
 describe("classifyIssueAuthor", () => {
   test("treats a GitHub App's [bot] login as an agent", () => {
@@ -85,6 +90,97 @@ describe("issueClaimable", () => {
     expect(
       issueClaimable({ state: "open", labels: ["ready for agent", "human in the loop"] }),
     ).toBe(false);
+  });
+});
+
+describe("stageDotVariant", () => {
+  test("maps every stage to the StatusDot variant the detail renders", () => {
+    const expected: Record<IssueStage, ReturnType<typeof stageDotVariant>> = {
+      backlog: "neutral",
+      ready_for_agent: "accent",
+      executing: "warning",
+      in_pr: "accent",
+      merged: "success",
+      failed_blocked: "warning",
+    };
+    for (const [stage, variant] of Object.entries(expected)) {
+      expect(stageDotVariant(stage as IssueStage)).toBe(variant);
+    }
+  });
+
+  test("derives the dot variant straight from an issue's stage", () => {
+    expect(issueStageDotVariant({ state: "open", labels: [] })).toBe("neutral");
+    expect(issueStageDotVariant({ state: "open", labels: ["ready for agent"] })).toBe("accent");
+  });
+});
+
+describe("normalizeCommentBody", () => {
+  test("trims the draft before it is posted", () => {
+    expect(normalizeCommentBody("  ship it  ")).toBe("ship it");
+  });
+
+  test("returns null for an empty or all-whitespace draft so nothing is posted", () => {
+    expect(normalizeCommentBody("")).toBeNull();
+    expect(normalizeCommentBody("   \n\t ")).toBeNull();
+  });
+});
+
+describe("createPostCommentHandlers", () => {
+  test("onSuccess clears the draft, re-reads the thread, then confirms — in that order", async () => {
+    const order: string[] = [];
+    let draft = "typed comment";
+    let refetches = 0;
+    const toasts: { body: string; type?: string }[] = [];
+
+    const handlers = createPostCommentHandlers({
+      setDraft: (value) => {
+        draft = value;
+        order.push("setDraft");
+      },
+      refetch: async () => {
+        refetches += 1;
+        order.push("refetch");
+      },
+      showToast: (toast) => {
+        toasts.push(toast);
+        order.push("toast");
+      },
+    });
+
+    await handlers.onSuccess();
+
+    expect(draft).toBe("");
+    expect(refetches).toBe(1);
+    expect(toasts).toEqual([{ body: "Comment posted to GitHub." }]);
+    // The draft is cleared and the thread re-read before the confirmation toast, so
+    // the confirmed comment is already in order by the time the user sees success.
+    expect(order).toEqual(["setDraft", "refetch", "toast"]);
+  });
+
+  test("onError surfaces an Error's message as an error toast", () => {
+    const toasts: { body: string; type?: string }[] = [];
+    const handlers = createPostCommentHandlers({
+      setDraft: () => {},
+      refetch: async () => {},
+      showToast: (toast) => toasts.push(toast),
+    });
+
+    handlers.onError(new Error("GitHub rejected the comment"));
+
+    expect(toasts).toEqual([{ body: "GitHub rejected the comment", type: "error" }]);
+  });
+
+  test("onError falls back to a generic message for a non-Error rejection", () => {
+    const toasts: { body: string; type?: string }[] = [];
+    const handlers = createPostCommentHandlers({
+      setDraft: () => {},
+      refetch: async () => {},
+      showToast: (toast) => toasts.push(toast),
+    });
+
+    handlers.onError("nope");
+
+    expect(toasts).toEqual([{ body: "Couldn't post the comment.", type: "error" }]);
   });
 });
 

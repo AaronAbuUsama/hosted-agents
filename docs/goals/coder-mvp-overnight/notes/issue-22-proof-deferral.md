@@ -3,6 +3,14 @@
 **Issue:** #22 "P1: Issue detail + comments view" · **PR:** #38 · **Branch:**
 `coder-mvp/22-issue-detail`
 
+> **STATUS — DO NOT SELF-MERGE.** This is a *proposed* deferral, not an accepted
+> one. Orchestrator (Fable) acceptance is **PENDING**; no agent on this branch can
+> grant it — recording a deferral does not accept it. PR #38's self-merge stays
+> blocked until **either** the orchestrator explicitly accepts this deferral into
+> C8/P5 **or** the live proof below is captured. The compensating verification on
+> this branch (now including executed runtime-contract tests, below) narrows the
+> gap but does **not** discharge the gate.
+
 ## The finding
 
 Review flagged that the charter's per-issue **step 5** (`docs/goals/coder-mvp-overnight/goal-prompt.md:42`)
@@ -62,15 +70,34 @@ Run in this worktree at HEAD of `coder-mvp/22-issue-detail`:
    Astryx import it pulls in. It rebuts "the code can't wire up / build," though
    it does **not** prove live-data layout.
 
-3. **Pure view-model tests green** — 17/17 in
-   `apps/web/src/lib/issue-detail-view-model.test.ts` (author classification,
-   stage/claimable derivation, date formatting).
+3. **Pure view-model + runtime-contract tests green** — 24/24 in
+   `apps/web/src/lib/issue-detail-view-model.test.ts`. Beyond the original author
+   classification / stage / date helpers, this now executes the parts of the
+   view's runtime behaviour that were previously inline-and-untested in the
+   component, in direct response to the reviewer's "query-wiring" concern:
+   - `createPostCommentHandlers` — the **client half of the `postIssueComment`
+     round-trip**. The success path is asserted to clear the draft, re-read the
+     thread, then confirm with a toast **in that order** (so the confirmed comment
+     is already in place when the user sees success); the error path is asserted to
+     surface an `Error`'s message, and to fall back to a generic message for a
+     non-`Error` rejection. The component now wires the mutation through this
+     factory (`issue-detail.tsx`), so the tested handlers are the ones that run.
+   - `normalizeCommentBody` — the composer's trim/empty guard: an all-whitespace
+     draft yields `null` and is never sent to GitHub; a padded draft is trimmed
+     before posting. It backs both the Post button's enabled state and the submit
+     guard, so both share one tested source of truth.
+   - `stageDotVariant` / `issueStageDotVariant` — the stage → StatusDot-colour map
+     the header and metadata render, extracted from the component and asserted
+     exhaustively over every `IssueStage` (a wrong lane colour is now a caught
+     regression, not a live-only one).
 
-What remains genuinely unproven until C8/P5: pixel layout with live GitHub data,
-the two-column ↔ stacked responsive switch (`useMediaQuery("(max-width:1040px)")`),
-the agent-comment accent treatment against real bot vs. member logins, and the
-end-to-end comment **write** round-trip (`postIssueComment` →
-`createGitHubIssueComment`).
+What remains genuinely unproven until C8/P5 is now narrower: **pixel layout** with
+live GitHub data, the two-column ↔ stacked responsive switch
+(`useMediaQuery("(max-width:1040px)")`), the agent-comment accent treatment
+against real bot vs. member logins, and the **server half** of the comment write —
+the actual `postIssueComment` → `createGitHubIssueComment` call reaching GitHub and
+the posted comment landing in-thread on refetch. The client-side round-trip
+contract itself is no longer unexercised; it runs under `bun test`.
 
 ## Acceptance criteria to close this deferral (capture in C8, log in P5)
 
@@ -96,3 +123,18 @@ Per the finding, **do not self-merge PR #38 on the strength of this note alone.*
 Merge is unblocked only when the orchestrator (Fable) explicitly accepts this
 deferral into C8/P5. If the orchestrator instead wants the proof up front, the
 acceptance criteria above are the exact shots to capture before merge.
+
+**Acceptance is PENDING and cannot be self-granted on this branch.** A fix agent
+can (and did) shrink the runtime gap the finding named — the client-side
+`postIssueComment` round-trip and the render-decision helpers are now executed
+under `bun test` — but two things stay strictly outside a branch agent's lane and
+must be resolved by the orchestrator, not asserted here:
+
+1. **Orchestrator acceptance of the deferral** — a decision only Fable can record.
+2. **The live `test-repo` comment-**write** proof** — a live external GitHub write
+   the charter routes to C8 (full-loop proof), gated on the running stack + Coder
+   App credentials. It is deliberately not performed unilaterally from a fix
+   worktree.
+
+Until one of those closes, PR #38 remains merge-blocked regardless of how green
+the static + runtime-contract evidence on this branch is.

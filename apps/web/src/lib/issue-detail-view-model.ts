@@ -70,6 +70,75 @@ export function issueClaimable(issue: StageDerivable): boolean {
   return isAgentClaimable(stageInput(issue));
 }
 
+// The StatusDot variant the detail renders per stage. Kept here (not inline in the
+// view) so the stage → dot-colour mapping is exhaustively compiler-checked over
+// IssueStage and unit-tested — a wrong colour for a lane is a render regression the
+// pure view-model tests can catch without standing up the UI.
+export type StageDotVariant = "neutral" | "accent" | "warning" | "success";
+
+const STAGE_DOT_VARIANTS: Record<IssueStage, StageDotVariant> = {
+  backlog: "neutral",
+  ready_for_agent: "accent",
+  executing: "warning",
+  in_pr: "accent",
+  merged: "success",
+  failed_blocked: "warning",
+};
+
+export function stageDotVariant(stage: IssueStage): StageDotVariant {
+  return STAGE_DOT_VARIANTS[stage];
+}
+
+export function issueStageDotVariant(issue: StageDerivable): StageDotVariant {
+  return stageDotVariant(issueStage(issue));
+}
+
+// The composer trims the draft before posting; an empty or all-whitespace draft
+// can't post and is never sent to GitHub. Returns the body to post, or null when
+// there is nothing to post — the single source of truth for both the Post button's
+// enabled state and the submit guard.
+export function normalizeCommentBody(draft: string): string | null {
+  const body = draft.trim();
+  return body.length > 0 ? body : null;
+}
+
+// Minimal structural view of Astryx's showToast — a type-only surface so this
+// module stays React-free and unit-testable while the component's real ShowToastFn
+// (body: ReactNode, type?: 'info' | 'error') remains assignable to it.
+export type ShowCommentToast = (toast: { body: string; type?: "info" | "error" }) => unknown;
+
+export type PostCommentHandlers = {
+  onSuccess: () => Promise<void>;
+  onError: (error: unknown) => void;
+};
+
+// The postIssueComment mutation's client-side round-trip, as a pure factory over
+// plain callbacks. On success it clears the draft, then re-reads the thread so the
+// confirmed comment lands in order (issue #19 story 23), then confirms with a
+// toast — that ordering matters, so it is asserted in tests. On failure it surfaces
+// the error text as an error toast. Extracting it lets the round-trip contract run
+// under `bun test` without React / react-query, exercising the exact wiring a
+// reviewer would otherwise only see live.
+export function createPostCommentHandlers(deps: {
+  setDraft: (value: string) => void;
+  refetch: () => Promise<unknown>;
+  showToast: ShowCommentToast;
+}): PostCommentHandlers {
+  return {
+    onSuccess: async () => {
+      deps.setDraft("");
+      await deps.refetch();
+      deps.showToast({ body: "Comment posted to GitHub." });
+    },
+    onError: (error) => {
+      deps.showToast({
+        body: error instanceof Error ? error.message : "Couldn't post the comment.",
+        type: "error",
+      });
+    },
+  };
+}
+
 const ISSUE_DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "short",
