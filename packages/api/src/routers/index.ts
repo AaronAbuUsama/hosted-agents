@@ -10,6 +10,7 @@ import {
   CODE_REVIEW_WORKER_DISPLAY_NAME,
   CODE_REVIEW_WORKER_ROLE,
   GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+  IMPLEMENTATION_WORKER_ROLE,
   LEGACY_CODE_REVIEW_COWORKER_SLUG,
   agentRun,
   agentRunArtifact,
@@ -31,6 +32,7 @@ import { z } from "zod";
 import {
   claimGitHubInstallation,
   createGitHubAppInstallUrl,
+  getGitHubAppSlug,
   getGitHubPullRequest,
   isGitHubAppConfigured,
   listAvailableGitHubInstallations,
@@ -1067,6 +1069,39 @@ export const appRouter = {
       return {
         configured: true,
         installUrl: createGitHubAppInstallUrl(organizationId),
+      };
+    }),
+  githubCoderAppInstallUrl: protectedProcedure
+    .input(organizationScopedInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+        ?.activeOrganizationId;
+      const organizationId = await resolveOrganizationId(
+        userId,
+        input?.organizationId ?? activeOrganizationId ?? undefined,
+      );
+
+      if (!organizationId) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Create or select an organization before installing the Coder GitHub App.",
+        });
+      }
+
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      if (!isGitHubAppConfigured(IMPLEMENTATION_WORKER_ROLE)) {
+        return {
+          configured: false,
+          installUrl: null,
+          appSlug: null,
+        };
+      }
+
+      return {
+        configured: true,
+        installUrl: createGitHubAppInstallUrl(organizationId, IMPLEMENTATION_WORKER_ROLE),
+        appSlug: getGitHubAppSlug(IMPLEMENTATION_WORKER_ROLE),
       };
     }),
   githubInstallations: protectedProcedure
