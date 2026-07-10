@@ -61,13 +61,17 @@ export default defineWorkflow({
       .where(eq(reviewRun.id, input.reviewRunId));
 
     try {
-      const model = input.providerCredentialId
+      // Provider-credential path registers a per-org Codex provider and returns
+      // the model + reasoning-effort policy; without a credential the agent's
+      // own defaults (model + thinkingLevel) apply.
+      const registration = input.providerCredentialId
         ? await registerOpenAICodexCredentialModel(input.providerCredentialId)
         : undefined;
 
       log.info("Code review model ready", {
         ...logContext,
-        model: model ? "openai-codex/gpt-5.5" : "agent default",
+        model: registration?.model ?? "agent default",
+        reasoningEffort: registration?.reasoningEffort ?? "agent default",
       });
 
       const session = await harness.session();
@@ -86,7 +90,8 @@ export default defineWorkflow({
         ].join("\n"),
         {
           result: reviewResultSchema,
-          model,
+          model: registration?.model,
+          thinkingLevel: registration?.reasoningEffort,
         },
       );
 

@@ -460,6 +460,7 @@ export async function runNextQueuedCodeReview({
       payload: {
         hasConfiguration: Boolean(configuration),
         configuredModel: configuration?.model ?? null,
+        configuredReasoningEffort: configuration?.reasoningEffort ?? null,
         hasInstructions: Boolean(configuration?.instructions?.trim()),
         skills: enabledSkills.map((skill) => skill.name),
       },
@@ -483,6 +484,7 @@ export async function runNextQueuedCodeReview({
       workerRole: metadata.workerRole,
       workerDisplayName,
       configuredModel: configuration?.model ?? undefined,
+      configuredReasoningEffort: configuration?.reasoningEffort ?? undefined,
       configuredInstructions: configuration?.instructions ?? undefined,
       skills: skillBundles,
       providerCredentialId: run.providerCredentialId ?? undefined,

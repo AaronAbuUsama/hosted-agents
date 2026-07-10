@@ -7,6 +7,12 @@ import { createFlueContext, resolveModel } from "@flue/runtime/internal";
 import { CODE_REVIEW_WORKER_DISPLAY_NAME } from "@hosted-agents/db/schema/agent-runs";
 import * as v from "valibot";
 
+import {
+  DEFAULT_CODEX_MODEL,
+  resolveReasoningEffort,
+  type ReasoningEffort,
+} from "@hosted-agents/api/codex-model-policy";
+
 import { registerOpenAICodexCredentialModel } from "../lib/provider-credential-model";
 import { daytona } from "../sandboxes/daytona";
 import type {
@@ -17,7 +23,6 @@ import type {
 import { CodeReviewSandboxRunError } from "./code-review-sandbox-runner";
 import { createGitHubCodeReviewTools } from "./github-code-review-tools";
 
-const DEFAULT_CODEX_MODEL = "openai-codex/gpt-5.5";
 const REPOSITORY_PATH = "repo";
 const REVIEW_CONTEXT_PATH = "coworker-review-context.md";
 const SKILLS_PATH = "skills";
@@ -147,11 +152,13 @@ async function runFlueReview({
   sandbox,
   input,
   model,
+  reasoningEffort,
   onFlueEvent,
 }: {
   sandbox: Sandbox;
   input: CodeReviewSandboxRunInput;
   model: string;
+  reasoningEffort: ReasoningEffort;
   onFlueEvent?: (event: unknown) => void | Promise<void>;
 }): Promise<ReviewResult> {
   const githubTools = createGitHubCodeReviewTools(input);
@@ -159,6 +166,7 @@ async function runFlueReview({
   const configuredInstructions = input.configuredInstructions?.trim();
   const agent = defineAgent(() => ({
     model,
+    thinkingLevel: reasoningEffort,
     sandbox: daytona(sandbox),
     cwd: REPOSITORY_PATH,
     tools: githubTools.tools,
@@ -217,6 +225,7 @@ async function runFlueReview({
       {
         result: reviewResultSchema,
         model,
+        thinkingLevel: reasoningEffort,
       },
     );
 
@@ -429,16 +438,24 @@ export class DaytonaCodeReviewSandboxRunner implements CodeReviewSandboxRunner {
 
       await emitStage("model_resolving", "Resolving Codex model credential");
       const configuredModelId = input.configuredModel?.trim() || undefined;
-      const model = input.providerCredentialId
-        ? await registerOpenAICodexCredentialModel(input.providerCredentialId, configuredModelId)
-        : configuredModelId
-          ? `openai-codex/${configuredModelId}`
-          : DEFAULT_CODEX_MODEL;
-      await emitStage("flue_review", "Starting Flue code review session", { model });
+      const { model, reasoningEffort } = input.providerCredentialId
+        ? await registerOpenAICodexCredentialModel(input.providerCredentialId, {
+            modelId: configuredModelId,
+            reasoningEffort: input.configuredReasoningEffort,
+          })
+        : {
+            model: configuredModelId ? `openai-codex/${configuredModelId}` : DEFAULT_CODEX_MODEL,
+            reasoningEffort: resolveReasoningEffort(input.configuredReasoningEffort),
+          };
+      await emitStage("flue_review", "Starting Flue code review session", {
+        model,
+        reasoningEffort,
+      });
       const review = await runFlueReview({
         sandbox,
         input,
         model,
+        reasoningEffort,
         onFlueEvent: (event) => input.onEvent?.({ type: "flue.event", event }),
       });
 
