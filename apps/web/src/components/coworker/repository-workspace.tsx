@@ -4,20 +4,15 @@ import { useState, type ReactElement } from "react";
 
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
-import {
-  HStack,
-  Layout,
-  LayoutHeader,
-  StackItem,
-  VStack,
-} from "@astryxdesign/core/Layout";
+import { HStack, Layout, LayoutHeader, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { PlusIcon } from "@heroicons/react/24/outline";
 
 import IssuesBoard from "./issues-board";
-// Runs is the secondary tab. The repo-filtered RunsTableView lives on the
-// runs-table-page stack; on this branch the base RunsTable shows the run log.
+// Runs is the secondary tab. Scope it to this project by the repository's
+// "owner/name" label (the run view-model's group key) so project A's Runs tab
+// never shows project B's runs (spec #19, story 27).
 import RunsTable from "./runs-table";
 
 // Issue-centric: opening a repository lands on its issues board; runs are the
@@ -79,7 +74,7 @@ export default function RepositoryWorkspace({
         view === "issues" ? (
           <IssuesBoard organizationId={organizationId} repositoryId={repositoryId} />
         ) : (
-          <RunsTable />
+          <RunsTable repoFilter={fullName} />
         )
       }
     />
