@@ -102,9 +102,7 @@ describe("per-role GitHub App token minting", () => {
 
     expect(token).toBe("ghs_installation_token");
     expect(captured).toHaveLength(1);
-    expect(captured[0].url).toBe(
-      "https://api.github.com/app/installations/500100/access_tokens",
-    );
+    expect(captured[0].url).toBe("https://api.github.com/app/installations/500100/access_tokens");
 
     const { claims } = decodeJwt(captured[0].jwt);
     expect(claims.iss).toBe(REVIEWER_APP_ID);

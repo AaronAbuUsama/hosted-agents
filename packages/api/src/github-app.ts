@@ -58,8 +58,8 @@ function githubAppCredentials(
 function areGitHubAppCredentialsConfigured(credentials: GitHubAppCredentials) {
   return Boolean(
     credentials.appId &&
-      credentials.appSlug &&
-      (credentials.privateKey || credentials.privateKeyPath),
+    credentials.appSlug &&
+    (credentials.privateKey || credentials.privateKeyPath),
   );
 }
 
@@ -140,7 +140,8 @@ export type GitHubAvailableInstallation = {
 };
 
 function assertGitHubAppConfigured(credentials: GitHubAppCredentials) {
-  const prefix = credentials.role === IMPLEMENTATION_WORKER_ROLE ? "GITHUB_CODER_APP" : "GITHUB_APP";
+  const prefix =
+    credentials.role === IMPLEMENTATION_WORKER_ROLE ? "GITHUB_CODER_APP" : "GITHUB_APP";
 
   if (!credentials.appId) {
     throw new Error(`${prefix}_ID is not configured.`);
@@ -207,7 +208,8 @@ function readGitHubAppPrivateKey(credentials: GitHubAppCredentials) {
     return credentials.privateKey.replaceAll("\\n", "\n");
   }
 
-  const prefix = credentials.role === IMPLEMENTATION_WORKER_ROLE ? "GITHUB_CODER_APP" : "GITHUB_APP";
+  const prefix =
+    credentials.role === IMPLEMENTATION_WORKER_ROLE ? "GITHUB_CODER_APP" : "GITHUB_APP";
 
   if (!credentials.privateKeyPath) {
     throw new Error(`${prefix}_PRIVATE_KEY_PATH is not configured.`);
@@ -216,7 +218,9 @@ function readGitHubAppPrivateKey(credentials: GitHubAppCredentials) {
   const privateKeyPath = resolvePrivateKeyPath(credentials.privateKeyPath);
 
   if (!existsSync(privateKeyPath)) {
-    throw new Error(`${credentials.displayName} GitHub App private key was not found at ${privateKeyPath}.`);
+    throw new Error(
+      `${credentials.displayName} GitHub App private key was not found at ${privateKeyPath}.`,
+    );
   }
 
   return readFileSync(privateKeyPath, "utf8");
@@ -475,9 +479,7 @@ export type GitHubIssueCommentSummary = {
   updatedAt: string | null;
 };
 
-function mapIssueCommentSummary(
-  comment: GitHubIssueCommentResponse,
-): GitHubIssueCommentSummary {
+function mapIssueCommentSummary(comment: GitHubIssueCommentResponse): GitHubIssueCommentSummary {
   return {
     githubId: comment.id != null ? String(comment.id) : null,
     body: comment.body ?? "",

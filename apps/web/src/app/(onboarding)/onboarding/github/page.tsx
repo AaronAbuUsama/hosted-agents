@@ -27,21 +27,46 @@ type GitHubStage = "apps" | "repositories" | "finish";
 type AppId = "reviewer" | "coder";
 type GitHubInstallation = Awaited<ReturnType<typeof client.githubInstallations>>[number];
 type GitHubRepository = GitHubInstallation["repositories"][number];
+type CoderAppConfig = Awaited<ReturnType<typeof client.githubCoderAppInstallUrl>>;
 
 export default function GitHubOnboardingPage(): ReactElement {
   const router = useRouter();
   const [stage, setStage] = useState<GitHubStage>("apps");
   const [installations, setInstallations] = useState<GitHubInstallation[]>([]);
+  const [coderAppConfig, setCoderAppConfig] = useState<CoderAppConfig | null>(null);
   const [isLoadingInstallations, setIsLoadingInstallations] = useState(true);
   const [isStartingReviewerInstall, setIsStartingReviewerInstall] = useState(false);
+  const [isStartingCoderInstall, setIsStartingCoderInstall] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
 
-  const linkedRepositories = useMemo(
-    () => installations.flatMap((installation) => installation.repositories),
-    [installations],
+  const coderAppSlug = coderAppConfig?.appSlug ?? null;
+  const coderInstallation = useMemo(
+    () =>
+      coderAppSlug
+        ? (installations.find((installation) => installation.appSlug === coderAppSlug) ?? null)
+        : null,
+    [installations, coderAppSlug],
   );
-  const reviewerInstallation = installations[0] ?? null;
+  const reviewerInstallation = useMemo(
+    () =>
+      installations.find(
+        (installation) => !coderAppSlug || installation.appSlug !== coderAppSlug,
+      ) ??
+      installations[0] ??
+      null,
+    [installations, coderAppSlug],
+  );
+  const linkedRepositories = useMemo(
+    () =>
+      installations
+        .filter((installation) => installation.appSlug !== coderAppSlug)
+        .flatMap((installation) => installation.repositories),
+    [installations, coderAppSlug],
+  );
   const accountLabel = reviewerInstallation?.accountLogin ?? "GitHub account linked on callback";
+  const isCoderConfigured = coderAppConfig?.configured ?? false;
+  const isCoderConnected = Boolean(coderInstallation);
+  const coderAccountLabel = coderInstallation?.accountLogin ?? accountLabel;
   const areAppsConnected = Boolean(reviewerInstallation);
   const areRepositoriesValidated = linkedRepositories.length > 0;
 
@@ -50,7 +75,12 @@ export default function GitHubOnboardingPage(): ReactElement {
     setSetupError(null);
 
     try {
-      setInstallations(await client.githubInstallations({}));
+      const [installationList, coderConfig] = await Promise.all([
+        client.githubInstallations({}),
+        client.githubCoderAppInstallUrl({}).catch(() => null),
+      ]);
+      setInstallations(installationList);
+      setCoderAppConfig(coderConfig);
     } catch (error) {
       setSetupError(
         error instanceof Error ? error.message : "Unable to load GitHub installations.",
@@ -81,6 +111,26 @@ export default function GitHubOnboardingPage(): ReactElement {
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : "Unable to start GitHub install.");
       setIsStartingReviewerInstall(false);
+    }
+  }
+
+  async function connectCoderApp(): Promise<void> {
+    setIsStartingCoderInstall(true);
+    setSetupError(null);
+
+    try {
+      const result = await client.githubCoderAppInstallUrl({});
+
+      if (!result.configured || !result.installUrl) {
+        setSetupError("Coder GitHub App is not configured for this environment.");
+        setIsStartingCoderInstall(false);
+        return;
+      }
+
+      window.location.assign(result.installUrl);
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : "Unable to start GitHub install.");
+      setIsStartingCoderInstall(false);
     }
   }
 
@@ -150,10 +200,15 @@ export default function GitHubOnboardingPage(): ReactElement {
                 {stage === "apps" ? (
                   <AppsPanel
                     accountLabel={accountLabel}
+                    coderAccountLabel={coderAccountLabel}
                     installError={setupError}
+                    isCoderConfigured={isCoderConfigured}
+                    isCoderConnected={isCoderConnected}
                     isLoadingInstallations={isLoadingInstallations}
                     isReviewerConnected={areAppsConnected}
+                    isStartingCoderInstall={isStartingCoderInstall}
                     isStartingReviewerInstall={isStartingReviewerInstall}
+                    onConnectCoder={connectCoderApp}
                     onConnectReviewer={connectReviewerApp}
                     onRefresh={loadInstallations}
                   />
@@ -167,6 +222,13 @@ export default function GitHubOnboardingPage(): ReactElement {
                 ) : (
                   <FinishPanel
                     accountLabel={accountLabel}
+                    coderValue={
+                      isCoderConnected
+                        ? "Connected"
+                        : isCoderConfigured
+                          ? "Available to connect"
+                          : "Not configured for this environment"
+                    }
                     repositoryCount={linkedRepositories.length}
                   />
                 )}
@@ -194,9 +256,9 @@ function stageDescription(stage: GitHubStage): string {
     return "Coworker reads repositories from the linked reviewer GitHub App installation.";
   }
   if (stage === "finish") {
-    return "The reviewer app is connected. The coder app remains disabled until its GitHub App is added.";
+    return "The reviewer app is connected. Connect the coder app to let it open implementation pull requests.";
   }
-  return "Connect the reviewer GitHub App. The coder app is visible here, but not enabled in this PR.";
+  return "Connect the reviewer GitHub App, then connect the coder app so it can open pull requests under its own identity.";
 }
 
 function StageActions({
@@ -264,18 +326,28 @@ function ProgressItem({
 
 function AppsPanel({
   accountLabel,
+  coderAccountLabel,
   installError,
+  isCoderConfigured,
+  isCoderConnected,
   isLoadingInstallations,
   isReviewerConnected,
+  isStartingCoderInstall,
   isStartingReviewerInstall,
+  onConnectCoder,
   onConnectReviewer,
   onRefresh,
 }: {
   accountLabel: string;
+  coderAccountLabel: string;
   installError: string | null;
+  isCoderConfigured: boolean;
+  isCoderConnected: boolean;
   isLoadingInstallations: boolean;
   isReviewerConnected: boolean;
+  isStartingCoderInstall: boolean;
   isStartingReviewerInstall: boolean;
+  onConnectCoder: () => void;
   onConnectReviewer: () => void;
   onRefresh: () => void;
 }): ReactElement {
@@ -285,8 +357,8 @@ function AppsPanel({
         <VStack gap={1}>
           <Heading level={2}>GitHub Apps</Heading>
           <Text type="supporting" color="secondary" as="p">
-            Reviewer app installation is wired now. The coder app is reserved for the next backend
-            slice.
+            The reviewer app reviews pull requests; the coder app opens implementation pull requests
+            under its own identity. Connect each app to its GitHub App installation.
           </Text>
         </VStack>
         <AccountToken label={isReviewerConnected ? accountLabel : null} />
@@ -307,11 +379,21 @@ function AppsPanel({
           appId="coder"
           title="Coder app"
           detail="Responds to issue labels and prepares implementation pull requests."
-          accountLabel="Backend support not added yet"
-          disabledMessage="Coder GitHub App installation is intentionally disabled in this PR."
-          isConnected={false}
-          isDisabled
-          statusLabel="Coming soon"
+          accountLabel={
+            isCoderConnected
+              ? coderAccountLabel
+              : isCoderConfigured
+                ? "No coder GitHub App installation linked yet"
+                : "Coder GitHub App is not configured for this environment"
+          }
+          disabledMessage="Coder GitHub App is not configured for this environment."
+          isConnected={isCoderConnected}
+          isDisabled={!isCoderConfigured}
+          isLoading={isStartingCoderInstall}
+          onConnect={onConnectCoder}
+          statusLabel={
+            isCoderConnected ? "Connected" : isCoderConfigured ? "Required" : "Not configured"
+          }
         />
       </VStack>
       {installError ? (
@@ -497,9 +579,11 @@ function RepositoryValidationCard({ repository }: { repository: GitHubRepository
 
 function FinishPanel({
   accountLabel,
+  coderValue,
   repositoryCount,
 }: {
   accountLabel: string;
+  coderValue: string;
   repositoryCount: number;
 }): ReactElement {
   return (
@@ -516,7 +600,7 @@ function FinishPanel({
       <VStack gap={3}>
         <SummaryRow label="GitHub account" value={accountLabel} />
         <SummaryRow label="Reviewer app" value="Connected" />
-        <SummaryRow label="Coder app" value="Disabled until app support is added" />
+        <SummaryRow label="Coder app" value={coderValue} />
         <SummaryRow label="Repositories" value={`${repositoryCount} linked`} />
         <SummaryRow label="Label and rule validation" value="Follow-up backend wiring" />
       </VStack>
