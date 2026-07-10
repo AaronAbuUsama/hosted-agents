@@ -9,7 +9,9 @@
       "default": "./src/*.ts"
     }
   },
-  "scripts": {},
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.3",
     "@hosted-agents/auth": "workspace:*",

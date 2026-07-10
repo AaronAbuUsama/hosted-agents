@@ -51,6 +51,9 @@ function base64UrlToBuffer(value: string): Buffer {
 
 function decodeJwt(jwt: string) {
   const [header, payload, signature] = jwt.split(".");
+  if (header === undefined || payload === undefined || signature === undefined) {
+    throw new Error(`Malformed JWT (expected three segments): ${jwt}`);
+  }
   return {
     header,
     payload,
@@ -78,7 +81,14 @@ type CapturedRequest = { url: string; jwt: string };
 function stubGitHubTokenEndpoint(): { captured: CapturedRequest[] } {
   const captured: CapturedRequest[] = [];
 
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  // Derive the argument types from `fetch` itself rather than naming DOM-only
+  // aliases like `RequestInfo`, which aren't in this package's lib (ESNext + bun
+  // types only). The `as typeof fetch` assertion supplies the `preconnect`
+  // property that a bare arrow function lacks.
+  globalThis.fetch = (async (
+    input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ) => {
     const authorization = new Headers(init?.headers).get("authorization") ?? "";
     captured.push({
       url: typeof input === "string" ? input : input.toString(),
@@ -94,6 +104,18 @@ function stubGitHubTokenEndpoint(): { captured: CapturedRequest[] } {
   return { captured };
 }
 
+// noUncheckedIndexedAccess makes `captured[0]` possibly-undefined; funnel every
+// read through this helper so tests both assert exactly one token request was
+// minted and get a non-optional handle to it.
+function takeSingleRequest(captured: CapturedRequest[]): CapturedRequest {
+  expect(captured).toHaveLength(1);
+  const [request] = captured;
+  if (!request) {
+    throw new Error("Expected exactly one captured GitHub token request.");
+  }
+  return request;
+}
+
 describe("per-role GitHub App token minting", () => {
   test("defaults to the reviewer app (regression: reviewer path untouched)", async () => {
     const { captured } = stubGitHubTokenEndpoint();
@@ -101,21 +123,21 @@ describe("per-role GitHub App token minting", () => {
     const token = await createGitHubInstallationAccessToken("500100");
 
     expect(token).toBe("ghs_installation_token");
-    expect(captured).toHaveLength(1);
-    expect(captured[0].url).toBe("https://api.github.com/app/installations/500100/access_tokens");
+    const request = takeSingleRequest(captured);
+    expect(request.url).toBe("https://api.github.com/app/installations/500100/access_tokens");
 
-    const { claims } = decodeJwt(captured[0].jwt);
+    const { claims } = decodeJwt(request.jwt);
     expect(claims.iss).toBe(REVIEWER_APP_ID);
     // Signed by the reviewer key, and not by the Coder key.
     expect(
       verifyJwtSignature(
-        captured[0].jwt,
+        request.jwt,
         reviewerKeyPair.publicKey.export({ type: "spki", format: "pem" }).toString(),
       ),
     ).toBe(true);
     expect(
       verifyJwtSignature(
-        captured[0].jwt,
+        request.jwt,
         coderKeyPair.publicKey.export({ type: "spki", format: "pem" }).toString(),
       ),
     ).toBe(false);
@@ -126,18 +148,18 @@ describe("per-role GitHub App token minting", () => {
 
     await createGitHubInstallationAccessToken("500200", IMPLEMENTATION_WORKER_ROLE);
 
-    expect(captured).toHaveLength(1);
-    const { claims } = decodeJwt(captured[0].jwt);
+    const request = takeSingleRequest(captured);
+    const { claims } = decodeJwt(request.jwt);
     expect(claims.iss).toBe(CODER_APP_ID);
     expect(
       verifyJwtSignature(
-        captured[0].jwt,
+        request.jwt,
         coderKeyPair.publicKey.export({ type: "spki", format: "pem" }).toString(),
       ),
     ).toBe(true);
     expect(
       verifyJwtSignature(
-        captured[0].jwt,
+        request.jwt,
         reviewerKeyPair.publicKey.export({ type: "spki", format: "pem" }).toString(),
       ),
     ).toBe(false);
@@ -148,7 +170,7 @@ describe("per-role GitHub App token minting", () => {
 
     await createGitHubInstallationAccessToken("500300", CODE_REVIEW_WORKER_ROLE);
 
-    const { claims } = decodeJwt(captured[0].jwt);
+    const { claims } = decodeJwt(takeSingleRequest(captured).jwt);
     expect(claims.iss).toBe(REVIEWER_APP_ID);
   });
 });

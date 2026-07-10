@@ -40,6 +40,13 @@ export default function GitHubOnboardingPage(): ReactElement {
   const [setupError, setSetupError] = useState<string | null>(null);
 
   const coderAppSlug = coderAppConfig?.appSlug ?? null;
+  // Distinguish "the Coder app is genuinely not configured for this environment"
+  // (the config call succeeded and reported it off) from "we couldn't load the
+  // Coder config" (the fetch failed, leaving coderAppConfig null). Only the former
+  // lets us treat every installation as a reviewer installation; the latter must
+  // stay conservative, because an unidentified installation could be the Coder
+  // app's own.
+  const isCoderKnownAbsent = coderAppConfig !== null && !coderAppConfig.configured;
   const coderInstallation = useMemo(
     () =>
       coderAppSlug
@@ -47,21 +54,26 @@ export default function GitHubOnboardingPage(): ReactElement {
         : null,
     [installations, coderAppSlug],
   );
+  // A reviewer installation is one we can prove is *not* the Coder app's: matched
+  // by exclusion when the Coder slug is known, or any installation when the Coder
+  // app is known absent. When the Coder slug is unknown (a failed config fetch) we
+  // cannot classify safely, so nothing qualifies — better to block onboarding than
+  // to surface a Coder installation as the connected reviewer app.
+  const isReviewerInstallation = useCallback(
+    (installation: GitHubInstallation): boolean =>
+      coderAppSlug ? installation.appSlug !== coderAppSlug : isCoderKnownAbsent,
+    [coderAppSlug, isCoderKnownAbsent],
+  );
   const reviewerInstallation = useMemo(
-    () =>
-      installations.find(
-        (installation) => !coderAppSlug || installation.appSlug !== coderAppSlug,
-      ) ??
-      installations[0] ??
-      null,
-    [installations, coderAppSlug],
+    () => installations.find(isReviewerInstallation) ?? null,
+    [installations, isReviewerInstallation],
   );
   const linkedRepositories = useMemo(
     () =>
       installations
-        .filter((installation) => installation.appSlug !== coderAppSlug)
+        .filter(isReviewerInstallation)
         .flatMap((installation) => installation.repositories),
-    [installations, coderAppSlug],
+    [installations, isReviewerInstallation],
   );
   const accountLabel = reviewerInstallation?.accountLogin ?? "GitHub account linked on callback";
   const isCoderConfigured = coderAppConfig?.configured ?? false;
