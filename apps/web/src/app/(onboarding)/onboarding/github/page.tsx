@@ -29,6 +29,11 @@ type GitHubInstallation = Awaited<ReturnType<typeof client.githubInstallations>>
 type GitHubRepository = GitHubInstallation["repositories"][number];
 type CoderAppConfig = Awaited<ReturnType<typeof client.githubCoderAppInstallUrl>>;
 
+// Server-resolved worker role for a Coder-app installation. `githubInstallations`
+// tags every installation with its role (reviewer vs Coder) from env config, so
+// this classification never depends on the admin-gated Coder install-config call.
+const IMPLEMENTATION_WORKER_ROLE = "implementation";
+
 export default function GitHubOnboardingPage(): ReactElement {
   const router = useRouter();
   const [stage, setStage] = useState<GitHubStage>("apps");
@@ -39,30 +44,21 @@ export default function GitHubOnboardingPage(): ReactElement {
   const [isStartingCoderInstall, setIsStartingCoderInstall] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
 
-  const coderAppSlug = coderAppConfig?.appSlug ?? null;
-  // Distinguish "the Coder app is genuinely not configured for this environment"
-  // (the config call succeeded and reported it off) from "we couldn't load the
-  // Coder config" (the fetch failed, leaving coderAppConfig null). Only the former
-  // lets us treat every installation as a reviewer installation; the latter must
-  // stay conservative, because an unidentified installation could be the Coder
-  // app's own.
-  const isCoderKnownAbsent = coderAppConfig !== null && !coderAppConfig.configured;
-  const coderInstallation = useMemo(
-    () =>
-      coderAppSlug
-        ? (installations.find((installation) => installation.appSlug === coderAppSlug) ?? null)
-        : null,
-    [installations, coderAppSlug],
-  );
-  // A reviewer installation is one we can prove is *not* the Coder app's: matched
-  // by exclusion when the Coder slug is known, or any installation when the Coder
-  // app is known absent. When the Coder slug is unknown (a failed config fetch) we
-  // cannot classify safely, so nothing qualifies — better to block onboarding than
-  // to surface a Coder installation as the connected reviewer app.
+  // Classify installations from the server-resolved `workerRole` rather than the
+  // admin-gated Coder install-config call. `githubInstallations` is available to
+  // every member, so a non-admin (for whom `githubCoderAppInstallUrl` is FORBIDDEN
+  // and swallowed to null) still sees the reviewer app and its repositories.
   const isReviewerInstallation = useCallback(
     (installation: GitHubInstallation): boolean =>
-      coderAppSlug ? installation.appSlug !== coderAppSlug : isCoderKnownAbsent,
-    [coderAppSlug, isCoderKnownAbsent],
+      installation.workerRole !== IMPLEMENTATION_WORKER_ROLE,
+    [],
+  );
+  const coderInstallation = useMemo(
+    () =>
+      installations.find(
+        (installation) => installation.workerRole === IMPLEMENTATION_WORKER_ROLE,
+      ) ?? null,
+    [installations],
   );
   const reviewerInstallation = useMemo(
     () => installations.find(isReviewerInstallation) ?? null,

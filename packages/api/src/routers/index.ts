@@ -41,6 +41,7 @@ import {
   getGitHubIssue,
   listGitHubIssueComments,
   createGitHubIssueComment,
+  resolveGitHubAppWorkerRole,
 } from "../github-app";
 import { listBoard, type GitHubIssuesClient } from "../issues/service";
 import { protectedProcedure, publicProcedure } from "../index";
@@ -281,6 +282,11 @@ function mapGitHubInstallation(
     organizationId: row.organizationId,
     installationId: row.installationId,
     appSlug: row.appSlug,
+    // Authoritative reviewer-vs-Coder classification, resolved server-side from
+    // env config (never gated on the caller's org role). Clients rely on this to
+    // separate the reviewer installation from the Coder app's without having to
+    // load the admin-only Coder install-config endpoint.
+    workerRole: resolveGitHubAppWorkerRole(row.appSlug),
     accountId: row.accountId,
     accountLogin: row.accountLogin,
     accountType: row.accountType,
