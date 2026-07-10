@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import CoworkerPage from "@/components/coworker/coworker-page";
 import FeatureNotEnabled from "@/components/coworker/feature-not-enabled";
 import RepositoryWorkspaceClient from "@/components/coworker/repository-workspace-client";
+import { githubInstallationSettingsUrl } from "@/lib/board-load-error";
 import { APP_LANDING_PATH } from "@/lib/organization-routing";
 import { client } from "@/utils/orpc";
 
@@ -25,11 +26,15 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
   const installations = await client.githubInstallations({
     organizationId: activeOrganization.id,
   });
-  const repository = installations
-    .flatMap((installation) => installation.repositories)
-    .find((repo) => repo.id === projectId);
+  // Resolve the repository together with the installation that owns it — the
+  // installation carries the account identity the board's error CTA needs to
+  // link its settings page.
+  const installation = installations.find((candidate) =>
+    candidate.repositories.some((repo) => repo.id === projectId),
+  );
+  const repository = installation?.repositories.find((repo) => repo.id === projectId);
 
-  if (!repository) {
+  if (!installation || !repository) {
     return (
       <FeatureNotEnabled
         featureName="This project"
@@ -38,12 +43,19 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
     );
   }
 
+  const installationSettingsUrl = githubInstallationSettingsUrl({
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType,
+    installationId: installation.installationId,
+  });
+
   return (
     <CoworkerPage variant="workspace" width="full">
       <RepositoryWorkspaceClient
         fullName={repository.fullName}
         repositoryId={repository.id}
         organizationId={activeOrganization.id}
+        installationSettingsUrl={installationSettingsUrl}
       />
     </CoworkerPage>
   );

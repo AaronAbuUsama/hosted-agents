@@ -3,8 +3,10 @@
 import { Fragment, type CSSProperties, type ReactElement } from "react";
 
 import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
 import { Center } from "@astryxdesign/core/Center";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Icon } from "@astryxdesign/core/Icon";
 import { HStack, LayoutContent } from "@astryxdesign/core/Layout";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import {
@@ -18,14 +20,20 @@ import {
 import type { TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
+import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
+import { mapBoardLoadError } from "@/lib/board-load-error";
 import { orpc } from "@/utils/orpc";
 
 type IssuesBoardProps = {
   organizationId: string;
   repositoryId: string;
+  // The repository's installation settings page on GitHub, used only by the
+  // error branch's fix CTA when the installation lacks Issues access. Null when
+  // it can't be addressed; the CTA is then omitted.
+  installationSettingsUrl?: string | null;
 };
 
 // Column widths for the board rows; a leading stage dot, the issue, its labels,
@@ -75,6 +83,7 @@ function formatUpdated(iso: string | null): string {
 export default function IssuesBoard({
   organizationId,
   repositoryId,
+  installationSettingsUrl = null,
 }: IssuesBoardProps): ReactElement {
   const router = useRouter();
   const board = useQuery(
@@ -96,16 +105,27 @@ export default function IssuesBoard({
   }
 
   if (board.error) {
+    // Name the cause. A 403 "Resource not accessible by integration" means this
+    // installation can't read Issues — a fixable failure with its own copy and a
+    // link to the installation's settings. Other failures keep generic copy.
+    const errorContent = mapBoardLoadError(board.error, { installationSettingsUrl });
     return (
       <LayoutContent role="main" padding={4}>
         <EmptyState
-          title="Couldn't load issues"
-          description={
-            board.error instanceof Error
-              ? board.error.message
-              : "GitHub did not return this repository's issues. Check the installation and try again."
-          }
+          title={errorContent.title}
+          description={errorContent.description}
           headingLevel={2}
+          actions={
+            errorContent.cta ? (
+              <Button
+                label={errorContent.cta.label}
+                variant="secondary"
+                size="sm"
+                icon={<Icon icon={ArrowTopRightOnSquareIcon} />}
+                onClick={() => window.open(errorContent.cta?.href, "_blank", "noopener,noreferrer")}
+              />
+            ) : undefined
+          }
         />
       </LayoutContent>
     );
@@ -153,9 +173,7 @@ export default function IssuesBoard({
             {column.issues.map((issue) => (
               <TableRow
                 key={issue.number}
-                onClick={() =>
-                  router.push(`/app/projects/${repositoryId}/issues/${issue.number}`)
-                }
+                onClick={() => router.push(`/app/projects/${repositoryId}/issues/${issue.number}`)}
               >
                 <TableCell>
                   <Center axis="horizontal">
@@ -170,9 +188,7 @@ export default function IssuesBoard({
                     <Text type="body" maxLines={1}>
                       {issue.title}
                     </Text>
-                    {issue.claimable ? (
-                      <Token label="agent-ready" size="sm" />
-                    ) : null}
+                    {issue.claimable ? <Token label="agent-ready" size="sm" /> : null}
                   </HStack>
                 </TableCell>
                 <TableCell>
