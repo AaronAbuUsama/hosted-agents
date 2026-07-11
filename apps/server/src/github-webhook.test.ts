@@ -1162,13 +1162,26 @@ describe("GitHub webhook babysit admission", () => {
     }
   });
 
-  test("a bot approved review does nothing here (C7 owns the approval path)", async () => {
+  // C7: a bot approval on a repo that is NOT on the auto-merge allow-list (the empty
+  // default) comments that the PR is ready and stops — merging stays human.
+  test("a bot approved review on a non-allow-listed repo comments ready-to-merge and never merges", async () => {
     const { client, database } = await createTestDatabase();
     try {
       await seedLinkedPullRequestTarget(database);
       await seedCoderInstallationTarget(database);
       await seedCoderClaimedIssue(database, { babysitRound: 1 });
-      const app = createWebhookApp(database);
+
+      const merges: unknown[] = [];
+      const postedComments: Array<{ issueNumber: number; body: string }> = [];
+      const app = createWebhookApp(database, {
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "sha" };
+        },
+        async postCoderIssueComment(input) {
+          postedComments.push(input);
+        },
+      });
 
       const response = await postGitHubWebhook({
         app,
@@ -1179,27 +1192,51 @@ describe("GitHub webhook babysit admission", () => {
 
       expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
         accepted: false,
-        reason: "approved_review",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "ready_to_merge",
       });
-      // No run, and the babysit bookkeeping is left untouched for C7.
+      // Not on the allow-list: never merged, and no run — but a ready-to-merge comment.
+      expect(merges).toHaveLength(0);
       expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      expect(postedComments).toHaveLength(1);
+      expect(postedComments[0]?.body).toContain("ready to merge");
+
+      // The PR stays open + unmerged (In PR lane), bookkeeping otherwise untouched.
       const [issue] = await database
         .select()
         .from(schema.githubIssue)
         .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
-      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: null });
+      expect(issue).toMatchObject({
+        babysitRound: 1,
+        babysitBlockedReason: null,
+        linkedPullRequestMerged: false,
+      });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-approved"));
+      expect(delivery?.status).toBe(`ready_to_merge:${BABYSIT_PR_NUMBER}`);
     } finally {
       client.close();
     }
   });
 
-  test("a HUMAN approval stops babysitting but keeps the PR mergeable (not Failed / Blocked)", async () => {
+  test("a HUMAN approval on a non-allow-listed repo stops babysitting, comments ready, and never merges", async () => {
     const { client, database } = await createTestDatabase();
     try {
       await seedLinkedPullRequestTarget(database);
       await seedCoderInstallationTarget(database);
       await seedCoderClaimedIssue(database, { babysitRound: 1 });
-      const app = createWebhookApp(database);
+
+      const merges: unknown[] = [];
+      const app = createWebhookApp(database, {
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "sha" };
+        },
+        async postCoderIssueComment() {},
+      });
 
       const response = await postGitHubWebhook({
         app,
@@ -1213,11 +1250,13 @@ describe("GitHub webhook babysit admission", () => {
         accepted: false,
         event: "pull_request_review",
         issueNumber: BABYSIT_ISSUE_NUMBER,
-        reason: "human_approved",
+        // Not allow-listed → ready-to-merge comment, not a merge.
+        reason: "ready_to_merge",
       });
 
-      // Humans always win: no fix run is dispatched onto a PR a human has approved.
+      // Humans always win: no fix run, and (non-allow-listed) no merge either.
       expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      expect(merges).toHaveLength(0);
 
       // The stop is recorded so a later bot changes_requested cannot resume the loop.
       const [issue] = await database
@@ -1230,10 +1269,10 @@ describe("GitHub webhook babysit admission", () => {
         .select()
         .from(schema.githubWebhookDelivery)
         .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-human-approved"));
-      expect(delivery?.status).toBe("yielded:human_approved");
+      expect(delivery?.status).toBe(`ready_to_merge:${BABYSIT_PR_NUMBER}`);
 
       // Crucially, the board overlay keeps the approved PR OUT of Failed / Blocked —
-      // it stays In PR (mergeable) so C7 can merge it.
+      // it stays In PR (mergeable) so a human can merge it.
       const overlays = await loadIssueOverlays(database, "repository-record-coder");
       expect(overlays.get(BABYSIT_ISSUE_NUMBER)).toMatchObject({
         blocked: false,
@@ -1722,6 +1761,335 @@ describe("GitHub webhook babysit admission", () => {
       // Same as any other PR comment: nothing synced, no ledger row claimed.
       expect(await database.select().from(schema.agentRun)).toHaveLength(0);
       expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+// The auto-merge allow-list injected in these tests so `octo-org/widgets` (the
+// seeded repo) is allow-listed — the default env allow-list is empty.
+const AUTOMERGE_ALLOW_LIST = new Set(["octo-org/widgets"]);
+
+describe("GitHub webhook auto-merge (C7)", () => {
+  test("an approved review on an allow-listed Coder PR squash-merges it and stamps the Merged lane", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+
+      const merges: Array<{
+        installationId: string;
+        owner: string;
+        repo: string;
+        pullRequestNumber: number;
+      }> = [];
+      const postedComments: Array<{ issueNumber: number; body: string }> = [];
+      const app = createWebhookApp(database, {
+        automergeRepositories: AUTOMERGE_ALLOW_LIST,
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "merge-sha-42" };
+        },
+        async postCoderIssueComment(input) {
+          postedComments.push(input);
+        },
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge",
+        payload: pullRequestReviewPayload({ reviewState: "approved" }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "pull_request_review",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "merged",
+      });
+
+      // The Coder squash-merged its own PR via the Coder installation.
+      expect(merges).toEqual([
+        {
+          installationId: String(CODER_INSTALLATION_ID),
+          owner: "octo-org",
+          repo: "widgets",
+          pullRequestNumber: BABYSIT_PR_NUMBER,
+        },
+      ]);
+      // No fix run enqueued on an approval.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      // The issue row is stamped merged → Merged lane.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({
+        linkedPullRequestNumber: BABYSIT_PR_NUMBER,
+        linkedPullRequestState: "closed",
+        linkedPullRequestMerged: true,
+      });
+      const overlays = await loadIssueOverlays(database, "repository-record-coder");
+      expect(overlays.get(BABYSIT_ISSUE_NUMBER)).toMatchObject({
+        blocked: false,
+        linkedPullRequest: { state: "closed", merged: true },
+      });
+
+      // A Coder comment on the issue announced the merge.
+      expect(postedComments).toHaveLength(1);
+      expect(postedComments[0]).toMatchObject({ issueNumber: BABYSIT_ISSUE_NUMBER });
+      expect(postedComments[0]?.body).toContain("Merged pull request");
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge"));
+      expect(delivery?.status).toBe(`merged:${BABYSIT_PR_NUMBER}`);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a HUMAN approval on an allow-listed Coder PR merges AND records the human_approved stop", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+
+      const merges: unknown[] = [];
+      const app = createWebhookApp(database, {
+        automergeRepositories: AUTOMERGE_ALLOW_LIST,
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "merge-sha-42" };
+        },
+        async postCoderIssueComment() {},
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge-human",
+        payload: pullRequestReviewPayload({ reviewState: "approved", senderType: "User" }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "merged",
+      });
+      // A human approval on an allow-listed Coder PR SHOULD merge (that is the point).
+      expect(merges).toHaveLength(1);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      // The human_approved stop is still recorded (humans always win — no later bot
+      // review resumes), and the PR is merged (Merged lane, not Failed / Blocked).
+      expect(issue).toMatchObject({
+        babysitBlockedReason: "human_approved",
+        linkedPullRequestMerged: true,
+      });
+      const overlays = await loadIssueOverlays(database, "repository-record-coder");
+      expect(overlays.get(BABYSIT_ISSUE_NUMBER)).toMatchObject({ blocked: false });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human-STOPPED (takeover) claim never auto-merges, even on an approved review", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      // A human already took the PR over (Failed / Blocked). A later approval (bot or
+      // human-after-stop → noop:approved_review) must NOT merge.
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 1,
+        babysitBlockedReason: "human_in_the_loop",
+      });
+
+      const merges: unknown[] = [];
+      const postedComments: unknown[] = [];
+      const app = createWebhookApp(database, {
+        automergeRepositories: AUTOMERGE_ALLOW_LIST,
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "sha" };
+        },
+        async postCoderIssueComment(input) {
+          postedComments.push(input);
+        },
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge-human-stopped",
+        payload: pullRequestReviewPayload({ reviewState: "approved" }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_stopped",
+      });
+      // Humans took over: no merge, no ready-to-merge comment.
+      expect(merges).toHaveLength(0);
+      expect(postedComments).toHaveLength(0);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.linkedPullRequestMerged).toBeFalsy();
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge-human-stopped"));
+      expect(delivery?.status).toBe("ignored:babysit_stopped");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a redelivered approval after the merge already landed is an idempotent no-op", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+
+      const merges: unknown[] = [];
+      const app = createWebhookApp(database, {
+        automergeRepositories: AUTOMERGE_ALLOW_LIST,
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "sha" };
+        },
+        async postCoderIssueComment() {},
+      });
+
+      // First approval merges (mock records one call, issue stamped merged).
+      const first = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge-first",
+        payload: pullRequestReviewPayload({ reviewState: "approved", reviewId: 7001 }),
+      });
+      expect((await first.json()) as GitHubWebhookAdmission).toMatchObject({ reason: "merged" });
+      expect(merges).toHaveLength(1);
+
+      // A SECOND, distinct approval delivery (e.g. a re-approval) arrives. The linked
+      // PR is already stamped merged, so decideAutoMerge skips — no second merge call.
+      const second = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge-second",
+        payload: pullRequestReviewPayload({ reviewState: "approved", reviewId: 7002 }),
+      });
+      expect((await second.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "already_merged",
+      });
+      // The merge was called exactly once across both deliveries.
+      expect(merges).toHaveLength(1);
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge-second"));
+      expect(delivery?.status).toBe("ignored:already_merged");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a merge API failure records the failure durably and never crash-loops", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+
+      const app = createWebhookApp(database, {
+        automergeRepositories: AUTOMERGE_ALLOW_LIST,
+        async mergeCoderPullRequest() {
+          throw new Error("GitHub merge failed: base branch was modified");
+        },
+        async postCoderIssueComment() {},
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge-fail",
+        payload: pullRequestReviewPayload({ reviewState: "approved" }),
+      });
+
+      // No crash / 500 — a normal 202 admission that records the failure.
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "merge_failed",
+      });
+
+      // The issue is NOT stamped merged — it stays In PR for a human / retry.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.linkedPullRequestMerged).toBeFalsy();
+
+      // The failure is durably recorded on the delivery ledger.
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge-fail"));
+      expect(delivery?.status).toBe(`merge_failed:${BABYSIT_PR_NUMBER}`);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("an approved review on a CLOSED pull request does not merge (skip)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+
+      const merges: unknown[] = [];
+      const app = createWebhookApp(database, {
+        automergeRepositories: AUTOMERGE_ALLOW_LIST,
+        async mergeCoderPullRequest(input) {
+          merges.push(input);
+          return { merged: true, sha: "sha" };
+        },
+        async postCoderIssueComment() {},
+      });
+
+      const payload = pullRequestReviewPayload({ reviewState: "approved" });
+      // The PR reads closed on this delivery (e.g. merged/closed out-of-band).
+      (payload.pull_request as { state: string }).state = "closed";
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-automerge-closed",
+        payload,
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "pull_request_not_open",
+      });
+      expect(merges).toHaveLength(0);
     } finally {
       client.close();
     }

@@ -110,6 +110,17 @@ export type ImplementationGitHubClient = {
           user?: { login?: string | null } | null;
         }>;
       }>;
+      // Merge the pull request (C7 auto-merge). The Coder squash-merges its own PR on
+      // an approved review for an allow-listed repository.
+      merge(input: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        merge_method?: "merge" | "squash" | "rebase";
+        request?: { signal?: AbortSignal };
+      }): Promise<{
+        data: { merged?: boolean | null; sha?: string | null; message?: string | null };
+      }>;
     };
   };
 };
@@ -210,6 +221,29 @@ export async function openPullRequest(
     htmlUrl: response.data.html_url ?? null,
     state: response.data.state === "closed" ? "closed" : "open",
   };
+}
+
+export type MergedPullRequest = {
+  merged: boolean;
+  sha: string | null;
+};
+
+// Squash-merge the Coder's pull request (C7 auto-merge) via the Coder installation
+// token, so the merge commit is attributed to the Coder App (ADR-0001). Throws when
+// GitHub rejects the merge (a closed/unmergeable PR, a race) or reports `merged`
+// false — the caller records that failure durably without crashing the loop.
+export async function squashMergePullRequest(
+  client: ImplementationGitHubClient,
+  input: { owner: string; repo: string; pullRequestNumber: number; signal?: AbortSignal },
+): Promise<MergedPullRequest> {
+  const response = await client.rest.pulls.merge({
+    owner: input.owner,
+    repo: input.repo,
+    pull_number: input.pullRequestNumber,
+    merge_method: "squash",
+    request: { signal: input.signal },
+  });
+  return { merged: Boolean(response.data.merged), sha: response.data.sha ?? null };
 }
 
 // Post a comment on the issue AS the Coder (via the Coder installation token).

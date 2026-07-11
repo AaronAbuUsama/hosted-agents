@@ -200,6 +200,27 @@ export async function stampLinkedPullRequest(
     );
 }
 
+// Stamp a Coder-claimed issue's linked PR as merged (C7 auto-merge). Keyed by the
+// claim's own issue row id — never (repo, number) — because the claim is stamped on
+// whichever `github_repository` row the board project is linked through (possibly the
+// Reviewer app's row), which the auto-merge transport resolves the claim across
+// installations by name. The Merged lane reads `linkedPullRequestMerged` off this
+// exact row. Idempotent: a redelivery re-sets the same merged state.
+export async function markLinkedPullRequestMerged(
+  database: Pick<SyncDatabase, "update">,
+  input: { issueId: string; pullRequestNumber: number },
+): Promise<void> {
+  await database
+    .update(githubIssue)
+    .set({
+      linkedPullRequestNumber: input.pullRequestNumber,
+      linkedPullRequestState: "closed",
+      linkedPullRequestMerged: true,
+      updatedAt: new Date(),
+    })
+    .where(eq(githubIssue.id, input.issueId));
+}
+
 // Remove a synced comment for an `issue_comment.deleted` delivery. Idempotent — a
 // redelivery of the delete simply matches no row.
 export async function deleteSyncedIssueComment(
