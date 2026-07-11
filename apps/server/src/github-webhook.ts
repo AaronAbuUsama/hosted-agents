@@ -1,4 +1,9 @@
 import { resolveGitHubAppWorkerRole } from "@hosted-agents/api/github-app";
+import {
+  deleteSyncedIssueComment,
+  upsertSyncedIssue,
+  upsertSyncedIssueComment,
+} from "@hosted-agents/api/issues/sync";
 import { db } from "@hosted-agents/db";
 import {
   agentRun,
@@ -34,9 +39,10 @@ type GitHubWebhookChannelOptions = {
   webhookSecret?: string;
 };
 
-type PullRequestAdmissionMetadata = {
-  deliveryId: string;
-  installationId: string;
+// The repository fields both the pull-request and issue-sync paths need to resolve
+// (or lazily create) the linked `github_repository` record. Shared so
+// `resolveRepository` serves both event families.
+type RepositoryDescriptor = {
   repositoryId: string;
   repositoryOwner: string;
   repositoryName: string;
@@ -44,6 +50,11 @@ type PullRequestAdmissionMetadata = {
   repositoryUrl: string | null;
   repositoryPrivate: boolean;
   repositoryDefaultBranch: string | null;
+};
+
+type PullRequestAdmissionMetadata = RepositoryDescriptor & {
+  deliveryId: string;
+  installationId: string;
   pullRequestNumber: number;
   baseRef: string;
   baseSha: string;
@@ -61,6 +72,7 @@ export type GitHubWebhookAdmission = {
   deliveryId: string;
   agentRunId?: string;
   reviewRunId?: string;
+  issueNumber?: number;
   reason?: string;
 };
 
@@ -100,16 +112,28 @@ function ignoredDelivery({
   };
 }
 
-async function claimDelivery(database: AdmissionDatabase, metadata: PullRequestAdmissionMetadata) {
+type DeliveryClaim = {
+  deliveryId: string;
+  event: string;
+  action?: string;
+  installationId: string;
+  repositoryFullName: string;
+  pullRequestNumber?: number | null;
+};
+
+// Insert the delivery-ledger row that makes admission exactly-once: the first
+// writer wins the unique delivery id, a redelivery conflicts and is treated as a
+// duplicate. Shared by the pull-request and issue-sync paths.
+async function claimDelivery(database: AdmissionDatabase, claim: DeliveryClaim) {
   const rows = await database
     .insert(githubWebhookDelivery)
     .values({
-      id: metadata.deliveryId,
-      event: "pull_request",
-      action: metadata.action,
-      installationId: metadata.installationId,
-      repositoryFullName: metadata.repositoryFullName,
-      pullRequestNumber: metadata.pullRequestNumber,
+      id: claim.deliveryId,
+      event: claim.event,
+      action: claim.action,
+      installationId: claim.installationId,
+      repositoryFullName: claim.repositoryFullName,
+      pullRequestNumber: claim.pullRequestNumber ?? null,
       status: "claimed",
     })
     .onConflictDoNothing()
@@ -183,12 +207,12 @@ async function resolveRepository({
   database,
   installationRecordId,
   repositorySelection,
-  metadata,
+  descriptor,
 }: {
   database: AdmissionDatabase;
   installationRecordId: string;
   repositorySelection: string | null;
-  metadata: PullRequestAdmissionMetadata;
+  descriptor: RepositoryDescriptor;
 }) {
   const [existing] = await database
     .select()
@@ -196,7 +220,7 @@ async function resolveRepository({
     .where(
       and(
         eq(githubRepository.installationId, installationRecordId),
-        eq(githubRepository.githubRepositoryId, metadata.repositoryId),
+        eq(githubRepository.githubRepositoryId, descriptor.repositoryId),
       ),
     )
     .limit(1);
@@ -213,13 +237,13 @@ async function resolveRepository({
   await database.insert(githubRepository).values({
     id,
     installationId: installationRecordId,
-    githubRepositoryId: metadata.repositoryId,
-    owner: metadata.repositoryOwner,
-    name: metadata.repositoryName,
-    fullName: metadata.repositoryFullName,
-    htmlUrl: metadata.repositoryUrl,
-    defaultBranch: metadata.repositoryDefaultBranch,
-    private: metadata.repositoryPrivate,
+    githubRepositoryId: descriptor.repositoryId,
+    owner: descriptor.repositoryOwner,
+    name: descriptor.repositoryName,
+    fullName: descriptor.repositoryFullName,
+    htmlUrl: descriptor.repositoryUrl,
+    defaultBranch: descriptor.repositoryDefaultBranch,
+    private: descriptor.repositoryPrivate,
     selected: true,
   });
 
@@ -280,24 +304,57 @@ function pullRequestMetadata(delivery: GitHubWebhookDelivery): PullRequestAdmiss
   };
 }
 
+// The webhook channel is one HMAC-verified ingress for several event families.
+// This dispatcher routes each verified delivery to the transport that owns it:
+// pull requests queue a review run, issues and issue comments sync into the board
+// store, and everything else is acknowledged without side effects.
 export async function admitGitHubWebhookDelivery(
   delivery: GitHubWebhookDelivery,
   database: Database = db,
 ): Promise<GitHubWebhookAdmission> {
   const action = deliveryAction(delivery);
-  const metadata = pullRequestMetadata(delivery);
 
-  if (!metadata) {
-    return ignoredDelivery({
-      event: delivery.name,
-      action,
-      deliveryId: delivery.deliveryId,
-      reason: "event_not_admitted",
-    });
+  const pullRequest = pullRequestMetadata(delivery);
+  if (pullRequest) {
+    return admitPullRequestDelivery(delivery, database, pullRequest, action);
   }
 
+  const issueSync = issueSyncMetadata(delivery);
+  if (issueSync) {
+    if (!issueSync.admit) {
+      return ignoredDelivery({
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        reason: issueSync.reason,
+      });
+    }
+    return admitIssueSyncDelivery(delivery, database, issueSync.metadata, action);
+  }
+
+  return ignoredDelivery({
+    event: delivery.name,
+    action,
+    deliveryId: delivery.deliveryId,
+    reason: "event_not_admitted",
+  });
+}
+
+async function admitPullRequestDelivery(
+  delivery: GitHubWebhookDelivery,
+  database: Database,
+  metadata: PullRequestAdmissionMetadata,
+  action: string | undefined,
+): Promise<GitHubWebhookAdmission> {
   return database.transaction(async (transaction) => {
-    const claimed = await claimDelivery(transaction, metadata);
+    const claimed = await claimDelivery(transaction, {
+      deliveryId: metadata.deliveryId,
+      event: "pull_request",
+      action: metadata.action,
+      installationId: metadata.installationId,
+      repositoryFullName: metadata.repositoryFullName,
+      pullRequestNumber: metadata.pullRequestNumber,
+    });
     if (!claimed) {
       return getDuplicateAdmission(transaction, delivery);
     }
@@ -356,7 +413,7 @@ export async function admitGitHubWebhookDelivery(
       database: transaction,
       installationRecordId: installation.id,
       repositorySelection: installation.repositorySelection,
-      metadata,
+      descriptor: metadata,
     });
 
     if (!repository) {
@@ -451,6 +508,349 @@ export async function admitGitHubWebhookDelivery(
       action,
       deliveryId: delivery.deliveryId,
       agentRunId,
+    };
+  });
+}
+
+// GitHub-sourced issue fields, parsed off the payload. Mirrors the columns
+// upsertSyncedIssue writes; the transport parses, the module persists.
+type SyncedIssueFields = {
+  number: number;
+  githubIssueId: string | null;
+  nodeId: string | null;
+  title: string;
+  body: string | null;
+  state: "open" | "closed";
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  labels: string[];
+  htmlUrl: string | null;
+  commentCount: number;
+  githubCreatedAt: Date | null;
+  githubUpdatedAt: Date | null;
+};
+
+type SyncedCommentFields = {
+  issueNumber: number;
+  githubCommentId: string;
+  authorLogin: string | null;
+  authorAvatarUrl: string | null;
+  body: string;
+  htmlUrl: string | null;
+  githubCreatedAt: Date | null;
+  githubUpdatedAt: Date | null;
+};
+
+type IssueSyncMetadata =
+  | {
+      kind: "issue";
+      event: "issues";
+      deliveryId: string;
+      action: string;
+      installationId: string;
+      repository: RepositoryDescriptor;
+      issueNumber: number;
+      issue: SyncedIssueFields;
+    }
+  | {
+      kind: "comment";
+      event: "issue_comment";
+      deliveryId: string;
+      action: string;
+      installationId: string;
+      repository: RepositoryDescriptor;
+      issueNumber: number;
+      comment: SyncedCommentFields;
+    };
+
+// null → not an issue/comment event we sync (dispatcher falls through to
+// event_not_admitted). `{ admit: false }` → a recognized delivery we deliberately
+// skip (a pull-request-shaped payload; the board is issues-only).
+type IssueSyncAdmission =
+  | { admit: true; metadata: IssueSyncMetadata }
+  | { admit: false; reason: string };
+
+function parseGitHubDate(value: unknown): Date | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function issueLabelNames(labels: unknown): string[] {
+  if (!Array.isArray(labels)) {
+    return [];
+  }
+  return labels
+    .map((label) => {
+      if (typeof label === "string") {
+        return label;
+      }
+      if (label && typeof label === "object") {
+        const name = (label as { name?: unknown }).name;
+        return typeof name === "string" ? name : null;
+      }
+      return null;
+    })
+    .filter((name): name is string => Boolean(name));
+}
+
+function parseRepositoryDescriptor(repository: unknown): RepositoryDescriptor | null {
+  if (!repository || typeof repository !== "object") {
+    return null;
+  }
+  const repo = repository as Record<string, unknown>;
+  const repositoryId = repo.id;
+  const repositoryFullName = repo.full_name;
+  const repositoryName = repo.name;
+  const owner = repo.owner as { login?: unknown } | null | undefined;
+  const repositoryOwner =
+    (owner && typeof owner.login === "string" && owner.login) ||
+    (typeof repositoryFullName === "string" ? repositoryFullName.split("/")[0] : undefined);
+
+  if (
+    typeof repositoryId !== "number" ||
+    typeof repositoryFullName !== "string" ||
+    repositoryFullName.length === 0 ||
+    typeof repositoryName !== "string" ||
+    repositoryName.length === 0 ||
+    typeof repositoryOwner !== "string" ||
+    repositoryOwner.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    repositoryId: String(repositoryId),
+    repositoryOwner,
+    repositoryName,
+    repositoryFullName,
+    repositoryUrl: typeof repo.html_url === "string" ? repo.html_url : null,
+    repositoryPrivate: Boolean(repo.private),
+    repositoryDefaultBranch: typeof repo.default_branch === "string" ? repo.default_branch : null,
+  };
+}
+
+function mapIssueFields(issue: {
+  number: number;
+  id?: number | null;
+  node_id?: string | null;
+  title?: string | null;
+  body?: string | null;
+  state?: string | null;
+  html_url?: string | null;
+  comments?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  user?: { login?: string | null; avatar_url?: string | null } | null;
+  labels?: unknown;
+}): SyncedIssueFields {
+  return {
+    number: issue.number,
+    githubIssueId: issue.id != null ? String(issue.id) : null,
+    nodeId: typeof issue.node_id === "string" ? issue.node_id : null,
+    title: typeof issue.title === "string" && issue.title ? issue.title : `Issue #${issue.number}`,
+    body: typeof issue.body === "string" ? issue.body : null,
+    state: issue.state === "closed" ? "closed" : "open",
+    authorLogin: issue.user?.login ?? null,
+    authorAvatarUrl: issue.user?.avatar_url ?? null,
+    labels: issueLabelNames(issue.labels),
+    htmlUrl: typeof issue.html_url === "string" ? issue.html_url : null,
+    commentCount: typeof issue.comments === "number" ? issue.comments : 0,
+    githubCreatedAt: parseGitHubDate(issue.created_at),
+    githubUpdatedAt: parseGitHubDate(issue.updated_at),
+  };
+}
+
+// Parse `issues.*` and `issue_comment.*` deliveries into the fields the store
+// sync needs. A pull-request-shaped payload (a comment on a PR, or the defensive
+// issue-with-pull_request case) is recognized and skipped so the issues board
+// stays issues-only. Any action is admitted: every issue delivery carries the full
+// issue object, so upserting on any of them keeps the synced row fresh.
+function issueSyncMetadata(delivery: GitHubWebhookDelivery): IssueSyncAdmission | null {
+  if (delivery.name === "issues") {
+    const { payload } = delivery;
+    const installationId = payload.installation?.id;
+    const issue = payload.issue;
+
+    if (typeof installationId !== "number" || !issue || typeof issue.number !== "number") {
+      return null;
+    }
+    if (issue.pull_request != null) {
+      return { admit: false, reason: "pull_request_shaped" };
+    }
+
+    const repository = parseRepositoryDescriptor(payload.repository);
+    if (!repository) {
+      return null;
+    }
+
+    return {
+      admit: true,
+      metadata: {
+        kind: "issue",
+        event: "issues",
+        deliveryId: delivery.deliveryId,
+        action: payload.action,
+        installationId: String(installationId),
+        repository,
+        issueNumber: issue.number,
+        issue: mapIssueFields(issue),
+      },
+    };
+  }
+
+  if (delivery.name === "issue_comment") {
+    const { payload } = delivery;
+    const installationId = payload.installation?.id;
+    const issue = payload.issue;
+    const comment = payload.comment;
+
+    if (
+      typeof installationId !== "number" ||
+      !issue ||
+      typeof issue.number !== "number" ||
+      !comment ||
+      typeof comment.id !== "number"
+    ) {
+      return null;
+    }
+    // A GitHub pull request is modeled as an issue, so PR comments arrive here too.
+    // They belong to the review flow, not the board.
+    if (issue.pull_request != null) {
+      return { admit: false, reason: "pull_request_shaped" };
+    }
+
+    const repository = parseRepositoryDescriptor(payload.repository);
+    if (!repository) {
+      return null;
+    }
+
+    return {
+      admit: true,
+      metadata: {
+        kind: "comment",
+        event: "issue_comment",
+        deliveryId: delivery.deliveryId,
+        action: payload.action,
+        installationId: String(installationId),
+        repository,
+        issueNumber: issue.number,
+        comment: {
+          issueNumber: issue.number,
+          githubCommentId: String(comment.id),
+          authorLogin: comment.user?.login ?? null,
+          authorAvatarUrl: comment.user?.avatar_url ?? null,
+          body: typeof comment.body === "string" ? comment.body : "",
+          htmlUrl: typeof comment.html_url === "string" ? comment.html_url : null,
+          githubCreatedAt: parseGitHubDate(comment.created_at),
+          githubUpdatedAt: parseGitHubDate(comment.updated_at),
+        },
+      },
+    };
+  }
+
+  return null;
+}
+
+async function admitIssueSyncDelivery(
+  delivery: GitHubWebhookDelivery,
+  database: Database,
+  metadata: IssueSyncMetadata,
+  action: string | undefined,
+): Promise<GitHubWebhookAdmission> {
+  return database.transaction(async (transaction) => {
+    const claimed = await claimDelivery(transaction, {
+      deliveryId: metadata.deliveryId,
+      event: metadata.event,
+      action: metadata.action,
+      installationId: metadata.installationId,
+      repositoryFullName: metadata.repository.repositoryFullName,
+      pullRequestNumber: null,
+    });
+    if (!claimed) {
+      return getDuplicateAdmission(transaction, delivery);
+    }
+
+    const [installation] = await transaction
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, metadata.installationId))
+      .limit(1);
+
+    if (!installation) {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_not_linked");
+      return ignoredDelivery({
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        reason: "installation_not_linked",
+      });
+    }
+
+    if (installation.status !== "connected") {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_not_connected");
+      return ignoredDelivery({
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        reason: "installation_not_connected",
+      });
+    }
+
+    // Unlike the review path, issue sync admits deliveries from any connected
+    // installation (reviewer or Coder app). The upsert is idempotent and keyed by
+    // (repository, number) / comment id, so a repo installed under both apps just
+    // syncs the same row twice — no double side effect to guard against.
+    const repository = await resolveRepository({
+      database: transaction,
+      installationRecordId: installation.id,
+      repositorySelection: installation.repositorySelection,
+      descriptor: metadata.repository,
+    });
+
+    if (!repository) {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "repository_not_linked");
+      return ignoredDelivery({
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        reason: "repository_not_linked",
+      });
+    }
+
+    if (metadata.kind === "issue") {
+      await upsertSyncedIssue(transaction, {
+        organizationId: installation.organizationId,
+        githubInstallationId: installation.id,
+        githubRepositoryId: repository.id,
+        repositoryFullName: metadata.repository.repositoryFullName,
+        ...metadata.issue,
+      });
+    } else if (metadata.action === "deleted") {
+      await deleteSyncedIssueComment(transaction, metadata.comment.githubCommentId);
+    } else {
+      await upsertSyncedIssueComment(transaction, {
+        organizationId: installation.organizationId,
+        githubRepositoryId: repository.id,
+        ...metadata.comment,
+      });
+    }
+
+    await transaction
+      .update(githubWebhookDelivery)
+      .set({ status: "accepted", updatedAt: new Date() })
+      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+
+    return {
+      ok: true,
+      accepted: true,
+      duplicate: false,
+      event: delivery.name,
+      action,
+      deliveryId: delivery.deliveryId,
+      issueNumber: metadata.issueNumber,
     };
   });
 }

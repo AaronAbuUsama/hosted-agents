@@ -240,6 +240,58 @@ async function createTables(client: TestClient) {
       "flue_event_type" text,
       "created_at" integer DEFAULT 0 NOT NULL
     );
+
+    CREATE TABLE "github_issue" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "github_installation_id" text,
+      "github_repository_id" text NOT NULL,
+      "repository_full_name" text NOT NULL,
+      "number" integer NOT NULL,
+      "github_issue_id" text,
+      "node_id" text,
+      "title" text NOT NULL,
+      "body" text,
+      "state" text DEFAULT 'open' NOT NULL,
+      "author_login" text,
+      "author_avatar_url" text,
+      "labels_json" text DEFAULT '[]' NOT NULL,
+      "html_url" text,
+      "comment_count" integer DEFAULT 0 NOT NULL,
+      "linked_pull_request_number" integer,
+      "linked_pull_request_state" text,
+      "linked_pull_request_merged" integer,
+      "closed_by_merge" integer DEFAULT 0 NOT NULL,
+      "claimed_by_worker_role" text,
+      "claimed_by_run_id" text,
+      "claimed_at" integer,
+      "github_created_at" integer,
+      "github_updated_at" integer,
+      "created_at" integer DEFAULT 0 NOT NULL,
+      "updated_at" integer DEFAULT 0 NOT NULL
+    );
+    CREATE UNIQUE INDEX "github_issue_repo_number_idx" ON "github_issue" ("github_repository_id","number");
+
+    CREATE TABLE "github_issue_comment" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "github_repository_id" text NOT NULL,
+      "issue_id" text,
+      "issue_number" integer NOT NULL,
+      "github_comment_id" text,
+      "author_login" text,
+      "author_avatar_url" text,
+      "author_kind" text DEFAULT 'external' NOT NULL,
+      "author_worker_role" text,
+      "author_user_id" text,
+      "body" text NOT NULL,
+      "html_url" text,
+      "github_created_at" integer,
+      "github_updated_at" integer,
+      "created_at" integer DEFAULT 0 NOT NULL,
+      "updated_at" integer DEFAULT 0 NOT NULL
+    );
+    CREATE UNIQUE INDEX "github_issue_comment_githubCommentId_idx" ON "github_issue_comment" ("github_comment_id");
   `);
 }
 
@@ -725,6 +777,317 @@ describe("GitHub webhook admission", () => {
         agentRunId: null,
         reviewRunId: null,
       });
+    } finally {
+      client.close();
+    }
+  });
+});
+
+const ISSUE_NODE_GITHUB_ID = 555_000;
+
+function issuePayload(
+  action: string,
+  overrides: {
+    number?: number;
+    labels?: string[];
+    state?: "open" | "closed";
+    title?: string;
+    body?: string | null;
+    comments?: number;
+  } = {},
+) {
+  const number = overrides.number ?? 7;
+  return {
+    action,
+    installation: { id: INSTALLATION_ID },
+    repository: {
+      id: GITHUB_REPOSITORY_ID,
+      full_name: "octo-org/widgets",
+      owner: { login: "octo-org" },
+      name: "widgets",
+      html_url: "https://github.com/octo-org/widgets",
+      private: false,
+      default_branch: "main",
+    },
+    issue: {
+      number,
+      id: ISSUE_NODE_GITHUB_ID + number,
+      node_id: `I_issue_${number}`,
+      title: overrides.title ?? `Issue #${number}`,
+      body: overrides.body === undefined ? "An issue body" : overrides.body,
+      state: overrides.state ?? "open",
+      user: { login: "octocat", avatar_url: "https://avatars.githubusercontent.com/u/1" },
+      labels: (overrides.labels ?? []).map((name) => ({ name })),
+      html_url: `https://github.com/octo-org/widgets/issues/${number}`,
+      comments: overrides.comments ?? 0,
+      created_at: "2026-07-08T10:00:00Z",
+      updated_at: "2026-07-08T11:00:00Z",
+    },
+  };
+}
+
+function issueCommentPayload(
+  action: string,
+  overrides: { number?: number; commentId?: number; body?: string; prShaped?: boolean } = {},
+) {
+  const number = overrides.number ?? 7;
+  const base = issuePayload("opened", { number });
+  const issue = overrides.prShaped
+    ? {
+        ...base.issue,
+        pull_request: {
+          url: "https://api.github.com/repos/octo-org/widgets/pulls/7",
+          html_url: "https://github.com/octo-org/widgets/pull/7",
+        },
+      }
+    : base.issue;
+
+  return {
+    action,
+    installation: base.installation,
+    repository: base.repository,
+    issue,
+    comment: {
+      id: overrides.commentId ?? 900_100,
+      body: overrides.body ?? "A synced comment",
+      html_url: `https://github.com/octo-org/widgets/issues/${number}#issuecomment-1`,
+      user: { login: "octocat", avatar_url: "https://avatars.githubusercontent.com/u/1" },
+      created_at: "2026-07-08T12:00:00Z",
+      updated_at: "2026-07-08T12:00:00Z",
+    },
+  };
+}
+
+describe("GitHub webhook issue sync", () => {
+  test("upserts a github_issue row for an issues.opened delivery", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+      const deliveryId = "delivery-issue-opened";
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issues",
+        deliveryId,
+        payload: issuePayload("opened", { number: 7, title: "Sync me", comments: 2 }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        ok: true,
+        accepted: true,
+        duplicate: false,
+        event: "issues",
+        action: "opened",
+        deliveryId,
+        issueNumber: 7,
+      });
+
+      const issues = await database.select().from(schema.githubIssue);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        organizationId: "org-1",
+        githubRepositoryId: "repository-record-1",
+        githubInstallationId: "installation-record-1",
+        repositoryFullName: "octo-org/widgets",
+        number: 7,
+        githubIssueId: String(ISSUE_NODE_GITHUB_ID + 7),
+        title: "Sync me",
+        state: "open",
+        authorLogin: "octocat",
+        labelsJson: "[]",
+        commentCount: 2,
+        // Claim / linked-PR bookkeeping is left untouched by a GitHub sync.
+        claimedByRunId: null,
+        linkedPullRequestState: null,
+        closedByMerge: false,
+      });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+      expect(delivery).toMatchObject({
+        id: deliveryId,
+        event: "issues",
+        action: "opened",
+        status: "accepted",
+        agentRunId: null,
+        reviewRunId: null,
+      });
+      // Syncing an issue never queues a review run.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("an issues.labeled delivery refreshes labels without clobbering a recorded claim", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+
+      await postGitHubWebhook({
+        app,
+        event: "issues",
+        deliveryId: "delivery-issue-open-first",
+        payload: issuePayload("opened", { number: 7 }),
+      });
+
+      // Simulate a claim + linked PR our own code recorded after the first sync.
+      await database
+        .update(schema.githubIssue)
+        .set({
+          claimedByRunId: "run-7",
+          claimedByWorkerRole: "implementation",
+          linkedPullRequestState: "open",
+          linkedPullRequestMerged: false,
+        })
+        .where(eq(schema.githubIssue.number, 7));
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issues",
+        deliveryId: "delivery-issue-labeled",
+        payload: issuePayload("labeled", { number: 7, labels: ["ready for agent"] }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: true,
+        event: "issues",
+        action: "labeled",
+        issueNumber: 7,
+      });
+
+      const issues = await database.select().from(schema.githubIssue);
+      expect(issues).toHaveLength(1);
+      expect(JSON.parse(issues[0]?.labelsJson ?? "[]")).toEqual(["ready for agent"]);
+      // The GitHub-sourced label refreshed; the claim + linked PR survived the upsert.
+      expect(issues[0]).toMatchObject({
+        claimedByRunId: "run-7",
+        claimedByWorkerRole: "implementation",
+        linkedPullRequestState: "open",
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("upserts a github_issue_comment row linked to its synced issue", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+
+      await postGitHubWebhook({
+        app,
+        event: "issues",
+        deliveryId: "delivery-issue-open-for-comment",
+        payload: issuePayload("opened", { number: 7 }),
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-comment-created",
+        payload: issueCommentPayload("created", { number: 7, commentId: 900, body: "hello world" }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        ok: true,
+        accepted: true,
+        duplicate: false,
+        event: "issue_comment",
+        action: "created",
+        deliveryId: "delivery-comment-created",
+        issueNumber: 7,
+      });
+
+      const comments = await database.select().from(schema.githubIssueComment);
+      expect(comments).toHaveLength(1);
+      expect(comments[0]).toMatchObject({
+        organizationId: "org-1",
+        githubRepositoryId: "repository-record-1",
+        issueNumber: 7,
+        githubCommentId: "900",
+        authorKind: "external",
+        authorLogin: "octocat",
+        body: "hello world",
+      });
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, 7));
+      expect(comments[0]?.issueId).toBe(issue?.id ?? "");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("treats an issues.opened redelivery as a duplicate", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+      const deliveryId = "delivery-issue-dup";
+      const payload = issuePayload("opened", { number: 7 });
+
+      const first = await postGitHubWebhook({ app, event: "issues", deliveryId, payload });
+      expect(((await first.json()) as GitHubWebhookAdmission).accepted).toBe(true);
+
+      const second = await postGitHubWebhook({ app, event: "issues", deliveryId, payload });
+      expect(second.status).toBe(202);
+      expect(await second.json()).toEqual({
+        ok: true,
+        accepted: false,
+        duplicate: true,
+        event: "issues",
+        action: "opened",
+        deliveryId,
+        reason: "duplicate_delivery",
+      });
+
+      // The redelivery neither duplicated the synced row nor the ledger entry.
+      expect(await database.select().from(schema.githubIssue)).toHaveLength(1);
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(1);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("ignores an issue_comment delivery on a pull request without syncing it", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+      const deliveryId = "delivery-pr-comment";
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId,
+        payload: issueCommentPayload("created", { number: 7, prShaped: true }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        ok: true,
+        accepted: false,
+        duplicate: false,
+        event: "issue_comment",
+        action: "created",
+        deliveryId,
+        reason: "pull_request_shaped",
+      });
+
+      // A PR comment is off the issues board: nothing synced, no ledger row claimed.
+      expect(await database.select().from(schema.githubIssueComment)).toHaveLength(0);
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
     } finally {
       client.close();
     }
