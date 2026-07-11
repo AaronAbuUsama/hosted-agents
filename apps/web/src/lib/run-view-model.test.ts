@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   filterRunsByRepository,
+  sortRunRowsByRecency,
   mapAgentRunEventToTimelineRow,
   mapAgentRunEventsToTranscriptRows,
   selectRunTranscriptFeed,
@@ -623,6 +624,47 @@ describe("selectRunTranscriptFeed", () => {
     ]);
 
     expect(feed).toEqual([]);
+  });
+});
+
+describe("sortRunRowsByRecency", () => {
+  test("orders runs newest-first by orderTimestamp, tie-broken by id", () => {
+    const older = mapAgentRunToRunRow(
+      agentRun({ id: "run-older", startedAt: "2026-07-06T10:00:00.000Z" }),
+    );
+    const newer = mapAgentRunToRunRow(
+      agentRun({ id: "run-newer", startedAt: "2026-07-06T12:00:00.000Z" }),
+    );
+    const tieB = mapAgentRunToRunRow(
+      agentRun({ id: "run-b", startedAt: "2026-07-06T11:00:00.000Z" }),
+    );
+    const tieA = mapAgentRunToRunRow(
+      agentRun({ id: "run-a", startedAt: "2026-07-06T11:00:00.000Z" }),
+    );
+
+    const sorted = sortRunRowsByRecency([older, newer, tieB, tieA]);
+
+    expect(sorted.map((row) => row.id)).toEqual(["run-newer", "run-a", "run-b", "run-older"]);
+  });
+
+  test("falls back to createdAt for orderTimestamp when startedAt is null", () => {
+    const row = mapAgentRunToRunRow(
+      agentRun({ startedAt: null, createdAt: "2026-07-06T09:00:00.000Z" }),
+    );
+
+    expect(row.orderTimestamp).toBe(new Date("2026-07-06T09:00:00.000Z").getTime());
+  });
+
+  test("does not mutate the input array", () => {
+    const rows = [
+      mapAgentRunToRunRow(agentRun({ id: "run-1", startedAt: "2026-07-06T10:00:00.000Z" })),
+      mapAgentRunToRunRow(agentRun({ id: "run-2", startedAt: "2026-07-06T12:00:00.000Z" })),
+    ];
+    const original = rows.map((row) => row.id);
+
+    sortRunRowsByRecency(rows);
+
+    expect(rows.map((row) => row.id)).toEqual(original);
   });
 });
 

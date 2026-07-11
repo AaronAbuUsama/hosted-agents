@@ -139,6 +139,9 @@ export type RunViewModelRow = {
   sourceProvider: string;
   runType: string;
   currentStage: string | null;
+  // Epoch ms for recency sorting (startedAt, else createdAt). The `started` field
+  // above is a display string and is not reliably sortable; this is.
+  orderTimestamp: number;
 };
 
 // A single linked run as the issue detail's Runs block renders it: one compact,
@@ -194,7 +197,18 @@ export function mapAgentRunToRunRow(run: AgentRunApiRecord): RunViewModelRow {
     sourceProvider: run.sourceProvider,
     runType: run.runType,
     currentStage: run.currentStage,
+    orderTimestamp: runOrderTimestamp(run),
   };
+}
+
+// The runs list is a flat audit log, newest first (runs are only ever read after
+// the fact — no status grouping). Pure so the ordering is unit-tested; ties break
+// on id for a stable order.
+export function sortRunRowsByRecency(rows: readonly RunViewModelRow[]): RunViewModelRow[] {
+  return [...rows].sort((left, right) => {
+    const byRecency = right.orderTimestamp - left.orderTimestamp;
+    return byRecency !== 0 ? byRecency : left.id.localeCompare(right.id);
+  });
 }
 
 // A project's Runs tab must show only that project's runs. Runs are grouped in
