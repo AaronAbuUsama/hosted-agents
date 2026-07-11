@@ -9,7 +9,7 @@ import { Hono } from "hono";
 import type { GitHubWebhookDelivery as FlueGitHubWebhookDelivery } from "@flue/github";
 import type { db as productionDb } from "@hosted-agents/db";
 import * as schema from "@hosted-agents/db/schema/index";
-import { loadRepositoryIssuesRevision } from "@hosted-agents/api/issues/sync";
+import { loadIssueOverlays, loadRepositoryIssuesRevision } from "@hosted-agents/api/issues/sync";
 import type { GitHubWebhookAdmission } from "./github-webhook";
 
 process.env.SKIP_ENV_VALIDATION = "true";
@@ -855,14 +855,20 @@ async function seedCoderClaimedIssue(
     linkedPullRequestNumber?: number | null;
     babysitRound?: number;
     babysitBlockedReason?: string | null;
+    // Which `github_repository` row the claim is stamped on. Defaults to the Coder
+    // app's row; kick-off actually stamps it on whichever row the board project is
+    // linked through, which may be the Reviewer app's row (see the cross-installation
+    // review-admission test).
+    githubRepositoryId?: string;
+    githubInstallationId?: string;
   } = {},
 ) {
   const number = overrides.number ?? BABYSIT_ISSUE_NUMBER;
   await database.insert(schema.githubIssue).values({
     id: `issue-record-${number}`,
     organizationId: "org-1",
-    githubInstallationId: "installation-record-coder",
-    githubRepositoryId: "repository-record-coder",
+    githubInstallationId: overrides.githubInstallationId ?? "installation-record-coder",
+    githubRepositoryId: overrides.githubRepositoryId ?? "repository-record-coder",
     repositoryFullName: "octo-org/widgets",
     number,
     title: "Add a Widget!",
@@ -1156,7 +1162,7 @@ describe("GitHub webhook babysit admission", () => {
     }
   });
 
-  test("an approved review does nothing here (C7 owns the approval path)", async () => {
+  test("a bot approved review does nothing here (C7 owns the approval path)", async () => {
     const { client, database } = await createTestDatabase();
     try {
       await seedLinkedPullRequestTarget(database);
@@ -1182,6 +1188,135 @@ describe("GitHub webhook babysit admission", () => {
         .from(schema.githubIssue)
         .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
       expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: null });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a HUMAN approval stops babysitting but keeps the PR mergeable (not Failed / Blocked)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-human-approved",
+        payload: pullRequestReviewPayload({ reviewState: "approved", senderType: "User" }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "pull_request_review",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_approved",
+      });
+
+      // Humans always win: no fix run is dispatched onto a PR a human has approved.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      // The stop is recorded so a later bot changes_requested cannot resume the loop.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: "human_approved" });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-human-approved"));
+      expect(delivery?.status).toBe("yielded:human_approved");
+
+      // Crucially, the board overlay keeps the approved PR OUT of Failed / Blocked —
+      // it stays In PR (mergeable) so C7 can merge it.
+      const overlays = await loadIssueOverlays(database, "repository-record-coder");
+      expect(overlays.get(BABYSIT_ISSUE_NUMBER)).toMatchObject({
+        blocked: false,
+        linkedPullRequest: { state: "open", merged: false },
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  // Regression: a later bot changes_requested after a human approval must not resume.
+  test("after a human approval, a later Reviewer changes_requested is a no-op (loop stays stopped)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 1,
+        babysitBlockedReason: "human_approved",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-after-approval",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_already_stopped",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  // Finding 3: the claim is stamped by kick-off on whichever repo row the board
+  // project is linked through — here the Reviewer app's row (repository-record-1),
+  // NOT the Coder app's row the review resolves under. A repo-row-id scoped lookup
+  // would miss it and drop the review as no_matching_coder_issue, leaving the whole
+  // loop inert. The (org, repo full name) finder matches it across installations.
+  test("matches a claim stamped on a DIFFERENT installation's repo row (cross-installation topology)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      // Claim lives on the Reviewer app's repo row, not the Coder app's.
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 1,
+        githubRepositoryId: "repository-record-1",
+        githubInstallationId: "installation-record-1",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-cross-install",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission).toMatchObject({
+        accepted: true,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+      });
+      // The fix run was enqueued and the round advanced on the claim, despite the
+      // claim living on the other installation's repo row.
+      const runs = await database.select().from(schema.agentRun);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        branch: BABYSIT_BRANCH,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        pullRequestNumber: BABYSIT_PR_NUMBER,
+      });
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitRound).toBe(2);
     } finally {
       client.close();
     }

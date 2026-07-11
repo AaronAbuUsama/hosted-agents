@@ -171,7 +171,7 @@ async function defaultRunImplementationAgent(
         : `You are on a fresh branch checked out from ${input.defaultBranch} inside the sandbox workspace.`,
       `Read ../${ISSUE_CONTEXT_PATH} first, then call read_issue (and read_issue_comments if useful) for the live issue.`,
       babysit
-        ? "Read the issue comments for the reviewer's requested changes, then edit files and run commands with your shell/file tools inside this sandbox only to address them."
+        ? "Call read_pull_request_review to get the reviewer's requested changes — the review summary and any inline file/line comments live on the pull request, NOT in the issue comments. Then edit files and run commands with your shell/file tools inside this sandbox only to address every requested change."
         : "Implement the issue by editing files and running commands with your shell/file tools inside this sandbox only.",
       "Make focused, minimal changes that satisfy the issue. Do not commit, push, or open a pull request — the runner does that after you finish.",
       "You may post a short progress comment with post_issue_progress_comment; keep it concise.",
@@ -431,6 +431,10 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       const githubTools = createGitHubImplementationTools(input, {
         client: githubClient,
         issueNumber,
+        // A babysit fix round adds the read_pull_request_review tool bound to the
+        // existing PR so the Coder can read the Reviewer's requested changes (they
+        // live on the pull request, not the linked issue's comments).
+        pullRequestNumber: babysit?.pullRequestNumber,
       });
 
       await emitStage("flue_implementation", "Starting Flue implementation session", {

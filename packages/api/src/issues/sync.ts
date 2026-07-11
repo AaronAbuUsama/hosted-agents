@@ -3,6 +3,7 @@ import { and, count, eq, max } from "drizzle-orm";
 import type { db as productionDb } from "@hosted-agents/db";
 import { githubIssue, githubIssueComment } from "@hosted-agents/db/schema/issues";
 
+import { BABYSIT_BLOCKED_LANE_REASONS } from "./babysit";
 import type { IssueOverlay } from "./service";
 
 // The store-sync half of the issues deep module (see issue #19). The signed
@@ -237,9 +238,13 @@ function overlayFromRow(row: IssueOverlayRow): IssueOverlay {
     claimed: Boolean(row.claimedByRunId ?? row.claimedByWorkerRole),
     linkedPullRequest,
     closedByMerge: row.closedByMerge,
-    // Babysitting stopped (round cap reached, or a human took over the PR) parks
-    // the issue in Failed / Blocked — `deriveStage` reads `blocked` first.
-    blocked: row.babysitBlockedReason != null,
+    // Babysitting stopped by the round cap or a human takeover parks the issue in
+    // Failed / Blocked — `deriveStage` reads `blocked` first. A `human_approved`
+    // stop is deliberately excluded: it halts the Coder but the PR is approved and
+    // mergeable, so the issue stays In PR / Merged rather than dropping to Blocked.
+    blocked:
+      row.babysitBlockedReason != null &&
+      BABYSIT_BLOCKED_LANE_REASONS.includes(row.babysitBlockedReason),
   };
 }
 

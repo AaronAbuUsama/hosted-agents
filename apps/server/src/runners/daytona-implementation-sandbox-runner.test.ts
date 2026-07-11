@@ -94,6 +94,12 @@ function createFakeGitHubClient(record: {
           record.pullsCreate.push(input);
           return { data: { number: 7, html_url: "https://github.test/pull/7", state: "open" } };
         },
+        async listReviews() {
+          return { data: [] };
+        },
+        async listReviewComments() {
+          return { data: [] };
+        },
       },
     },
   };
@@ -143,8 +149,10 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
     // The stub agent stands in for the Flue/model call — it makes no assertions
     // about the model; the git flow around it is what is under test.
     const agentCalls: string[] = [];
-    const runAgent: RunImplementationAgent = async ({ issue, input }) => {
+    let firstRunToolNames: string[] = [];
+    const runAgent: RunImplementationAgent = async ({ issue, input, githubTools }) => {
       agentCalls.push(`${input.agentRunId}:${issue.number}`);
+      firstRunToolNames = githubTools.tools.map((tool) => tool.name);
       return { summary: "Added the widget component and a test." };
     };
 
@@ -214,6 +222,10 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
 
     // The agent ran once, for this run + issue.
     expect(agentCalls).toEqual(["impl-run-1:42"]);
+
+    // A first implementation run has no pull request yet, so the PR-review tool is
+    // absent — it is a babysit-only affordance.
+    expect(firstRunToolNames).not.toContain("read_pull_request_review");
 
     // Result carries the branch + PR back to the worker (which stamps the rows).
     expect(result).toMatchObject({
@@ -381,6 +393,9 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
     };
     const githubClient = createFakeGitHubClient(record);
 
+    // Capture the tools handed to the model so we can assert the babysit round can
+    // actually read the reviewer's feedback (which lives on the PR, not the issue).
+    let babysitToolNames: string[] = [];
     const runner = new DaytonaImplementationSandboxRunner({
       createClient: () => ({
         async create() {
@@ -388,7 +403,10 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
         },
       }),
       createGitHubClient: () => githubClient,
-      runAgent: async () => ({ summary: "Addressed the reviewer's requested changes." }),
+      runAgent: async ({ githubTools }) => {
+        babysitToolNames = githubTools.tools.map((tool) => tool.name);
+        return { summary: "Addressed the reviewer's requested changes." };
+      },
     });
 
     const events: SandboxLifecycleEvent[] = [];
@@ -397,6 +415,10 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
         babysit: { branch: "coder/issue-42-add-a-widget", pullRequestNumber: 7 },
       }),
     );
+
+    // The babysit round is given read_pull_request_review, bound to the existing PR,
+    // so it can see the requested changes it must address.
+    expect(babysitToolNames).toContain("read_pull_request_review");
 
     const commandLine = commands.map((entry) => entry.command);
 

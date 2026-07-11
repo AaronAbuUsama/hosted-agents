@@ -7,7 +7,6 @@ import {
   BABYSIT_STOP_HUMAN,
   decideBabysitReview,
   findCoderClaimedIssueByRepositoryName,
-  findCoderClaimedIssueForBabysit,
   hasActiveBabysitRun,
   recordBabysitRoundEnqueued,
   recordBabysitStopped,
@@ -782,11 +781,18 @@ async function admitPullRequestReviewDelivery(
     }
 
     // Match the review to the Coder-claimed issue whose PR it is — by the linked-PR
-    // stamp or by the `coder/issue-<n>-*` branch name. A review on any other PR
-    // (a human's branch, an unclaimed issue) matches nothing and is not babysat.
+    // stamp or by the `coder/issue-<n>-*` branch name. Scoped by (org, repo full
+    // name), never by this Coder installation's repo-row id: the claim is stamped on
+    // whichever repo row the board project is linked through (possibly the Reviewer
+    // app's), which need not be the row this review resolved under, so a repo-row-id
+    // lookup would silently drop every review (`no_matching_coder_issue`) and the
+    // whole loop would go inert. The human push/comment yields already scope this way.
+    // A review on any other PR (a human's branch, an unclaimed issue) matches nothing
+    // and is not babysat.
     const branchIssueNumber = parseCoderIssueBranch(metadata.headRef);
-    const claim = await findCoderClaimedIssueForBabysit(transaction, {
-      githubRepositoryId: repository.id,
+    const claim = await findCoderClaimedIssueByRepositoryName(transaction, {
+      organizationId: installation.organizationId,
+      repositoryFullName: metadata.repositoryFullName,
       pullRequestNumber: metadata.pullRequestNumber,
       branchIssueNumber,
     });

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   BABYSIT_ROUND_CAP,
   BABYSIT_STOP_HUMAN,
+  BABYSIT_STOP_HUMAN_APPROVED,
   BABYSIT_STOP_ROUND_CAP,
   decideBabysitReview,
   type BabysitReviewInput,
@@ -64,13 +65,8 @@ describe("decideBabysitReview", () => {
     });
   });
 
-  test("an approved review is a no-op here (C7 owns the approval path)", () => {
+  test("a bot approved review is a no-op here (C7 owns the approval path)", () => {
     expect(decideBabysitReview(review({ reviewState: "approved" }))).toEqual({
-      action: "noop",
-      reason: "approved_review",
-    });
-    // A human approval is still C7's, not a yield.
-    expect(decideBabysitReview(review({ reviewState: "approved", senderIsHuman: true }))).toEqual({
       action: "noop",
       reason: "approved_review",
     });
@@ -78,6 +74,29 @@ describe("decideBabysitReview", () => {
     expect(
       decideBabysitReview(
         review({ reviewState: "approved", alreadyStopped: true, babysitRound: BABYSIT_ROUND_CAP }),
+      ),
+    ).toEqual({ action: "noop", reason: "approved_review" });
+  });
+
+  test("a human approval stops babysitting but keeps the PR mergeable — humans always win", () => {
+    // A human approving a still-running loop ends it so no later bot changes_requested
+    // can dispatch the Coder onto a PR a human has acted on. The stop reason is
+    // `human_approved`, not the Failed/Blocked takeover — the PR is good, C7 merges it.
+    expect(decideBabysitReview(review({ reviewState: "approved", senderIsHuman: true }))).toEqual({
+      action: "yield",
+      reason: BABYSIT_STOP_HUMAN_APPROVED,
+    });
+    // Even with fix rounds still available, a human approval ends babysitting.
+    expect(
+      decideBabysitReview(
+        review({ reviewState: "approved", senderIsHuman: true, babysitRound: 0 }),
+      ),
+    ).toEqual({ action: "yield", reason: BABYSIT_STOP_HUMAN_APPROVED });
+    // Once babysitting has already stopped, a human approval is C7's pure no-op —
+    // no second stop to record.
+    expect(
+      decideBabysitReview(
+        review({ reviewState: "approved", senderIsHuman: true, alreadyStopped: true }),
       ),
     ).toEqual({ action: "noop", reason: "approved_review" });
   });
