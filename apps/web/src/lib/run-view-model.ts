@@ -18,6 +18,12 @@ export type AgentRunApiRecord = {
   repositoryUrl: string | null;
   branch: string | null;
   baseBranch: string | null;
+  // The issue a run worked. Implementation runs carry the issue they implement;
+  // review runs carry the issue their PR closes, recovered server-side from the
+  // Coder head branch (`coder/issue-<n>-<slug>`). Null when the run's PR is not a
+  // Coder PR (a human PR has no issue linkage). The issue detail's Runs block
+  // filters on this to show the runs that worked a given issue (QA-B4, issue #54).
+  issueNumber: number | null;
   pullRequestNumber: number | null;
   pullRequestBaseRef: string | null;
   pullRequestBaseSha: string | null;
@@ -135,6 +141,22 @@ export type RunViewModelRow = {
   currentStage: string | null;
 };
 
+// A single linked run as the issue detail's Runs block renders it: one compact,
+// clickable row per run that worked the issue. Deliberately does NOT carry the run
+// timeline/transcript — per QA-B4 (issue #54) an issue links to its runs, it does
+// not embed them. Kept beside RunViewModelRow so the mapping stays pure and
+// unit-tested (no React), mirroring the Runs table's row model.
+export type IssueRunRow = {
+  id: string;
+  href: string;
+  // The worker role, humanized ("The Coder", "Code Review Worker") — which run
+  // worked the issue, implementation vs review.
+  roleLabel: string;
+  status: RunViewModelStatus;
+  started: string;
+  duration: string;
+};
+
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -185,6 +207,44 @@ export function filterRunsByRepository(
   repositoryFullName: string,
 ): RunViewModelRow[] {
   return rows.filter((row) => row.repo === repositoryFullName);
+}
+
+// The runs that worked one issue, as compact link rows for the issue detail's
+// Runs block (QA-B4, issue #54). `agentRuns` is org-scoped, so we match on both
+// the issue number AND the repository label — two repositories in the same org can
+// each carry an issue #4, and `agent_run.issue_number` alone would conflate them.
+// Rows are ordered oldest-first so the block reads as a timeline (implementation
+// first, then the reviews it triggered), tie-broken by id for a stable order.
+export function selectIssueRunRows(
+  runs: readonly AgentRunApiRecord[],
+  scope: { issueNumber: number; repositoryFullName: string },
+): IssueRunRow[] {
+  return runs
+    .filter(
+      (run) =>
+        run.issueNumber === scope.issueNumber && repositoryLabel(run) === scope.repositoryFullName,
+    )
+    .sort((left, right) => {
+      const byStart = runOrderTimestamp(left) - runOrderTimestamp(right);
+      return byStart !== 0 ? byStart : left.id.localeCompare(right.id);
+    })
+    .map(mapAgentRunToIssueRunRow);
+}
+
+function mapAgentRunToIssueRunRow(run: AgentRunApiRecord): IssueRunRow {
+  const status = mapAgentRunStatus(run.status);
+  return {
+    id: run.id,
+    href: `/app/runs/${run.id}`,
+    roleLabel: nonEmpty(run.workerDisplayName) ?? humanizeToken(run.workerRole),
+    status,
+    started: formatDate(nonEmpty(run.startedAt) ?? run.createdAt),
+    duration: formatDuration(run, status),
+  };
+}
+
+function runOrderTimestamp(run: AgentRunApiRecord): number {
+  return parseTimestamp(run.startedAt) ?? parseTimestamp(run.createdAt) ?? 0;
 }
 
 export function mapAgentRunArtifactToArtifactRow(

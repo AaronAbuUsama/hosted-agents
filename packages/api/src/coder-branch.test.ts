@@ -44,4 +44,10 @@ describe("coder branch naming", () => {
     expect(parseCoderIssueBranch("coder/issue-42")).toBeNull();
     expect(parseCoderIssueBranch("coder/issue--slug")).toBeNull();
   });
+
+  test("treats a nullish ref as unmatched so callers can stamp without a null guard", () => {
+    expect(parseCoderIssueBranch(null)).toBeNull();
+    expect(parseCoderIssueBranch(undefined)).toBeNull();
+    expect(parseCoderIssueBranch("")).toBeNull();
+  });
 });

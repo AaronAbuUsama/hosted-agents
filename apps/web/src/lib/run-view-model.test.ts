@@ -6,6 +6,7 @@ import {
   filterRunsByRepository,
   mapAgentRunEventToTimelineRow,
   mapAgentRunEventsToTranscriptRows,
+  selectIssueRunRows,
   sortRunTimelineEvents,
   mapAgentRunToRunRow,
   type AgentRunApiRecord,
@@ -31,6 +32,7 @@ function agentRun(overrides: Partial<AgentRunApiRecord> = {}): AgentRunApiRecord
     repositoryUrl: "https://github.com/octo-org/widgets",
     branch: "feature/slice-1",
     baseBranch: "main",
+    issueNumber: null,
     pullRequestNumber: 42,
     pullRequestBaseRef: "main",
     pullRequestBaseSha: "base-sha-123",
@@ -580,5 +582,154 @@ describe("run repository scope filter", () => {
 
   test("returns no runs when a project has none of its own, without borrowing others", () => {
     expect(filterRunsByRepository([projectA, projectB], "octo-org/nothing-here")).toEqual([]);
+  });
+});
+
+describe("selectIssueRunRows", () => {
+  const scope = { issueNumber: 4, repositoryFullName: "test-org/test-repo" };
+
+  // The acceptance case: test-repo issue #4 shows its implementation + review
+  // runs as clickable rows. Both carry issueNumber: 4 as the server persists it —
+  // the implementation run from kick-off, the review run recovered server-side
+  // from its Coder head branch (`coder/issue-4-...`) at insert time.
+  const implementationRun = agentRun({
+    id: "run-implementation",
+    workerRole: "implementation",
+    workerDisplayName: "The Coder",
+    issueNumber: 4,
+    branch: "coder/issue-4-add-a-widget",
+    repositoryOwner: "test-org",
+    repositoryName: "test-repo",
+    status: "completed",
+    startedAt: "2026-07-08T10:00:00.000Z",
+    completedAt: "2026-07-08T10:02:15.000Z",
+    createdAt: "2026-07-08T09:59:00.000Z",
+  });
+  const reviewRun = agentRun({
+    id: "run-review",
+    workerRole: "code_review",
+    workerDisplayName: "Code Review Worker",
+    issueNumber: 4,
+    branch: "coder/issue-4-add-a-widget",
+    pullRequestHeadRef: "coder/issue-4-add-a-widget",
+    repositoryOwner: "test-org",
+    repositoryName: "test-repo",
+    status: "completed",
+    startedAt: "2026-07-08T10:05:00.000Z",
+    completedAt: "2026-07-08T10:06:30.000Z",
+    createdAt: "2026-07-08T10:04:30.000Z",
+  });
+
+  test("shows an issue's implementation + review runs as compact link rows", () => {
+    const rows = selectIssueRunRows([reviewRun, implementationRun], scope);
+
+    expect(rows).toEqual([
+      {
+        id: "run-implementation",
+        href: "/app/runs/run-implementation",
+        roleLabel: "The Coder",
+        status: "Completed",
+        started: "Jul 8, 2026, 10:00 UTC",
+        duration: "02:15",
+      },
+      {
+        id: "run-review",
+        href: "/app/runs/run-review",
+        roleLabel: "Code Review Worker",
+        status: "Completed",
+        started: "Jul 8, 2026, 10:05 UTC",
+        duration: "01:30",
+      },
+    ]);
+  });
+
+  test("orders rows oldest-first so the block reads as a timeline", () => {
+    const rows = selectIssueRunRows([reviewRun, implementationRun], scope);
+    expect(rows.map((row) => row.id)).toEqual(["run-implementation", "run-review"]);
+  });
+
+  test("excludes a same-numbered issue's runs from another repository in the org", () => {
+    // agentRuns is org-scoped, so another repo's issue #4 must not bleed in.
+    const otherRepoRun = agentRun({
+      id: "run-other-repo",
+      issueNumber: 4,
+      repositoryOwner: "other-org",
+      repositoryName: "other-repo",
+    });
+
+    const rows = selectIssueRunRows([implementationRun, otherRepoRun, reviewRun], scope);
+    expect(rows.map((row) => row.id)).toEqual(["run-implementation", "run-review"]);
+  });
+
+  test("excludes runs that worked a different issue in the same repository", () => {
+    const otherIssueRun = agentRun({
+      id: "run-issue-5",
+      issueNumber: 5,
+      repositoryOwner: "test-org",
+      repositoryName: "test-repo",
+    });
+
+    const rows = selectIssueRunRows([implementationRun, otherIssueRun], scope);
+    expect(rows.map((row) => row.id)).toEqual(["run-implementation"]);
+  });
+
+  test("excludes review runs that carry no issue number", () => {
+    const unlinkedRun = agentRun({
+      id: "run-unlinked",
+      issueNumber: null,
+      repositoryOwner: "test-org",
+      repositoryName: "test-repo",
+    });
+
+    expect(selectIssueRunRows([unlinkedRun], scope)).toEqual([]);
+  });
+
+  test("breaks ties on start time by id for a stable order", () => {
+    const first = agentRun({
+      id: "run-aaa",
+      issueNumber: 4,
+      repositoryOwner: "test-org",
+      repositoryName: "test-repo",
+      startedAt: "2026-07-08T10:00:00.000Z",
+    });
+    const second = agentRun({
+      id: "run-bbb",
+      issueNumber: 4,
+      repositoryOwner: "test-org",
+      repositoryName: "test-repo",
+      startedAt: "2026-07-08T10:00:00.000Z",
+    });
+
+    expect(selectIssueRunRows([second, first], scope).map((row) => row.id)).toEqual([
+      "run-aaa",
+      "run-bbb",
+    ]);
+  });
+
+  test("orders a still-queued run by its creation time when it has not started", () => {
+    const queued = agentRun({
+      id: "run-queued",
+      issueNumber: 4,
+      repositoryOwner: "test-org",
+      repositoryName: "test-repo",
+      status: "queued",
+      startedAt: null,
+      completedAt: null,
+      createdAt: "2026-07-08T10:10:00.000Z",
+    });
+
+    const rows = selectIssueRunRows([queued, implementationRun, reviewRun], scope);
+    expect(rows.map((row) => row.id)).toEqual(["run-implementation", "run-review", "run-queued"]);
+    expect(rows[2]).toMatchObject({ status: "Queued", duration: "Queued" });
+  });
+
+  test("returns no rows when nothing worked the issue", () => {
+    expect(selectIssueRunRows([], scope)).toEqual([]);
+    expect(
+      selectIssueRunRows([implementationRun], {
+        issueNumber: 99,
+        repositoryFullName: "test-org/test-repo",
+      }),
+    ).toEqual([]);
   });
 });

@@ -57,10 +57,14 @@ export const agentRun = sqliteTable(
     repositoryUrl: text("repository_url"),
     branch: text("branch"),
     baseBranch: text("base_branch"),
-    // The issue an implementation run implements. Kick-off (spec #21 stories 1–4)
-    // links the ready-for-agent issue to the run it queues, so the implementation
-    // worker knows which issue to turn into a branch and pull request. Null for
-    // review runs, which are keyed by pull request instead.
+    // The issue a run worked. Kick-off (spec #21 stories 1–4) links the
+    // ready-for-agent issue to the implementation run it queues, so the
+    // implementation worker knows which issue to turn into a branch and pull
+    // request. A review run is also stamped with the issue its PR closes —
+    // recovered from the Coder head branch (`coder/issue-<n>-<slug>`) — so the
+    // issue detail's Runs block can show implementation and review runs together
+    // (QA-B4, issue #54). Null when the run's PR is not a Coder PR (a human PR has
+    // no issue linkage) or for non-GitHub runs.
     issueNumber: integer("issue_number"),
     pullRequestNumber: integer("pull_request_number"),
     pullRequestBaseRef: text("pull_request_base_ref"),

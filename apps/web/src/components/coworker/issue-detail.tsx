@@ -10,6 +10,7 @@ import { Divider } from "@astryxdesign/core/Divider";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Link } from "@astryxdesign/core/Link";
+import { List, ListItem } from "@astryxdesign/core/List";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import {
@@ -32,6 +33,7 @@ import {
   ArrowLeftIcon,
   ArrowTopRightOnSquareIcon,
   ChatBubbleLeftRightIcon,
+  ChevronRightIcon,
   PlayCircleIcon,
 } from "@heroicons/react/24/outline";
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
@@ -48,6 +50,7 @@ import {
 } from "@/lib/issue-detail-view-model";
 import { createKickOffHandlers } from "@/lib/issue-kickoff";
 import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
+import { selectIssueRunRows, type IssueRunRow } from "@/lib/run-view-model";
 import { client, orpc } from "@/utils/orpc";
 
 type IssueDetailProps = {
@@ -174,6 +177,57 @@ function CommentRow({ comment }: { comment: IssueComment }): ReactElement {
   );
 }
 
+// The StatusDot colour per run status, mirroring the Runs table so a run reads the
+// same on the issue detail as it does there (Queued/Running are in-flight accent,
+// Completed success, Failed error, Unknown warning).
+const runStatusDotVariant: Record<
+  IssueRunRow["status"],
+  "accent" | "success" | "error" | "warning"
+> = {
+  Queued: "accent",
+  Running: "accent",
+  Completed: "success",
+  Failed: "error",
+  Unknown: "warning",
+};
+
+// The Runs block: the runs that worked this issue, as compact clickable rows that
+// link to each run's detail — per QA-B4 (issue #54) the issue links to its runs, it
+// does not embed their timeline. Rendered only when at least one run worked the
+// issue, so backlog issues stay uncluttered.
+function IssueRuns({ runs }: { runs: IssueRunRow[] }): ReactElement {
+  return (
+    <List
+      density="compact"
+      hasDividers
+      header={
+        <HStack gap={2} vAlign="center" wrap="wrap">
+          <Heading level={2}>Runs</Heading>
+          <Badge variant="neutral" label={String(runs.length)} />
+        </HStack>
+      }
+    >
+      {runs.map((run) => (
+        <ListItem
+          key={run.id}
+          href={run.href}
+          label={run.roleLabel}
+          description={`${run.status} · Started ${run.started}`}
+          startContent={<StatusDot variant={runStatusDotVariant[run.status]} label={run.status} />}
+          endContent={
+            <HStack gap={2} vAlign="center">
+              <Text type="supporting" color="secondary" hasTabularNumbers>
+                {run.duration}
+              </Text>
+              <Icon icon={ChevronRightIcon} size="sm" color="secondary" />
+            </HStack>
+          }
+        />
+      ))}
+    </List>
+  );
+}
+
 export default function IssueDetail({
   organizationId,
   repositoryId,
@@ -208,6 +262,18 @@ export default function IssueDetail({
       // Keep the current issue + thread on screen while a watermark-triggered
       // refetch runs, so a background refresh never flashes the loading state.
       placeholderData: keepPreviousData,
+    }),
+  );
+
+  // The runs that worked this issue. agentRuns is org-scoped, so we fetch the
+  // org's runs and narrow to this issue + repository client-side (see
+  // selectIssueRunRows). Polled on the same cadence as the issue watermark so a run
+  // that lands or advances shows up without a manual reload; polling stops on error
+  // (the query cache's onError already toasts) rather than retry-looping.
+  const runsQuery = useQuery(
+    orpc.agentRuns.queryOptions({
+      input: { organizationId },
+      refetchInterval: issuesRevisionPollInterval,
     }),
   );
 
@@ -285,6 +351,10 @@ export default function IssueDetail({
   }
 
   const { issue, comments } = issueQuery.data;
+  const issueRuns = selectIssueRunRows(runsQuery.data ?? [], {
+    issueNumber,
+    repositoryFullName: fullName,
+  });
   const stageLabel = issueStageLabel(issue);
   const authorName = issueAuthorDisplayName(issue.authorLogin);
   // Match GitHub: HTML comments in the issue body are hidden, not printed literally.
@@ -406,6 +476,13 @@ export default function IssueDetail({
                 </Text>
               )}
             </VStack>
+
+            {issueRuns.length > 0 ? (
+              <>
+                <Divider />
+                <IssueRuns runs={issueRuns} />
+              </>
+            ) : null}
 
             <Divider />
 

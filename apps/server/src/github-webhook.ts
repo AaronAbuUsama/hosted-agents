@@ -1,3 +1,4 @@
+import { parseCoderIssueBranch } from "@hosted-agents/api/coder-branch";
 import {
   createGitHubInstallationAccessToken,
   resolveGitHubAppWorkerRole,
@@ -40,7 +41,6 @@ import { createGitHubChannel, type GitHubChannel, type GitHubWebhookDelivery } f
 import { and, desc, eq } from "drizzle-orm";
 import type { BlankEnv } from "hono/types";
 
-import { parseCoderIssueBranch } from "./runners/coder-branch";
 import {
   defaultImplementationGitHubClient,
   squashMergePullRequest,
@@ -650,6 +650,11 @@ async function admitPullRequestDelivery(
       repositoryUrl: metadata.repositoryUrl,
       branch: metadata.headRef,
       baseBranch: metadata.baseRef,
+      // Link the review run to the issue its PR closes so the issue detail's Runs
+      // block shows review runs alongside the implementation run (QA-B4, issue #54).
+      // The head ref is the Coder branch (`coder/issue-<n>-<slug>`) for a Coder PR;
+      // null for a human PR, which is correctly not tied to any issue.
+      issueNumber: parseCoderIssueBranch(metadata.headRef),
       githubInstallationId: installation.id,
       githubRepositoryId: repository.id,
       pullRequestNumber: metadata.pullRequestNumber,

@@ -37,6 +37,7 @@ import {
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
+import { parseCoderIssueBranch } from "../coder-branch";
 import {
   claimGitHubInstallation,
   createGitHubAppInstallUrl,
@@ -1878,6 +1879,12 @@ export const appRouter = {
           repositoryUrl: repository.htmlUrl,
           branch: pullRequest.headRef,
           baseBranch: pullRequest.baseRef,
+          // Link the review run to the issue its PR closes so the issue detail's
+          // Runs block shows this manual review alongside the implementation run
+          // (QA-B4, issue #54). The head ref is the Coder branch
+          // (`coder/issue-<n>-<slug>`) for a Coder PR; null for a human PR, which
+          // is correctly not tied to any issue.
+          issueNumber: parseCoderIssueBranch(pullRequest.headRef),
           githubInstallationId: installation.id,
           githubRepositoryId: repository.id,
           pullRequestNumber: pullRequest.number,
