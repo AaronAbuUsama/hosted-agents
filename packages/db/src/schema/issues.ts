@@ -44,6 +44,16 @@ export const githubIssue = sqliteTable(
     claimedByWorkerRole: text("claimed_by_worker_role"),
     claimedByRunId: text("claimed_by_run_id"),
     claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+    // Babysit bookkeeping (spec #21 stories 7–9, C6). `babysitRound` counts the
+    // review-driven fix rounds the Coder has been dispatched on this issue's pull
+    // request; a `changes_requested` review enqueues a fix run only while it is
+    // below the cap. `babysitBlockedReason` is non-null once babysitting has
+    // stopped for good — either the round cap was reached (`round_cap_reached`) or
+    // a human intervened on the pull request (`human_in_the_loop`, humans always
+    // win). A non-null reason drives the board's Failed / Blocked lane and makes
+    // every later review a no-op, so the Coder never resumes a yielded PR.
+    babysitRound: integer("babysit_round").default(0).notNull(),
+    babysitBlockedReason: text("babysit_blocked_reason"),
     githubCreatedAt: integer("github_created_at", { mode: "timestamp_ms" }),
     githubUpdatedAt: integer("github_updated_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })

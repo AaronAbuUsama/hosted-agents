@@ -238,6 +238,8 @@ async function createTables(client: TestClient) {
       "claimed_by_worker_role" text,
       "claimed_by_run_id" text,
       "claimed_at" integer,
+      "babysit_round" integer DEFAULT 0 NOT NULL,
+      "babysit_blocked_reason" text,
       "github_created_at" integer,
       "github_updated_at" integer,
       "created_at" integer DEFAULT 0 NOT NULL,

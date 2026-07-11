@@ -45,6 +45,16 @@ export type ImplementationSandboxRunInput = {
   issueNumber?: number;
   issueTitle?: string;
   issueBody?: string;
+  // Babysit context (spec #21 stories 7–9, C6). Present when this run is a
+  // review-driven fix round rather than the first implementation: the pull request
+  // and its Coder branch already exist, so the runner resumes the EXISTING branch
+  // (checks it out, addresses the review, pushes to it) instead of cutting a new
+  // `coder/issue-<n>-*` branch and opening a new pull request. Absent for the first
+  // implementation run.
+  babysit?: {
+    branch: string;
+    pullRequestNumber: number;
+  };
   onEvent?: (event: SandboxLifecycleEvent) => void | Promise<void>;
 };
 

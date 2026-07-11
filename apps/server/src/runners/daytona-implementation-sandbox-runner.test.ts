@@ -371,6 +371,76 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
     expect(sandbox.deleted()).toBe(true);
   });
 
+  test("babysit round: resumes the existing branch, pushes the fix, and opens NO new PR", async () => {
+    const commands: RecordedCommand[] = [];
+    const uploads: string[] = [];
+    const sandbox = createFakeSandbox(commands, uploads);
+    const record = {
+      pullsCreate: [] as PullsCreateCall[],
+      issueComments: [] as Record<string, unknown>[],
+    };
+    const githubClient = createFakeGitHubClient(record);
+
+    const runner = new DaytonaImplementationSandboxRunner({
+      createClient: () => ({
+        async create() {
+          return sandbox;
+        },
+      }),
+      createGitHubClient: () => githubClient,
+      runAgent: async () => ({ summary: "Addressed the reviewer's requested changes." }),
+    });
+
+    const events: SandboxLifecycleEvent[] = [];
+    const result = await runner.run(
+      createInput(events, {
+        babysit: { branch: "coder/issue-42-add-a-widget", pullRequestNumber: 7 },
+      }),
+    );
+
+    const commandLine = commands.map((entry) => entry.command);
+
+    // Clones the EXISTING Coder branch directly (not the default branch), and never
+    // cuts a new branch with `git switch -c`.
+    const cloneCommand = commandLine.find((command) => command.includes("git clone"));
+    expect(cloneCommand).toContain("--single-branch --branch 'coder/issue-42-add-a-widget'");
+    expect(commandLine.some((command) => command.startsWith("git switch -c"))).toBe(false);
+
+    // Commits the fix (the tree is dirty) and pushes to the same branch.
+    expect(commandLine.some((command) => command.startsWith("git commit -m"))).toBe(true);
+    const pushCommand = commandLine.find((command) => /\bgit\b.*\bpush\b/.test(command));
+    expect(pushCommand).toContain("'HEAD:refs/heads/coder/issue-42-add-a-widget'");
+
+    // No new pull request is opened — the PR already exists.
+    expect(record.pullsCreate).toHaveLength(0);
+
+    // A progress comment notes the fix round on the existing PR.
+    expect(record.issueComments).toHaveLength(1);
+    expect(record.issueComments[0]).toMatchObject({ issue_number: 42 });
+    expect(record.issueComments[0]?.body).toContain("addressing the latest review");
+    expect(record.issueComments[0]?.body).toContain("pull request #7");
+
+    // The result carries the existing branch + PR back to the worker.
+    expect(result).toMatchObject({
+      branch: "coder/issue-42-add-a-widget",
+      pullRequestNumber: 7,
+      pullRequestState: "open",
+      summary: "Addressed the reviewer's requested changes.",
+    });
+
+    // Stages narrate resuming (not creating) the branch, and never opening a PR.
+    const stageEvents = events
+      .filter(
+        (event): event is Extract<SandboxLifecycleEvent, { type: "stage" }> =>
+          event.type === "stage",
+      )
+      .map((event) => event.stage);
+    expect(stageEvents).toContain("branch_checkout");
+    expect(stageEvents).not.toContain("branch_creating");
+    expect(stageEvents).not.toContain("pull_request_opening");
+    expect(sandbox.deleted()).toBe(true);
+  });
+
   test("fails fast when the run has no linked issue number", async () => {
     const runner = new DaytonaImplementationSandboxRunner({
       createClient: () => ({

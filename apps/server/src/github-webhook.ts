@@ -1,4 +1,15 @@
-import { resolveGitHubAppWorkerRole } from "@hosted-agents/api/github-app";
+import {
+  createGitHubInstallationAccessToken,
+  resolveGitHubAppWorkerRole,
+} from "@hosted-agents/api/github-app";
+import {
+  BABYSIT_ROUND_CAP,
+  decideBabysitReview,
+  findCoderClaimedIssueForBabysit,
+  hasActiveBabysitRun,
+  recordBabysitRoundEnqueued,
+  recordBabysitStopped,
+} from "@hosted-agents/api/issues/babysit";
 import {
   deleteSyncedIssueComment,
   upsertSyncedIssue,
@@ -21,7 +32,9 @@ import { createGitHubChannel, type GitHubChannel, type GitHubWebhookDelivery } f
 import { and, desc, eq } from "drizzle-orm";
 import type { BlankEnv } from "hono/types";
 
-import { planGitHubPullRequestRun } from "./github-run-planner";
+import { parseCoderIssueBranch } from "./runners/coder-branch";
+import { defaultImplementationGitHubClient } from "./runners/github-implementation-tools";
+import { planGitHubIssueImplementationRun, planGitHubPullRequestRun } from "./github-run-planner";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const ADMITTED_PULL_REQUEST_ACTIONS: Record<string, true> = {
@@ -34,10 +47,51 @@ const ADMITTED_PULL_REQUEST_ACTIONS: Record<string, true> = {
 type Database = typeof db;
 type AdmissionDatabase = Pick<Database, "insert" | "select" | "update">;
 
+// Posts the Coder's explanation comment when a babysit run is not enqueued (the
+// round cap is reached). Injected so the admission stays pure/DB-only under test —
+// the default mints the Coder installation token and posts via the Coder App, so
+// the comment is attributed to the Coder (ADR-0001); a test supplies a fake that
+// records the call instead of touching GitHub.
+export type PostCoderIssueComment = (input: {
+  installationId: string;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  body: string;
+}) => Promise<void>;
+
+export type GitHubWebhookAdmissionDeps = {
+  postCoderIssueComment?: PostCoderIssueComment;
+};
+
 type GitHubWebhookChannelOptions = {
   database?: Database;
   webhookSecret?: string;
+  deps?: GitHubWebhookAdmissionDeps;
 };
+
+// Default Coder-comment poster: mint the Coder App's installation token and post
+// the comment as the Coder. Best-effort — a failed comment must not roll back the
+// blocked state the admission already committed.
+async function defaultPostCoderIssueComment(input: {
+  installationId: string;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  body: string;
+}): Promise<void> {
+  const token = await createGitHubInstallationAccessToken(
+    input.installationId,
+    IMPLEMENTATION_WORKER_ROLE,
+  );
+  const client = defaultImplementationGitHubClient(token);
+  await client.rest.issues.createComment({
+    owner: input.owner,
+    repo: input.repo,
+    issue_number: input.issueNumber,
+    body: input.body,
+  });
+}
 
 // The repository fields both the pull-request and issue-sync paths need to resolve
 // (or lazily create) the linked `github_repository` record. Shared so
@@ -61,6 +115,22 @@ type PullRequestAdmissionMetadata = RepositoryDescriptor & {
   headRef: string;
   headSha: string;
   action: string;
+};
+
+// The fields the babysit admission (C6) reads off a `pull_request_review.submitted`
+// delivery: which pull request the review is on (number + head/base refs), the
+// review's state + author kind, and who delivered it.
+type PullRequestReviewAdmissionMetadata = RepositoryDescriptor & {
+  deliveryId: string;
+  installationId: string;
+  action: string;
+  pullRequestNumber: number;
+  headRef: string;
+  baseRef: string;
+  reviewState: string;
+  // `sender.type` on the delivery: "User" for a human, "Bot" for the Reviewer or
+  // Coder GitHub App. Humans always win, so this is what gates the yield.
+  senderType: string;
 };
 
 export type GitHubWebhookAdmission = {
@@ -306,17 +376,24 @@ function pullRequestMetadata(delivery: GitHubWebhookDelivery): PullRequestAdmiss
 
 // The webhook channel is one HMAC-verified ingress for several event families.
 // This dispatcher routes each verified delivery to the transport that owns it:
-// pull requests queue a review run, issues and issue comments sync into the board
-// store, and everything else is acknowledged without side effects.
+// pull requests queue a review run, pull-request reviews drive the babysit loop,
+// issues and issue comments sync into the board store, and everything else is
+// acknowledged without side effects.
 export async function admitGitHubWebhookDelivery(
   delivery: GitHubWebhookDelivery,
   database: Database = db,
+  deps: GitHubWebhookAdmissionDeps = {},
 ): Promise<GitHubWebhookAdmission> {
   const action = deliveryAction(delivery);
 
   const pullRequest = pullRequestMetadata(delivery);
   if (pullRequest) {
     return admitPullRequestDelivery(delivery, database, pullRequest, action);
+  }
+
+  const pullRequestReview = pullRequestReviewMetadata(delivery);
+  if (pullRequestReview) {
+    return admitPullRequestReviewDelivery(delivery, database, pullRequestReview, action, deps);
   }
 
   const issueSync = issueSyncMetadata(delivery);
@@ -510,6 +587,354 @@ async function admitPullRequestDelivery(
       agentRunId,
     };
   });
+}
+
+// Parse a `pull_request_review` delivery into the fields the babysit admission
+// needs. Only a `submitted` review drives the loop; `edited` / `dismissed`
+// reviews return null and fall through to event_not_admitted (acknowledged, no
+// side effect).
+function pullRequestReviewMetadata(
+  delivery: GitHubWebhookDelivery,
+): PullRequestReviewAdmissionMetadata | null {
+  if (delivery.name !== "pull_request_review") {
+    return null;
+  }
+
+  const { payload } = delivery;
+  if (payload.action !== "submitted") {
+    return null;
+  }
+
+  const installationId = payload.installation?.id;
+  const pullRequest = payload.pull_request;
+  const review = payload.review;
+  const sender = payload.sender;
+  const repository = parseRepositoryDescriptor(payload.repository);
+
+  if (
+    typeof installationId !== "number" ||
+    !repository ||
+    !pullRequest ||
+    typeof pullRequest.number !== "number" ||
+    typeof pullRequest.head?.ref !== "string" ||
+    typeof pullRequest.base?.ref !== "string" ||
+    !review ||
+    typeof review.state !== "string" ||
+    typeof sender?.type !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    ...repository,
+    deliveryId: delivery.deliveryId,
+    installationId: String(installationId),
+    action: payload.action,
+    pullRequestNumber: pullRequest.number,
+    headRef: pullRequest.head.ref,
+    baseRef: pullRequest.base.ref,
+    reviewState: review.state,
+    senderType: sender.type,
+  };
+}
+
+// The transaction's outcome. `admission` is what the caller returns to GitHub;
+// `blockedComment`, when present (the round cap was crossed), is posted as the
+// Coder AFTER the transaction commits so a comment failure never rolls back the
+// blocked state.
+type ReviewAdmissionOutcome = {
+  admission: GitHubWebhookAdmission;
+  blockedComment?: {
+    installationId: string;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    body: string;
+  };
+};
+
+// The babysit admission (spec #21 stories 7–9, C6). A `changes_requested` review
+// by the Reviewer on a Coder-owned pull request wakes the Coder for one fix round
+// on the same branch, up to a hard cap; at the cap the issue is parked Failed /
+// Blocked with an explanation comment. A human review yields immediately (humans
+// always win). An `approved` review is the approval path C7 owns — a deliberate
+// no-op here.
+async function admitPullRequestReviewDelivery(
+  delivery: GitHubWebhookDelivery,
+  database: Database,
+  metadata: PullRequestReviewAdmissionMetadata,
+  action: string | undefined,
+  deps: GitHubWebhookAdmissionDeps,
+): Promise<GitHubWebhookAdmission> {
+  const outcome = await database.transaction<ReviewAdmissionOutcome>(async (transaction) => {
+    const claimed = await claimDelivery(transaction, {
+      deliveryId: metadata.deliveryId,
+      event: "pull_request_review",
+      action: metadata.action,
+      installationId: metadata.installationId,
+      repositoryFullName: metadata.repositoryFullName,
+      pullRequestNumber: metadata.pullRequestNumber,
+    });
+    if (!claimed) {
+      return { admission: await getDuplicateAdmission(transaction, delivery) };
+    }
+
+    const ignore = async (reason: string): Promise<ReviewAdmissionOutcome> => {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, reason);
+      return {
+        admission: ignoredDelivery({
+          event: delivery.name,
+          action,
+          deliveryId: delivery.deliveryId,
+          reason,
+        }),
+      };
+    };
+
+    const [installation] = await transaction
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, metadata.installationId))
+      .limit(1);
+
+    if (!installation) {
+      return ignore("installation_not_linked");
+    }
+
+    // Coder-app-only guard, the mirror of the reviewer-only guard on the PR path.
+    // Both the Reviewer and Coder apps receive pull_request_review deliveries with
+    // distinct delivery ids; admitting only the Coder app's copy de-dups the two
+    // and yields the Coder installation the fix run needs to push. C7 will add the
+    // approval-merge branch behind this same guard.
+    if (resolveGitHubAppWorkerRole(installation.appSlug) !== IMPLEMENTATION_WORKER_ROLE) {
+      return ignore("installation_app_not_coder");
+    }
+
+    if (installation.status !== "connected") {
+      return ignore("installation_not_connected");
+    }
+    if (!installation.installedByUserId) {
+      return ignore("installation_missing_actor");
+    }
+
+    const repository = await resolveRepository({
+      database: transaction,
+      installationRecordId: installation.id,
+      repositorySelection: installation.repositorySelection,
+      descriptor: metadata,
+    });
+    if (!repository) {
+      return ignore("repository_not_linked");
+    }
+
+    // Match the review to the Coder-claimed issue whose PR it is — by the linked-PR
+    // stamp or by the `coder/issue-<n>-*` branch name. A review on any other PR
+    // (a human's branch, an unclaimed issue) matches nothing and is not babysat.
+    const branchIssueNumber = parseCoderIssueBranch(metadata.headRef);
+    const claim = await findCoderClaimedIssueForBabysit(transaction, {
+      githubRepositoryId: repository.id,
+      pullRequestNumber: metadata.pullRequestNumber,
+      branchIssueNumber,
+    });
+    if (!claim) {
+      return ignore("no_matching_coder_issue");
+    }
+
+    const decision = decideBabysitReview({
+      reviewState: metadata.reviewState,
+      senderIsHuman: metadata.senderType === "User",
+      babysitRound: claim.babysitRound,
+      alreadyStopped: claim.babysitBlockedReason != null,
+    });
+
+    const acceptedNoRun = (reason: string): ReviewAdmissionOutcome => ({
+      admission: {
+        ok: true,
+        accepted: false,
+        duplicate: false,
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        issueNumber: claim.number,
+        reason,
+      },
+    });
+
+    if (decision.action === "noop") {
+      // Approval (C7's job), an already-stopped PR, or a non-actionable review
+      // state — recognized, no side effect.
+      return ignore(decision.reason);
+    }
+
+    if (decision.action === "yield") {
+      // Humans always win: record the stop so the Coder never resumes, no run.
+      await recordBabysitStopped(transaction, {
+        issueId: claim.issueId,
+        reason: decision.reason,
+      });
+      await transaction
+        .update(githubWebhookDelivery)
+        .set({ status: `yielded:${decision.reason}`, updatedAt: new Date() })
+        .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+      return acceptedNoRun(decision.reason);
+    }
+
+    if (decision.action === "blocked") {
+      // Round cap crossed: park the issue Failed / Blocked and post the Coder's
+      // explanation comment (after commit). No fix run.
+      await recordBabysitStopped(transaction, {
+        issueId: claim.issueId,
+        reason: decision.reason,
+      });
+      await transaction
+        .update(githubWebhookDelivery)
+        .set({ status: `blocked:${decision.reason}`, updatedAt: new Date() })
+        .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+      const body = [
+        `<!-- worker-role:${IMPLEMENTATION_WORKER_ROLE} role:babysit-blocked issue:${claim.number} -->`,
+        `The Coder reached its babysit round cap (${BABYSIT_ROUND_CAP} fix rounds) on pull request #${metadata.pullRequestNumber} without a clean review and has stopped. This issue now needs a human — moving it to Failed / Blocked.`,
+      ].join("\n");
+      return {
+        admission: {
+          ok: true,
+          accepted: false,
+          duplicate: false,
+          event: delivery.name,
+          action,
+          deliveryId: delivery.deliveryId,
+          issueNumber: claim.number,
+          reason: decision.reason,
+        },
+        blockedComment: {
+          installationId: installation.installationId,
+          owner: metadata.repositoryOwner,
+          repo: metadata.repositoryName,
+          issueNumber: claim.number,
+          body,
+        },
+      };
+    }
+
+    // decision.action === "babysit": enqueue exactly one fix run on the same branch.
+    // Idempotency guard — a fix run already queued/running for this PR (a second
+    // review before the last fix landed, or a redelivery with a fresh id) must not
+    // stack a second run or double-spend a round.
+    if (
+      await hasActiveBabysitRun(transaction, {
+        githubRepositoryId: repository.id,
+        issueNumber: claim.number,
+        pullRequestNumber: metadata.pullRequestNumber,
+      })
+    ) {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "babysit_run_in_flight");
+      return acceptedNoRun("babysit_run_in_flight");
+    }
+
+    const providerCredential = await getConnectedOpenAICodexCredential(
+      transaction,
+      installation.organizationId,
+    );
+    const runPlan = planGitHubIssueImplementationRun();
+    const agentRunId = crypto.randomUUID();
+
+    await transaction.insert(agentRun).values({
+      id: agentRunId,
+      organizationId: installation.organizationId,
+      userId: installation.installedByUserId,
+      providerCredentialId: providerCredential?.id ?? null,
+      coworkerSlug: runPlan.legacyCoworkerSlug,
+      workerRole: runPlan.workerRole,
+      workerDisplayName: runPlan.workerDisplayName,
+      runType: runPlan.runType,
+      sourceProvider: "github",
+      sourceDeliveryId: metadata.deliveryId,
+      repositoryOwner: metadata.repositoryOwner,
+      repositoryName: metadata.repositoryName,
+      repositoryUrl: metadata.repositoryUrl,
+      // The EXISTING Coder branch — the babysit runner resumes it (checks it out,
+      // addresses the review, pushes) rather than cutting a new branch.
+      branch: metadata.headRef,
+      baseBranch: metadata.baseRef,
+      issueNumber: claim.number,
+      githubInstallationId: installation.id,
+      githubRepositoryId: repository.id,
+      pullRequestNumber: metadata.pullRequestNumber,
+      pullRequestBaseRef: metadata.baseRef,
+      pullRequestHeadRef: metadata.headRef,
+      status: "queued",
+      currentStage: "queued",
+      lastHeartbeatAt: new Date(),
+    });
+
+    await transaction.insert(agentRunEvent).values({
+      id: crypto.randomUUID(),
+      runId: agentRunId,
+      sequence: 1,
+      category: "github",
+      type: "github.webhook.accepted",
+      stage: "webhook_admitted",
+      message: `Accepted pull_request_review.${metadata.action} from GitHub`,
+      payloadJson: JSON.stringify({
+        deliveryId: metadata.deliveryId,
+        action: metadata.action,
+        repositoryFullName: metadata.repositoryFullName,
+        pullRequestNumber: metadata.pullRequestNumber,
+        reviewState: metadata.reviewState,
+        babysitRound: decision.round,
+      }),
+    });
+    await transaction.insert(agentRunEvent).values({
+      id: crypto.randomUUID(),
+      runId: agentRunId,
+      sequence: 2,
+      category: "queue",
+      type: "queue.created",
+      stage: "queued",
+      message: `Queued Coder babysit run (round ${decision.round})`,
+      payloadJson: JSON.stringify({
+        workerRole: runPlan.workerRole,
+        workerDisplayName: runPlan.workerDisplayName,
+        runType: runPlan.runType,
+        babysitRound: decision.round,
+        pullRequestNumber: metadata.pullRequestNumber,
+        issueNumber: claim.number,
+      }),
+    });
+
+    await recordBabysitRoundEnqueued(transaction, {
+      issueId: claim.issueId,
+      round: decision.round,
+    });
+
+    await transaction
+      .update(githubWebhookDelivery)
+      .set({ status: "accepted", agentRunId, updatedAt: new Date() })
+      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+
+    return {
+      admission: {
+        ok: true,
+        accepted: true,
+        duplicate: false,
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        agentRunId,
+        issueNumber: claim.number,
+      },
+    };
+  });
+
+  if (outcome.blockedComment) {
+    const postComment = deps.postCoderIssueComment ?? defaultPostCoderIssueComment;
+    try {
+      await postComment(outcome.blockedComment);
+    } catch (error) {
+      console.error("Failed to post Coder babysit round-cap comment", error);
+    }
+  }
+
+  return outcome.admission;
 }
 
 // GitHub-sourced issue fields, parsed off the payload. Mirrors the columns
@@ -865,11 +1290,12 @@ export function createGitHubWebhookChannel(
   }
 
   const database = options.database ?? db;
+  const deps = options.deps ?? {};
 
   return createGitHubChannel<BlankEnv>({
     webhookSecret,
     async webhook({ delivery }) {
-      return acceptedJsonResponse(await admitGitHubWebhookDelivery(delivery, database));
+      return acceptedJsonResponse(await admitGitHubWebhookDelivery(delivery, database, deps));
     },
   });
 }

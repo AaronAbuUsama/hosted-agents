@@ -218,6 +218,7 @@ type IssueOverlayRow = {
   closedByMerge: boolean;
   claimedByRunId: string | null;
   claimedByWorkerRole: string | null;
+  babysitBlockedReason: string | null;
 };
 
 // Turn a stored issue row into the board's claim / linked-PR overlay. Labels and
@@ -236,6 +237,9 @@ function overlayFromRow(row: IssueOverlayRow): IssueOverlay {
     claimed: Boolean(row.claimedByRunId ?? row.claimedByWorkerRole),
     linkedPullRequest,
     closedByMerge: row.closedByMerge,
+    // Babysitting stopped (round cap reached, or a human took over the PR) parks
+    // the issue in Failed / Blocked — `deriveStage` reads `blocked` first.
+    blocked: row.babysitBlockedReason != null,
   };
 }
 
@@ -246,6 +250,7 @@ const OVERLAY_COLUMNS = {
   closedByMerge: githubIssue.closedByMerge,
   claimedByRunId: githubIssue.claimedByRunId,
   claimedByWorkerRole: githubIssue.claimedByWorkerRole,
+  babysitBlockedReason: githubIssue.babysitBlockedReason,
 } as const;
 
 // Load every stored issue's overlay for a repository, keyed by issue number, ready
