@@ -22,6 +22,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { SettingsRow, SettingsRows } from "@/components/coworker/settings-rows";
 import { authClient } from "@/lib/auth-client";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import { client, orpc } from "@/utils/orpc";
 
 type GitHubSetupClientProps = {
@@ -58,6 +59,10 @@ export default function GitHubSetupClient({
     }),
   );
   const installations = linkedInstallationData ?? [];
+  // This flow provisions the reviewer app; the Coder app is linked from the
+  // onboarding GitHub step. Scope the "reviewer linked" summary to reviewer-app
+  // installations so a linked Coder app is never counted as a reviewer install.
+  const reviewerInstallations = installations.filter(isReviewerInstallation);
   const {
     data: availableInstallationData,
     error: availableInstallationsError,
@@ -81,7 +86,7 @@ export default function GitHubSetupClient({
     (installation) => !linkedInstallationIds.has(installation.installationId),
   );
   const isGitHubAppConfigured = availableInstallationData?.configured ?? true;
-  const linkedRepositoryCount = installations.reduce(
+  const linkedRepositoryCount = reviewerInstallations.reduce(
     (count, installation) => count + installation.repositoryCount,
     0,
   );
@@ -167,7 +172,7 @@ export default function GitHubSetupClient({
     isPendingLinkedInstallations || isFetchingLinkedInstallations || organizations.isPending;
   const isLoadingAvailableState =
     isPendingAvailableInstallations || isFetchingAvailableInstallations || organizations.isPending;
-  const hasLinkedReviewer = installations.length > 0;
+  const hasLinkedReviewer = reviewerInstallations.length > 0;
   const canContinueToProvider = hasLinkedReviewer || claimGitHubInstallation.isSuccess;
   const pendingInstallationId = claimGitHubInstallation.variables?.installationId ?? null;
   const refreshGitHubState = () => {
@@ -313,7 +318,7 @@ export default function GitHubSetupClient({
         />
       ) : null}
 
-      {hasLinkedReviewer ? <LinkedReviewerState installations={installations} /> : null}
+      {hasLinkedReviewer ? <LinkedReviewerState installations={reviewerInstallations} /> : null}
 
       <HStack gap={2} wrap="wrap">
         <Button

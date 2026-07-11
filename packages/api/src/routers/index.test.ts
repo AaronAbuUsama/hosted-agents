@@ -686,6 +686,9 @@ describe("GitHub App router procedures", () => {
         organizationId: "github-claim-org",
         installationId: "98765",
         appSlug: "hosted-agents-test",
+        // Server-resolved role lets non-admin members (who cannot call the
+        // admin-gated githubCoderAppInstallUrl) still classify the reviewer app.
+        workerRole: "code_review",
         accountId: "12345",
         accountLogin: "acme-labs",
         accountType: "Organization",

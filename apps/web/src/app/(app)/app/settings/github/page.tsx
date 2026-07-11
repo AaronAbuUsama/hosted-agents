@@ -6,13 +6,17 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import CoworkerPage from "@/components/coworker/coworker-page";
 import GitHubRepositoriesClient from "@/components/coworker/github-repositories.client";
 import { SettingsRow, SettingsRows } from "@/components/coworker/settings-rows";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import { client } from "@/utils/orpc";
 
 export default async function GitHubSettingsPage(): Promise<ReactElement> {
   const activeOrganization = await client.activeOrganization();
-  const installations = activeOrganization
+  const allInstallations = activeOrganization
     ? await client.githubInstallations({ organizationId: activeOrganization.id })
     : [];
+  // These repo toggles drive reviewer runs, so scope this page to the reviewer
+  // app's installations; the Coder app is managed from the GitHub setup flow.
+  const installations = allInstallations.filter(isReviewerInstallation);
   const connected = installations.filter((installation) => installation.status === "connected");
   const repositoryCount = connected.reduce(
     (count, installation) => count + installation.repositoryCount,

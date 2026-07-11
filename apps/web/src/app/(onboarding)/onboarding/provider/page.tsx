@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import OnboardingStep from "@/components/coworker/onboarding-step";
 import { authClient } from "@/lib/auth-client";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import { SETUP_GITHUB_PATH, createOrganizationHref } from "@/lib/organization-routing";
 import { client } from "@/utils/orpc";
 
@@ -30,7 +31,10 @@ export default async function ProviderStepPage() {
     organizationId: activeOrganization.id,
   });
   const hasLinkedReviewer = githubInstallations.some(
-    (installation) => installation.status === "connected" && installation.repositoryCount > 0,
+    (installation) =>
+      isReviewerInstallation(installation) &&
+      installation.status === "connected" &&
+      installation.repositoryCount > 0,
   );
 
   if (!hasLinkedReviewer) {

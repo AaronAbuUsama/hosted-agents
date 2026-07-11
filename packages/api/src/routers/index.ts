@@ -10,6 +10,7 @@ import {
   CODE_REVIEW_WORKER_DISPLAY_NAME,
   CODE_REVIEW_WORKER_ROLE,
   GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+  IMPLEMENTATION_WORKER_ROLE,
   LEGACY_CODE_REVIEW_COWORKER_SLUG,
   agentRun,
   agentRunArtifact,
@@ -36,6 +37,7 @@ import { z } from "zod";
 import {
   claimGitHubInstallation,
   createGitHubAppInstallUrl,
+  getGitHubAppSlug,
   getGitHubPullRequest,
   isGitHubAppConfigured,
   listAvailableGitHubInstallations,
@@ -44,6 +46,7 @@ import {
   getGitHubIssue,
   listGitHubIssueComments,
   createGitHubIssueComment,
+  resolveGitHubAppWorkerRole,
 } from "../github-app";
 import { listBoard, type GitHubIssuesClient } from "../issues/service";
 import { protectedProcedure, publicProcedure } from "../index";
@@ -284,6 +287,11 @@ function mapGitHubInstallation(
     organizationId: row.organizationId,
     installationId: row.installationId,
     appSlug: row.appSlug,
+    // Authoritative reviewer-vs-Coder classification, resolved server-side from
+    // env config (never gated on the caller's org role). Clients rely on this to
+    // separate the reviewer installation from the Coder app's without having to
+    // load the admin-only Coder install-config endpoint.
+    workerRole: resolveGitHubAppWorkerRole(row.appSlug),
     accountId: row.accountId,
     accountLogin: row.accountLogin,
     accountType: row.accountType,
@@ -1072,6 +1080,39 @@ export const appRouter = {
       return {
         configured: true,
         installUrl: createGitHubAppInstallUrl(organizationId),
+      };
+    }),
+  githubCoderAppInstallUrl: protectedProcedure
+    .input(organizationScopedInput)
+    .handler(async ({ input, context }) => {
+      const userId = context.session.user.id;
+      const activeOrganizationId = (context.session as SessionWithActiveOrganization).session
+        ?.activeOrganizationId;
+      const organizationId = await resolveOrganizationId(
+        userId,
+        input?.organizationId ?? activeOrganizationId ?? undefined,
+      );
+
+      if (!organizationId) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Create or select an organization before installing the Coder GitHub App.",
+        });
+      }
+
+      await assertCanManageOrganizationCredentials(userId, organizationId);
+
+      if (!isGitHubAppConfigured(IMPLEMENTATION_WORKER_ROLE)) {
+        return {
+          configured: false,
+          installUrl: null,
+          appSlug: null,
+        };
+      }
+
+      return {
+        configured: true,
+        installUrl: createGitHubAppInstallUrl(organizationId, IMPLEMENTATION_WORKER_ROLE),
+        appSlug: getGitHubAppSlug(IMPLEMENTATION_WORKER_ROLE),
       };
     }),
   githubInstallations: protectedProcedure

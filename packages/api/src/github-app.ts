@@ -4,12 +4,78 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import { db } from "@hosted-agents/db";
+import {
+  CODE_REVIEW_WORKER_ROLE,
+  IMPLEMENTATION_WORKER_ROLE,
+} from "@hosted-agents/db/schema/agent-runs";
 import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
 import { env } from "@hosted-agents/env/server";
 import { eq, inArray } from "drizzle-orm";
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";
+
+// A GitHub App identity is selected by worker role, per ADR-0001. The reviewer
+// app backs the code-review role (and is the default for every legacy caller);
+// the Coder app backs the implementation role.
+export type GitHubAppWorkerRole =
+  | typeof CODE_REVIEW_WORKER_ROLE
+  | typeof IMPLEMENTATION_WORKER_ROLE;
+
+type GitHubAppCredentials = {
+  role: GitHubAppWorkerRole;
+  displayName: string;
+  appId: string | undefined;
+  appSlug: string | undefined;
+  privateKey: string | undefined;
+  privateKeyPath: string | undefined;
+};
+
+function githubAppCredentials(
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
+): GitHubAppCredentials {
+  if (role === IMPLEMENTATION_WORKER_ROLE) {
+    return {
+      role: IMPLEMENTATION_WORKER_ROLE,
+      displayName: "Coder",
+      appId: env.GITHUB_CODER_APP_ID,
+      appSlug: env.GITHUB_CODER_APP_SLUG,
+      privateKey: env.GITHUB_CODER_APP_PRIVATE_KEY,
+      privateKeyPath: env.GITHUB_CODER_APP_PRIVATE_KEY_PATH,
+    };
+  }
+
+  return {
+    role: CODE_REVIEW_WORKER_ROLE,
+    displayName: "Reviewer",
+    appId: env.GITHUB_APP_ID,
+    appSlug: env.GITHUB_APP_SLUG,
+    privateKey: env.GITHUB_APP_PRIVATE_KEY,
+    privateKeyPath: env.GITHUB_APP_PRIVATE_KEY_PATH,
+  };
+}
+
+function areGitHubAppCredentialsConfigured(credentials: GitHubAppCredentials) {
+  return Boolean(
+    credentials.appId &&
+    credentials.appSlug &&
+    (credentials.privateKey || credentials.privateKeyPath),
+  );
+}
+
+// Maps a recorded installation's app slug back to the worker role whose GitHub
+// App owns it. Both apps deliver the same webhook events to the same channel,
+// so admission and run planning use this to attribute a delivery to a role
+// (e.g. so a Coder-app pull_request delivery never spawns a duplicate review).
+export function resolveGitHubAppWorkerRole(appSlug: string | null): GitHubAppWorkerRole {
+  const coderSlug = env.GITHUB_CODER_APP_SLUG;
+
+  if (coderSlug && appSlug === coderSlug) {
+    return IMPLEMENTATION_WORKER_ROLE;
+  }
+
+  return CODE_REVIEW_WORKER_ROLE;
+}
 
 type GitHubInstallationResponse = {
   id: number;
@@ -89,36 +155,48 @@ export type GitHubAvailableInstallation = {
   localInstallationId: string | null;
 };
 
-function assertGitHubAppConfigured() {
-  if (!env.GITHUB_APP_ID) {
-    throw new Error("GITHUB_APP_ID is not configured.");
+function assertGitHubAppConfigured(credentials: GitHubAppCredentials) {
+  const prefix =
+    credentials.role === IMPLEMENTATION_WORKER_ROLE ? "GITHUB_CODER_APP" : "GITHUB_APP";
+
+  if (!credentials.appId) {
+    throw new Error(`${prefix}_ID is not configured.`);
   }
 
-  if (!env.GITHUB_APP_SLUG) {
-    throw new Error("GITHUB_APP_SLUG is not configured.");
+  if (!credentials.appSlug) {
+    throw new Error(`${prefix}_SLUG is not configured.`);
   }
 
-  if (!env.GITHUB_APP_PRIVATE_KEY && !env.GITHUB_APP_PRIVATE_KEY_PATH) {
-    throw new Error("GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH is not configured.");
+  if (!credentials.privateKey && !credentials.privateKeyPath) {
+    throw new Error(`${prefix}_PRIVATE_KEY or ${prefix}_PRIVATE_KEY_PATH is not configured.`);
   }
 }
 
-export function isGitHubAppConfigured() {
-  return Boolean(
-    env.GITHUB_APP_ID &&
-    env.GITHUB_APP_SLUG &&
-    (env.GITHUB_APP_PRIVATE_KEY || env.GITHUB_APP_PRIVATE_KEY_PATH),
-  );
+export function isGitHubAppConfigured(role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE) {
+  return areGitHubAppCredentialsConfigured(githubAppCredentials(role));
 }
 
-export function createGitHubAppInstallUrl(organizationId: string) {
-  if (!env.GITHUB_APP_SLUG) {
-    throw new Error("GITHUB_APP_SLUG is not configured.");
+export function createGitHubAppInstallUrl(
+  organizationId: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
+) {
+  const credentials = githubAppCredentials(role);
+
+  if (!credentials.appSlug) {
+    throw new Error(
+      role === IMPLEMENTATION_WORKER_ROLE
+        ? "GITHUB_CODER_APP_SLUG is not configured."
+        : "GITHUB_APP_SLUG is not configured.",
+    );
   }
 
-  const url = new URL(`https://github.com/apps/${env.GITHUB_APP_SLUG}/installations/new`);
+  const url = new URL(`https://github.com/apps/${credentials.appSlug}/installations/new`);
   url.searchParams.set("state", organizationId);
   return url.toString();
+}
+
+export function getGitHubAppSlug(role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE) {
+  return githubAppCredentials(role).appSlug ?? null;
 }
 
 function base64UrlEncode(value: Buffer | string) {
@@ -141,26 +219,32 @@ function resolvePrivateKeyPath(path: string) {
   return resolve(path);
 }
 
-function readGitHubAppPrivateKey() {
-  if (env.GITHUB_APP_PRIVATE_KEY) {
-    return env.GITHUB_APP_PRIVATE_KEY.replaceAll("\\n", "\n");
+function readGitHubAppPrivateKey(credentials: GitHubAppCredentials) {
+  if (credentials.privateKey) {
+    return credentials.privateKey.replaceAll("\\n", "\n");
   }
 
-  if (!env.GITHUB_APP_PRIVATE_KEY_PATH) {
-    throw new Error("GITHUB_APP_PRIVATE_KEY_PATH is not configured.");
+  const prefix =
+    credentials.role === IMPLEMENTATION_WORKER_ROLE ? "GITHUB_CODER_APP" : "GITHUB_APP";
+
+  if (!credentials.privateKeyPath) {
+    throw new Error(`${prefix}_PRIVATE_KEY_PATH is not configured.`);
   }
 
-  const privateKeyPath = resolvePrivateKeyPath(env.GITHUB_APP_PRIVATE_KEY_PATH);
+  const privateKeyPath = resolvePrivateKeyPath(credentials.privateKeyPath);
 
   if (!existsSync(privateKeyPath)) {
-    throw new Error(`GitHub App private key was not found at ${privateKeyPath}.`);
+    throw new Error(
+      `${credentials.displayName} GitHub App private key was not found at ${privateKeyPath}.`,
+    );
   }
 
   return readFileSync(privateKeyPath, "utf8");
 }
 
-function createGitHubAppJwt() {
-  assertGitHubAppConfigured();
+function createGitHubAppJwt(role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE) {
+  const credentials = githubAppCredentials(role);
+  assertGitHubAppConfigured(credentials);
 
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
@@ -168,7 +252,7 @@ function createGitHubAppJwt() {
     JSON.stringify({
       iat: now - 60,
       exp: now + 600,
-      iss: env.GITHUB_APP_ID,
+      iss: credentials.appId,
     }),
   );
   const unsignedToken = `${header}.${payload}`;
@@ -176,7 +260,7 @@ function createGitHubAppJwt() {
   signer.update(unsignedToken);
   signer.end();
 
-  return `${unsignedToken}.${base64UrlEncode(signer.sign(readGitHubAppPrivateKey()))}`;
+  return `${unsignedToken}.${base64UrlEncode(signer.sign(readGitHubAppPrivateKey(credentials)))}`;
 }
 
 async function fetchGitHubJson<T>(
@@ -213,20 +297,24 @@ async function fetchGitHubJson<T>(
 
 export async function createGitHubInstallationAccessTokenWithPermissions(
   installationId: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubInstallationToken> {
   const response = await fetchGitHubJson<GitHubInstallationTokenResponse>(
     `/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
-      token: createGitHubAppJwt(),
+      token: createGitHubAppJwt(role),
     },
   );
 
   return { token: response.token, permissions: response.permissions ?? null };
 }
 
-export async function createGitHubInstallationAccessToken(installationId: string) {
-  const { token } = await createGitHubInstallationAccessTokenWithPermissions(installationId);
+export async function createGitHubInstallationAccessToken(
+  installationId: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
+) {
+  const { token } = await createGitHubInstallationAccessTokenWithPermissions(installationId, role);
   return token;
 }
 
@@ -444,9 +532,7 @@ export type GitHubIssueCommentSummary = {
   updatedAt: string | null;
 };
 
-function mapIssueCommentSummary(
-  comment: GitHubIssueCommentResponse,
-): GitHubIssueCommentSummary {
+function mapIssueCommentSummary(comment: GitHubIssueCommentResponse): GitHubIssueCommentSummary {
   return {
     githubId: comment.id != null ? String(comment.id) : null,
     body: comment.body ?? "",
@@ -489,8 +575,11 @@ export async function createGitHubIssueComment(
   return mapIssueCommentSummary(response);
 }
 
-async function listInstallationRepositories(installationId: string) {
-  const token = await createGitHubInstallationAccessToken(installationId);
+async function listInstallationRepositories(
+  installationId: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
+) {
+  const token = await createGitHubInstallationAccessToken(installationId, role);
   const response = await fetchGitHubJson<GitHubInstallationRepositoriesResponse>(
     "/installation/repositories?per_page=100",
     {
@@ -501,8 +590,8 @@ async function listInstallationRepositories(installationId: string) {
   return response.repositories ?? [];
 }
 
-async function listGitHubAppInstallations() {
-  const token = createGitHubAppJwt();
+async function listGitHubAppInstallations(role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE) {
+  const token = createGitHubAppJwt(role);
   const installations: GitHubInstallationResponse[] = [];
   let page = 1;
 
@@ -523,10 +612,43 @@ async function listGitHubAppInstallations() {
   }
 }
 
-async function getInstallation(installationId: string) {
+async function getInstallation(
+  installationId: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
+) {
   return fetchGitHubJson<GitHubInstallationResponse>(`/app/installations/${installationId}`, {
-    token: createGitHubAppJwt(),
+    token: createGitHubAppJwt(role),
   });
+}
+
+// Discovers which configured GitHub App owns an installation. Each app's JWT can
+// only read its own installations, so we probe the configured apps in turn: the
+// first whose `GET /app/installations/{id}` succeeds owns it. Claim uses this so
+// the recorded `appSlug` (and the token-minting role) always match reality,
+// whichever app the member just installed.
+async function resolveInstallationCredentials(
+  installationId: string,
+): Promise<{ role: GitHubAppWorkerRole; installation: GitHubInstallationResponse }> {
+  const roles: GitHubAppWorkerRole[] = [CODE_REVIEW_WORKER_ROLE, IMPLEMENTATION_WORKER_ROLE];
+  let lastError: unknown = null;
+
+  for (const role of roles) {
+    if (!areGitHubAppCredentialsConfigured(githubAppCredentials(role))) {
+      continue;
+    }
+
+    try {
+      const installation = await getInstallation(installationId, role);
+      return { role, installation };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `GitHub installation ${installationId} was not found for any configured GitHub App.`,
+    { cause: lastError },
+  );
 }
 
 function toNullableDate(value: string | null | undefined) {
@@ -614,10 +736,12 @@ async function syncInstallationRepositories({
 
 export async function listAvailableGitHubInstallations({
   organizationId,
+  role = CODE_REVIEW_WORKER_ROLE,
 }: {
   organizationId: string;
+  role?: GitHubAppWorkerRole;
 }): Promise<GitHubAvailableInstallation[]> {
-  const installations = await listGitHubAppInstallations();
+  const installations = await listGitHubAppInstallations(role);
   const installationIds = installations.map((installation) => String(installation.id));
   const linkedInstallations = installationIds.length
     ? await db
@@ -633,7 +757,7 @@ export async function listAvailableGitHubInstallations({
   for (const installation of installations) {
     const installationId = String(installation.id);
     const linkedInstallation = linkedByInstallationId.get(installationId);
-    const repositories = await listInstallationRepositories(installationId);
+    const repositories = await listInstallationRepositories(installationId, role);
     const linkStatus =
       linkedInstallation?.organizationId === organizationId
         ? "linked"
@@ -674,8 +798,12 @@ export async function claimGitHubInstallation({
   installationId,
   setupAction,
 }: ClaimGitHubInstallationInput) {
-  const installation = await getInstallation(installationId);
-  const repositories = await listInstallationRepositories(installationId);
+  // Attribute the installation to whichever configured GitHub App owns it so the
+  // recorded appSlug (reviewer vs Coder) is truthful and repository listing uses
+  // the matching installation token.
+  const { role, installation } = await resolveInstallationCredentials(installationId);
+  const appSlug = githubAppCredentials(role).appSlug ?? "unknown";
+  const repositories = await listInstallationRepositories(installationId, role);
   const existing = await db
     .select()
     .from(githubInstallation)
@@ -696,7 +824,7 @@ export async function claimGitHubInstallation({
       id,
       organizationId,
       installationId,
-      appSlug: env.GITHUB_APP_SLUG ?? "unknown",
+      appSlug,
       accountId: installation.account?.id ? String(installation.account.id) : null,
       accountLogin: installation.account?.login ?? null,
       accountType: installation.account?.type ?? null,
@@ -711,7 +839,7 @@ export async function claimGitHubInstallation({
       target: githubInstallation.installationId,
       set: {
         organizationId,
-        appSlug: env.GITHUB_APP_SLUG ?? "unknown",
+        appSlug,
         accountId: installation.account?.id ? String(installation.account.id) : null,
         accountLogin: installation.account?.login ?? null,
         accountType: installation.account?.type ?? null,

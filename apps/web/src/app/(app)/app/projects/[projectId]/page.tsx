@@ -5,6 +5,7 @@ import CoworkerPage from "@/components/coworker/coworker-page";
 import FeatureNotEnabled from "@/components/coworker/feature-not-enabled";
 import RepositoryWorkspaceClient from "@/components/coworker/repository-workspace-client";
 import { githubInstallationSettingsUrl } from "@/lib/board-load-error";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import { APP_LANDING_PATH } from "@/lib/organization-routing";
 import { client } from "@/utils/orpc";
 
@@ -28,10 +29,13 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
   });
   // Resolve the repository together with the installation that owns it — the
   // installation carries the account identity the board's error CTA needs to
-  // link its settings page.
-  const installation = installations.find((candidate) =>
-    candidate.repositories.some((repo) => repo.id === projectId),
-  );
+  // link its settings page. The workspace reads issues/PRs with a code_review
+  // installation token, so it resolves against reviewer-app installations only:
+  // a Coder-installation repo id would be a distinct copy of the same repo that
+  // 404s on every read.
+  const installation = installations
+    .filter(isReviewerInstallation)
+    .find((candidate) => candidate.repositories.some((repo) => repo.id === projectId));
   const repository = installation?.repositories.find((repo) => repo.id === projectId);
 
   if (!installation || !repository) {

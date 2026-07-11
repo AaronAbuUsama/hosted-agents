@@ -10,6 +10,13 @@ export const CODE_REVIEW_WORKER_DISPLAY_NAME = "Code Review Worker";
 export const GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE = "github.pull_request_review";
 export const LEGACY_CODE_REVIEW_COWORKER_SLUG = "code-review";
 
+// The implementation ("Coder") worker role. Identity follows ADR-0001: one
+// GitHub App per worker role, so the Coder authors its own branches, comments,
+// and pull requests. The role adapter (run type, planner, runner) lands in a
+// later slice; this constant is the shared vocabulary that per-role GitHub App
+// credential lookup keys on today.
+export const IMPLEMENTATION_WORKER_ROLE = "implementation";
+
 export const agentRun = sqliteTable(
   "agent_run",
   {

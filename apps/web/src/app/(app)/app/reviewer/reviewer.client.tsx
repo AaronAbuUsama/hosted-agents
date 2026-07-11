@@ -20,6 +20,7 @@ import { Token } from "@astryxdesign/core/Token";
 import { useRouter } from "next/navigation";
 
 import { TRIGGER_EVENTS } from "@/components/coworker/reviewer-triggers";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import { notify } from "@/lib/toast-bridge";
 import { client } from "@/utils/orpc";
 
@@ -73,8 +74,12 @@ export default function ReviewerClient({
 
   const skills = initialConfiguration.skills;
   const defaults = initialConfiguration.defaults;
+  // Reviewer surface: only the reviewer app's installations. A Coder-installation
+  // repo would mint a code_review token against a Coder installation id → 404.
   const repositories = installations
-    .filter((installation) => installation.status === "connected")
+    .filter(
+      (installation) => installation.status === "connected" && isReviewerInstallation(installation),
+    )
     .flatMap((installation) => installation.repositories);
   const enabledRepositoryCount = repositories.filter((repository) => repository.selected).length;
   const enabledSkillCount = skills.filter((skill) => skill.enabled).length;
@@ -366,7 +371,9 @@ function RequestReviewDialog({
   const [isTriggering, setIsTriggering] = useState(false);
 
   const repositories = installations
-    .filter((installation) => installation.status === "connected")
+    .filter(
+      (installation) => installation.status === "connected" && isReviewerInstallation(installation),
+    )
     .flatMap((installation) => installation.repositories);
 
   async function selectRepository(nextRepositoryId: string): Promise<void> {
