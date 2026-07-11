@@ -5,6 +5,7 @@ import {
 import {
   BABYSIT_ROUND_CAP,
   BABYSIT_STOP_HUMAN,
+  BABYSIT_STOP_HUMAN_APPROVED,
   decideBabysitReview,
   findCoderClaimedIssueByRepositoryName,
   hasActiveBabysitRun,
@@ -12,7 +13,13 @@ import {
   recordBabysitStopped,
 } from "@hosted-agents/api/issues/babysit";
 import {
+  decideAutoMerge,
+  isRepositoryAutomergeAllowed,
+  parseAutomergeRepositories,
+} from "@hosted-agents/api/issues/automerge";
+import {
   deleteSyncedIssueComment,
+  markLinkedPullRequestMerged,
   upsertSyncedIssue,
   upsertSyncedIssueComment,
 } from "@hosted-agents/api/issues/sync";
@@ -34,7 +41,10 @@ import { and, desc, eq } from "drizzle-orm";
 import type { BlankEnv } from "hono/types";
 
 import { parseCoderIssueBranch } from "./runners/coder-branch";
-import { defaultImplementationGitHubClient } from "./runners/github-implementation-tools";
+import {
+  defaultImplementationGitHubClient,
+  squashMergePullRequest,
+} from "./runners/github-implementation-tools";
 import { planGitHubIssueImplementationRun, planGitHubPullRequestRun } from "./github-run-planner";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -61,9 +71,29 @@ export type PostCoderIssueComment = (input: {
   body: string;
 }) => Promise<void>;
 
+// Squash-merges a Coder-owned pull request via the Coder App installation token
+// (C7 auto-merge). Injected so the review admission stays DB-only under test — the
+// default mints the Coder token and calls `pulls.merge`; a test supplies a fake that
+// records the call (or throws, to exercise the merge-failure path).
+export type MergeCoderPullRequest = (input: {
+  installationId: string;
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+}) => Promise<{ merged: boolean; sha: string | null }>;
+
 export type GitHubWebhookAdmissionDeps = {
   postCoderIssueComment?: PostCoderIssueComment;
+  mergeCoderPullRequest?: MergeCoderPullRequest;
+  // The C7 auto-merge allow-list (exact `owner/name`, lowercased). Injected in tests;
+  // defaults to `CODER_AUTOMERGE_REPOS` parsed once at module load.
+  automergeRepositories?: ReadonlySet<string>;
 };
+
+// The auto-merge allow-list parsed once from env. An unset/empty value is an empty
+// set — nothing auto-merges, so every approved Coder PR only gets a ready-to-merge
+// comment until a repository is explicitly allow-listed (ships = test-repo).
+const DEFAULT_AUTOMERGE_REPOSITORIES = parseAutomergeRepositories(env.CODER_AUTOMERGE_REPOS);
 
 type GitHubWebhookChannelOptions = {
   database?: Database;
@@ -91,6 +121,27 @@ async function defaultPostCoderIssueComment(input: {
     repo: input.repo,
     issue_number: input.issueNumber,
     body: input.body,
+  });
+}
+
+// Default C7 merge: mint the Coder App's installation token and squash-merge the
+// pull request as the Coder (ADR-0001). Throws on a rejected/non-merged merge; the
+// caller records that failure and does not retry-loop.
+async function defaultMergeCoderPullRequest(input: {
+  installationId: string;
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+}): Promise<{ merged: boolean; sha: string | null }> {
+  const token = await createGitHubInstallationAccessToken(
+    input.installationId,
+    IMPLEMENTATION_WORKER_ROLE,
+  );
+  const client = defaultImplementationGitHubClient(token);
+  return squashMergePullRequest(client, {
+    owner: input.owner,
+    repo: input.repo,
+    pullRequestNumber: input.pullRequestNumber,
   });
 }
 
@@ -133,6 +184,9 @@ type PullRequestReviewAdmissionMetadata = RepositoryDescriptor & {
   headRef: string;
   baseRef: string;
   reviewState: string;
+  // The pull request's `state` ("open" | "closed") on the delivery. C7 only
+  // auto-merges an open PR; a redelivery after the merge/close reads "closed".
+  pullRequestState: string | null;
   // `sender.type` on the delivery: "User" for a human, "Bot" for the Reviewer or
   // Coder GitHub App. Humans always win, so this is what gates the yield.
   senderType: string;
@@ -686,6 +740,7 @@ function pullRequestReviewMetadata(
     headRef: pullRequest.head.ref,
     baseRef: pullRequest.base.ref,
     reviewState: review.state,
+    pullRequestState: typeof pullRequest.state === "string" ? pullRequest.state : null,
     senderType: sender.type,
   };
 }
@@ -693,7 +748,9 @@ function pullRequestReviewMetadata(
 // The transaction's outcome. `admission` is what the caller returns to GitHub;
 // `blockedComment`, when present (the round cap was crossed), is posted as the
 // Coder AFTER the transaction commits so a comment failure never rolls back the
-// blocked state.
+// blocked state. `autoMerge` / `readyComment` are C7's post-commit approval actions
+// (the external merge + Merged-lane stamp, or the ready-to-merge comment), run the
+// same way so the merge/comment failure never rolls back the admission.
 type ReviewAdmissionOutcome = {
   admission: GitHubWebhookAdmission;
   blockedComment?: {
@@ -703,15 +760,39 @@ type ReviewAdmissionOutcome = {
     issueNumber: number;
     body: string;
   };
+  // C7: a squash-merge to attempt after commit. The merge, the Merged-lane stamp,
+  // and the Coder comment all run post-commit (external API); the returned admission
+  // then reflects `merged` / `merge_failed`.
+  autoMerge?: {
+    installationId: string;
+    owner: string;
+    repo: string;
+    issueId: string;
+    issueNumber: number;
+    pullRequestNumber: number;
+  };
+  // C7: a "ready to merge" comment for a non-allow-listed repository, posted after
+  // commit. The PR is approved and mergeable, but merging stays a human action.
+  readyComment?: {
+    installationId: string;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    body: string;
+  };
 };
 
-// The babysit admission (spec #21 stories 7–9, C6). A `changes_requested` review
-// by the Reviewer on a Coder-owned pull request wakes the Coder for one fix round
-// on the same branch, up to a hard cap; at the cap the issue is parked Failed /
-// Blocked with an explanation comment. A human review yields immediately (humans
-// always win — see also the human-push yield in `admitPullRequestDelivery` and the
-// human-comment yield in `admitPullRequestCommentDelivery`). An `approved` review
-// is the approval path C7 owns — a deliberate no-op here.
+// The babysit admission (spec #21 stories 7–9, C6) + the C7 auto-merge branch (story
+// 10). A `changes_requested` review by the Reviewer on a Coder-owned pull request
+// wakes the Coder for one fix round on the same branch, up to a hard cap; at the cap
+// the issue is parked Failed / Blocked with an explanation comment. A human takeover
+// review yields immediately (humans always win — see also the human-push yield in
+// `admitPullRequestDelivery` and the human-comment yield in
+// `admitPullRequestCommentDelivery`). An `approved` review is the C7 approval path:
+// on an allow-listed repository the Coder squash-merges its own PR (issue → Merged
+// lane); on every other repository it comments that the PR is ready and stops. A
+// human approval records the babysit stop first (humans always win) and then follows
+// the same auto-merge decision — a human-approved allow-listed PR should merge.
 async function admitPullRequestReviewDelivery(
   delivery: GitHubWebhookDelivery,
   database: Database,
@@ -820,14 +901,109 @@ async function admitPullRequestReviewDelivery(
       },
     });
 
+    // C7 approval branch: an approved review on this Coder-owned PR. The claim match
+    // above IS the "PR is Coder-owned" proof; the pure decision adds the allow-list,
+    // PR-open, humans-took-over, and already-merged gates. Merge / ready-comment run
+    // post-commit (external API); a skip is a recognized no-op.
+    const allowList = deps.automergeRepositories ?? DEFAULT_AUTOMERGE_REPOSITORIES;
+    const resolveApproval = async (): Promise<ReviewAdmissionOutcome> => {
+      const autoMerge = decideAutoMerge({
+        reviewState: metadata.reviewState,
+        repositoryAllowListed: isRepositoryAutomergeAllowed(allowList, metadata.repositoryFullName),
+        pullRequestOpen: metadata.pullRequestState !== "closed",
+        babysitBlockedReason: claim.babysitBlockedReason,
+        alreadyMerged: Boolean(claim.linkedPullRequestMerged),
+      });
+
+      if (autoMerge.action === "merge") {
+        // Record the intent on the delivery ledger; the squash-merge runs post-commit
+        // and rewrites this to merged / merge_failed.
+        await transaction
+          .update(githubWebhookDelivery)
+          .set({ status: `merging:${metadata.pullRequestNumber}`, updatedAt: new Date() })
+          .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+        return {
+          admission: {
+            ok: true,
+            accepted: false,
+            duplicate: false,
+            event: delivery.name,
+            action,
+            deliveryId: delivery.deliveryId,
+            issueNumber: claim.number,
+            reason: "merging",
+          },
+          autoMerge: {
+            installationId: installation.installationId,
+            owner: metadata.repositoryOwner,
+            repo: metadata.repositoryName,
+            issueId: claim.issueId,
+            issueNumber: claim.number,
+            pullRequestNumber: metadata.pullRequestNumber,
+          },
+        };
+      }
+
+      if (autoMerge.action === "comment_ready") {
+        await transaction
+          .update(githubWebhookDelivery)
+          .set({ status: `ready_to_merge:${metadata.pullRequestNumber}`, updatedAt: new Date() })
+          .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+        const body = [
+          `<!-- worker-role:${IMPLEMENTATION_WORKER_ROLE} role:ready-to-merge issue:${claim.number} -->`,
+          `Pull request #${metadata.pullRequestNumber} is approved and ready to merge. Auto-merge is not enabled for \`${metadata.repositoryFullName}\`, so merging stays a human action.`,
+        ].join("\n");
+        return {
+          admission: {
+            ok: true,
+            accepted: false,
+            duplicate: false,
+            event: delivery.name,
+            action,
+            deliveryId: delivery.deliveryId,
+            issueNumber: claim.number,
+            reason: "ready_to_merge",
+          },
+          readyComment: {
+            installationId: installation.installationId,
+            owner: metadata.repositoryOwner,
+            repo: metadata.repositoryName,
+            issueNumber: claim.number,
+            body,
+          },
+        };
+      }
+
+      // skip — already merged (a redelivered approval), a closed PR, humans took over,
+      // or not an approval. Recognized, no side effect.
+      return ignore(autoMerge.reason);
+    };
+
+    // A live human approval: humans always win, so record the stop first (no later
+    // bot changes_requested can resume the loop), then run the same auto-merge
+    // decision — a human-approved allow-listed PR should merge.
+    if (decision.action === "yield" && decision.reason === BABYSIT_STOP_HUMAN_APPROVED) {
+      await recordBabysitStopped(transaction, {
+        issueId: claim.issueId,
+        reason: decision.reason,
+      });
+      return resolveApproval();
+    }
+
+    // A bot approval, or an approval after babysitting already stopped — C7 decides.
+    if (decision.action === "noop" && decision.reason === "approved_review") {
+      return resolveApproval();
+    }
+
     if (decision.action === "noop") {
-      // Approval (C7's job), an already-stopped PR, or a non-actionable review
-      // state — recognized, no side effect.
+      // An already-stopped PR or a non-actionable review state — recognized, no side
+      // effect.
       return ignore(decision.reason);
     }
 
     if (decision.action === "yield") {
-      // Humans always win: record the stop so the Coder never resumes, no run.
+      // A human takeover (a changes-requested or commented review): humans always
+      // win — record the stop so the Coder never resumes, no run.
       await recordBabysitStopped(transaction, {
         issueId: claim.issueId,
         reason: decision.reason,
@@ -994,7 +1170,116 @@ async function admitPullRequestReviewDelivery(
     }
   }
 
+  // C7 ready-to-merge comment for a non-allow-listed repository (best-effort — the
+  // approval is already recorded; a comment failure must not roll it back).
+  if (outcome.readyComment) {
+    const postComment = deps.postCoderIssueComment ?? defaultPostCoderIssueComment;
+    try {
+      await postComment(outcome.readyComment);
+    } catch (error) {
+      console.error("Failed to post Coder ready-to-merge comment", error);
+    }
+  }
+
+  // C7 auto-merge: the external squash-merge runs after commit; the final admission
+  // reflects merged / merge_failed.
+  if (outcome.autoMerge) {
+    return performAutoMerge(database, deps, {
+      ...outcome.autoMerge,
+      deliveryId: metadata.deliveryId,
+      event: delivery.name,
+      action,
+    });
+  }
+
   return outcome.admission;
+}
+
+// C7 post-commit auto-merge. Squash-merges the Coder-owned pull request via the
+// injected merge dep, then stamps the Merged lane on the claim's issue row, records
+// the durable `merged:<pr>` delivery status, and posts a short Coder comment on the
+// issue. A merge failure is recorded as `merge_failed:<pr>` and returned as a normal
+// admission — never thrown, so a rejected merge cannot 500 the webhook into a
+// redelivery/retry loop. Idempotency lives upstream: the Merged-lane stamp makes a
+// later approval's `decideAutoMerge` skip (`already_merged`), and a same-id
+// redelivery is a duplicate before it reaches here.
+async function performAutoMerge(
+  database: Database,
+  deps: GitHubWebhookAdmissionDeps,
+  target: {
+    installationId: string;
+    owner: string;
+    repo: string;
+    issueId: string;
+    issueNumber: number;
+    pullRequestNumber: number;
+    deliveryId: string;
+    event: string;
+    action: string | undefined;
+  },
+): Promise<GitHubWebhookAdmission> {
+  const merge = deps.mergeCoderPullRequest ?? defaultMergeCoderPullRequest;
+  const baseAdmission: GitHubWebhookAdmission = {
+    ok: true,
+    accepted: false,
+    duplicate: false,
+    event: target.event,
+    action: target.action,
+    deliveryId: target.deliveryId,
+    issueNumber: target.issueNumber,
+  };
+
+  try {
+    const result = await merge({
+      installationId: target.installationId,
+      owner: target.owner,
+      repo: target.repo,
+      pullRequestNumber: target.pullRequestNumber,
+    });
+    if (!result.merged) {
+      throw new Error(`GitHub reported merged=false for pull request #${target.pullRequestNumber}`);
+    }
+
+    // Stamp the Merged lane on the claim's issue row (keyed by issue id, so it hits
+    // whichever repo row the claim lives on) and record the durable merged status.
+    await markLinkedPullRequestMerged(database, {
+      issueId: target.issueId,
+      pullRequestNumber: target.pullRequestNumber,
+    });
+    await database
+      .update(githubWebhookDelivery)
+      .set({ status: `merged:${target.pullRequestNumber}`, updatedAt: new Date() })
+      .where(eq(githubWebhookDelivery.id, target.deliveryId));
+
+    const postComment = deps.postCoderIssueComment ?? defaultPostCoderIssueComment;
+    try {
+      await postComment({
+        installationId: target.installationId,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: target.issueNumber,
+        body: [
+          `<!-- worker-role:${IMPLEMENTATION_WORKER_ROLE} role:auto-merged issue:${target.issueNumber} -->`,
+          `Merged pull request #${target.pullRequestNumber} (squash) on approval. Issue #${target.issueNumber} moves to Merged.`,
+        ].join("\n"),
+      });
+    } catch (error) {
+      console.error("Failed to post Coder auto-merge comment", error);
+    }
+
+    return { ...baseAdmission, reason: "merged" };
+  } catch (error) {
+    console.error("Coder auto-merge failed", error);
+    try {
+      await database
+        .update(githubWebhookDelivery)
+        .set({ status: `merge_failed:${target.pullRequestNumber}`, updatedAt: new Date() })
+        .where(eq(githubWebhookDelivery.id, target.deliveryId));
+    } catch (updateError) {
+      console.error("Failed to record Coder auto-merge failure", updateError);
+    }
+    return { ...baseAdmission, reason: "merge_failed" };
+  }
 }
 
 // The fields the babysit human-comment yield reads off an `issue_comment`
