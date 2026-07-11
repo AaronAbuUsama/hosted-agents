@@ -38,6 +38,9 @@ function createFakeSandbox(commands: RecordedCommand[], uploads: string[]) {
         if (command.includes("git status --porcelain")) {
           return { result: " M src/widget.ts\n", exitCode: 0 };
         }
+        if (command.includes("git rev-list")) {
+          return { result: "1\n", exitCode: 0 };
+        }
         if (command.includes("git rev-parse")) {
           return { result: "abc123\n", exitCode: 0 };
         }
@@ -171,34 +174,27 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
     // A commit happens because the tree is dirty.
     expect(commandLine.some((command) => command.startsWith("git commit -m"))).toBe(true);
 
-    // Push flow: re-embed token → push → scrub back to the tokenless remote.
-    const embedIndex = commandLine.findIndex(
-      (command) =>
-        command.includes("git remote set-url origin") &&
-        command.includes("x-access-token:secret-coder-token@github.com"),
-    );
-    const pushIndex = commandLine.findIndex((command) => command.includes("git push"));
-    const isTokenlessRemoteSet = (command: string) =>
-      command.includes("git remote set-url origin") &&
-      command.includes("https://github.com/octo-org/widgets.git") &&
-      !command.includes("x-access-token");
-    const scrubIndexes = commandLine
-      .map((command, index) => (isTokenlessRemoteSet(command) ? index : -1))
-      .filter((index) => index >= 0);
-    expect(embedIndex).toBeGreaterThanOrEqual(0);
-    expect(pushIndex).toBeGreaterThan(embedIndex);
-    // The last thing done to the remote after pushing is scrubbing the token out.
-    const lastScrub = scrubIndexes.at(-1) ?? -1;
-    expect(lastScrub).toBeGreaterThan(pushIndex);
+    // Hardened push: straight to the authenticated URL passed as a positional
+    // argument, with hooks / fsmonitor / credential helpers disabled so an
+    // agent-planted hook or config cannot execute or read the token, and the branch
+    // named as an explicit refspec so an agent-planted pushurl cannot redirect it.
+    const isPushCommand = (command: string) => /\bgit\b.*\bpush\b/.test(command);
+    const pushCommand = commandLine.find(isPushCommand);
+    expect(pushCommand).toBeDefined();
+    expect(pushCommand).toContain("-c core.hooksPath=/dev/null");
+    expect(pushCommand).toContain("-c core.fsmonitor=");
+    expect(pushCommand).toContain("-c credential.helper=");
+    expect(pushCommand).toContain("x-access-token:secret-coder-token@github.com");
+    expect(pushCommand).toContain("'HEAD:refs/heads/coder/issue-42-add-a-widget'");
 
-    // The push command itself targets the branch, and the final remote is tokenless.
-    expect(commandLine[pushIndex]).toContain(
-      "git push --set-upstream origin 'coder/issue-42-add-a-widget'",
+    // The token is NEVER persisted into the git remote config — the only
+    // `git remote set-url` is the tokenless scrub right after clone.
+    const remoteSetUrlCommands = commandLine.filter((command) =>
+      command.includes("git remote set-url origin"),
     );
-    const lastRemoteCommand = commandLine
-      .filter((command) => command.includes("git remote set-url origin"))
-      .at(-1);
-    expect(lastRemoteCommand).not.toContain("secret-coder-token");
+    expect(remoteSetUrlCommands).toHaveLength(1);
+    expect(remoteSetUrlCommands[0]).not.toContain("x-access-token");
+    expect(remoteSetUrlCommands[0]).not.toContain("secret-coder-token");
 
     // pulls.create payload: correct head/base, and a "Closes #42" body.
     expect(record.pullsCreate).toHaveLength(1);
@@ -260,7 +256,8 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
   test("fails with a clear reason and still cleans up when the agent makes no changes", async () => {
     const commands: RecordedCommand[] = [];
     const uploads: string[] = [];
-    // A sandbox whose working tree is clean — `git status --porcelain` returns empty.
+    // A sandbox whose working tree is clean AND has no commits ahead of the default
+    // branch: `git status --porcelain` returns empty and `git rev-list --count` is 0.
     const sandbox: ImplementationSandbox & { deleted: () => boolean } = (() => {
       let deleted = false;
       return {
@@ -268,6 +265,9 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
         process: {
           async executeCommand(command, cwd) {
             commands.push({ command, cwd });
+            if (command.includes("git rev-list")) {
+              return { result: "0\n", exitCode: 0 };
+            }
             return { result: "", exitCode: 0 };
           },
         },
@@ -297,9 +297,77 @@ describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", (
     });
 
     const events: SandboxLifecycleEvent[] = [];
-    await expect(runner.run(createInput(events))).rejects.toThrow(/no file changes/i);
+    await expect(runner.run(createInput(events))).rejects.toThrow(
+      /no commits ahead of the default branch/i,
+    );
     // No PR opened, and the sandbox is still deleted on the failure path.
     expect(record.pullsCreate).toHaveLength(0);
+    expect(sandbox.deleted()).toBe(true);
+  });
+
+  test("opens a PR from the agent's own commits when the working tree is clean", async () => {
+    const commands: RecordedCommand[] = [];
+    const uploads: string[] = [];
+    // The agent committed its own work despite the "do not commit" instruction: the
+    // working tree is clean (`git status --porcelain` empty) but the branch is ahead
+    // of the default branch. This must still push and open a PR — not hard-fail.
+    const sandbox: ImplementationSandbox & { deleted: () => boolean } = (() => {
+      let deleted = false;
+      return {
+        id: "sandbox-agent-committed",
+        process: {
+          async executeCommand(command, cwd) {
+            commands.push({ command, cwd });
+            if (command.includes("git rev-list")) {
+              return { result: "2\n", exitCode: 0 };
+            }
+            // git status --porcelain (and everything else) reports a clean tree.
+            return { result: "", exitCode: 0 };
+          },
+        },
+        fs: {
+          async uploadFile(_content, path) {
+            uploads.push(path);
+          },
+        },
+        async delete() {
+          deleted = true;
+        },
+        deleted: () => deleted,
+      };
+    })();
+    const record = {
+      pullsCreate: [] as PullsCreateCall[],
+      issueComments: [] as Record<string, unknown>[],
+    };
+    const runner = new DaytonaImplementationSandboxRunner({
+      createClient: () => ({
+        async create() {
+          return sandbox;
+        },
+      }),
+      createGitHubClient: () => createFakeGitHubClient(record),
+      runAgent: async () => ({ summary: "Committed the widget myself." }),
+    });
+
+    const events: SandboxLifecycleEvent[] = [];
+    const result = await runner.run(createInput(events));
+
+    const commandLine = commands.map((entry) => entry.command);
+    // The runner does NOT create its own commit — the tree is already clean.
+    expect(commandLine.some((command) => command.startsWith("git commit -m"))).toBe(false);
+    // It still pushes the branch and opens the PR off the agent's own commits.
+    expect(commandLine.some((command) => /\bgit\b.*\bpush\b/.test(command))).toBe(true);
+    expect(record.pullsCreate).toHaveLength(1);
+    expect(record.pullsCreate[0]).toMatchObject({
+      head: "coder/issue-42-add-a-widget",
+      base: "main",
+    });
+    expect(result).toMatchObject({
+      branch: "coder/issue-42-add-a-widget",
+      pullRequestNumber: 7,
+      pullRequestState: "open",
+    });
     expect(sandbox.deleted()).toBe(true);
   });
 

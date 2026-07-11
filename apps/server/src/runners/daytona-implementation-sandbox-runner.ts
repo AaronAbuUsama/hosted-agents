@@ -427,7 +427,11 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       });
       logs.push("flue implementation session completed");
 
-      // Stage everything and decide whether there is anything to commit.
+      // Stage everything the agent left uncommitted and commit it. The agent is told
+      // not to commit, but models routinely commit their own work anyway — so a clean
+      // working tree here does NOT mean "no changes": real, pushable commits may
+      // already exist on the branch. Only create the runner's commit when something is
+      // actually staged.
       await emitStage("changes_staging", "Staging working tree changes");
       await executeSandboxCommand({
         sandbox,
@@ -445,52 +449,58 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
         logs,
         redactions,
       });
-      if (!status.trim()) {
+      if (status.trim()) {
+        const commitMessage = `${issue.title}\n\nCloses #${issueNumber}\n\nImplemented by ${identity.name} (run ${input.agentRunId}).`;
+        await emitStage("changes_committing", "Committing the Coder's changes");
+        await executeSandboxCommand({
+          sandbox,
+          command: `git commit -m ${shellQuote(commitMessage)}`,
+          cwd: REPOSITORY_PATH,
+          timeout: 120,
+          logs,
+          redactions,
+        });
+      }
+
+      // The real gate is whether the branch has any commits ahead of the default
+      // branch — that is what a pull request pushes. A clean tree with the agent's own
+      // commits is a valid PR; only a branch with zero commits ahead is a genuine
+      // "nothing to open a pull request from" failure.
+      const commitsAheadOutput = await executeSandboxCommand({
+        sandbox,
+        command: `git rev-list --count ${shellQuote(`origin/${input.defaultBranch}..HEAD`)}`,
+        cwd: REPOSITORY_PATH,
+        timeout: 60,
+        logs,
+        redactions,
+      });
+      const commitsAhead = Number.parseInt(commitsAheadOutput.trim(), 10);
+      if (!Number.isFinite(commitsAhead) || commitsAhead <= 0) {
         throw new ImplementationSandboxRunError(
-          "The Coder produced no file changes to commit; nothing to open a pull request from.",
+          "The Coder produced no changes to open a pull request from: the working tree is clean and the branch has no commits ahead of the default branch.",
           { sandboxId },
         );
       }
 
-      const commitMessage = `${issue.title}\n\nCloses #${issueNumber}\n\nImplemented by ${identity.name} (run ${input.agentRunId}).`;
-      await emitStage("changes_committing", "Committing the Coder's changes");
-      await executeSandboxCommand({
-        sandbox,
-        command: `git commit -m ${shellQuote(commitMessage)}`,
-        cwd: REPOSITORY_PATH,
-        timeout: 120,
-        logs,
-        redactions,
-      });
-
-      // Push with the token re-embedded in the remote, then scrub it back out the
-      // same way the clone path does — the token never persists in the sandbox.
+      // Push straight to the authenticated URL passed as a positional argument, never
+      // writing the installation token into .git/config. The untrusted agent had full
+      // shell control over this repo before this point (issue bodies are attacker
+      // controllable), so a token persisted in the remote would be readable by an
+      // agent-planted `.git/hooks/pre-push`, `core.fsmonitor` command, or
+      // `credential.helper`, and an agent-planted `remote.origin.pushurl` could
+      // silently redirect a `git push origin`. Passing the URL positionally makes git
+      // ignore the configured remote (and any planted pushurl) entirely, and hooks /
+      // fsmonitor / credential helpers are neutralized for this one invocation so none
+      // of them can execute or capture the token. The remote stays the tokenless URL
+      // set right after clone, so there is nothing left to scrub.
       await emitStage("branch_pushing", `Pushing ${branch}`, { branch });
       await executeSandboxCommand({
         sandbox,
-        command: `git remote set-url origin ${shellQuote(authenticatedCloneUrl)}`,
-        cwd: REPOSITORY_PATH,
-        timeout: 30,
-        logs,
-        redactions,
-      });
-      await executeSandboxCommand({
-        sandbox,
-        command: `GIT_TERMINAL_PROMPT=0 git push --set-upstream origin ${shellQuote(branch)}`,
+        command: `GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -c core.fsmonitor= -c credential.helper= push ${shellQuote(
+          authenticatedCloneUrl,
+        )} ${shellQuote(`HEAD:refs/heads/${branch}`)}`,
         cwd: REPOSITORY_PATH,
         timeout: 300,
-        logs,
-        redactions,
-      });
-      await emitStage(
-        "branch_push_sanitizing_remote",
-        "Removing installation token from git remote",
-      );
-      await executeSandboxCommand({
-        sandbox,
-        command: `git remote set-url origin ${shellQuote(cloneUrl)}`,
-        cwd: REPOSITORY_PATH,
-        timeout: 30,
         logs,
         redactions,
       });
