@@ -330,6 +330,7 @@ async function createTables(testClient: TestClient) {
       "id" text PRIMARY KEY,
       "organization_id" text NOT NULL,
       "github_repository_id" text NOT NULL,
+      "repository_full_name" text NOT NULL,
       "issue_id" text,
       "issue_number" integer NOT NULL,
       "github_comment_id" text,
@@ -346,6 +347,7 @@ async function createTables(testClient: TestClient) {
       "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
     );
     CREATE UNIQUE INDEX "github_issue_comment_githubCommentId_idx" ON "github_issue_comment" ("github_comment_id");
+    CREATE INDEX "github_issue_comment_repositoryFullName_idx" ON "github_issue_comment" ("repository_full_name");
   `);
 }
 

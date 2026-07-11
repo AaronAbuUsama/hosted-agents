@@ -87,6 +87,14 @@ export const githubIssueComment = sqliteTable(
     githubRepositoryId: text("github_repository_id")
       .notNull()
       .references(() => githubRepository.id, { onDelete: "cascade" }),
+    // The repository's `owner/name`, denormalized here as it is on `github_issue`.
+    // `githubRepositoryId` is per-installation: a repo installed under two GitHub
+    // Apps (reviewer + Coder) has two `github_repository` rows, and a comment is
+    // pinned (by its unique GitHub comment id) to whichever app's delivery arrived
+    // first. The full name is identical across those rows, so scoping store reads
+    // by (organization, full name) instead of the repo-row id makes them see the
+    // comment regardless of which app's record it landed on (see issues/sync.ts).
+    repositoryFullName: text("repository_full_name").notNull(),
     // Nullable: a comment can arrive (or be posted) before the issue row is synced.
     issueId: text("issue_id").references(() => githubIssue.id, { onDelete: "cascade" }),
     issueNumber: integer("issue_number").notNull(),
@@ -113,6 +121,9 @@ export const githubIssueComment = sqliteTable(
     index("github_issue_comment_issueId_idx").on(table.issueId),
     index("github_issue_comment_repo_issue_idx").on(table.githubRepositoryId, table.issueNumber),
     index("github_issue_comment_organizationId_idx").on(table.organizationId),
+    // Backs the topology-independent revision read (issues/sync.ts), which scopes
+    // the comment count/watermark by (organization, repository full name).
+    index("github_issue_comment_repositoryFullName_idx").on(table.repositoryFullName),
   ],
 );
 

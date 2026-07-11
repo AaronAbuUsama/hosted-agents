@@ -1,6 +1,7 @@
 import { and, count, eq, max } from "drizzle-orm";
 
 import type { db as productionDb } from "@hosted-agents/db";
+import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
 import { githubIssue, githubIssueComment } from "@hosted-agents/db/schema/issues";
 
 import { BABYSIT_BLOCKED_LANE_REASONS } from "./babysit";
@@ -12,6 +13,17 @@ import type { IssueOverlay } from "./service";
 // The oRPC board transport reads the claim + linked-PR overlays back out. Keeping
 // both directions in one module means the webhook and the board agree on how a
 // synced row maps to a board overlay, and the mapping is unit-testable.
+//
+// Reads are topology-independent (mirrors issues/babysit.ts). A repository can be
+// installed under two GitHub Apps (reviewer + Coder), producing two
+// `github_repository` rows that share one `owner/name` but differ by
+// `installation_id`; per-app webhook deliveries upsert into whichever row they
+// resolved, so an issue's claim or a comment can land on either record. The write
+// paths keep stamping the transport's record — but the reads below scope by
+// (organization, repository full name), never a single repo-row id, so the board
+// and detail see every synced row for the repo no matter which app's record it was
+// pinned to. Where two records both carry a row for one issue number, the overlays
+// are merged so a claim / linked PR on either record surfaces.
 
 // A drizzle handle scoped to what sync needs — the production db and a webhook
 // transaction both satisfy it, so the same functions run inside or outside a tx.
@@ -103,6 +115,7 @@ export async function upsertSyncedIssue(
 export type SyncedIssueCommentInput = {
   organizationId: string;
   githubRepositoryId: string;
+  repositoryFullName: string;
   issueNumber: number;
   githubCommentId: string;
   authorLogin: string | null;
@@ -140,6 +153,7 @@ export async function upsertSyncedIssueComment(
       id: crypto.randomUUID(),
       organizationId: input.organizationId,
       githubRepositoryId: input.githubRepositoryId,
+      repositoryFullName: input.repositoryFullName,
       issueId,
       issueNumber: input.issueNumber,
       githubCommentId: input.githubCommentId,
@@ -269,6 +283,35 @@ function overlayFromRow(row: IssueOverlayRow): IssueOverlay {
   };
 }
 
+// Pick the more advanced of two linked-PR overlays when both records carry one for
+// the same issue: merged beats not-merged, then closed beats open. Keeps the Merged
+// / In PR lane correct when the Coder's record recorded the merge but the read came
+// in through the reviewer's record (or vice versa).
+function pickLinkedPullRequest(
+  a: IssueOverlay["linkedPullRequest"],
+  b: IssueOverlay["linkedPullRequest"],
+): IssueOverlay["linkedPullRequest"] {
+  if (!a) return b;
+  if (!b) return a;
+  if (Boolean(a.merged) !== Boolean(b.merged)) return a.merged ? a : b;
+  if (a.state !== b.state) return a.state === "closed" ? a : b;
+  return a;
+}
+
+// Fold two overlays for the same issue number into one. A repo installed under both
+// apps has a row per record; a claim / linked-PR / blocked signal recorded on either
+// must surface, so booleans are OR-ed and the linked PR takes the more advanced
+// state. This is what makes the read topology-independent even when both records
+// hold a row for the issue.
+function mergeOverlays(base: IssueOverlay, next: IssueOverlay): IssueOverlay {
+  return {
+    claimed: Boolean(base.claimed) || Boolean(next.claimed),
+    linkedPullRequest: pickLinkedPullRequest(base.linkedPullRequest, next.linkedPullRequest),
+    closedByMerge: Boolean(base.closedByMerge) || Boolean(next.closedByMerge),
+    blocked: Boolean(base.blocked) || Boolean(next.blocked),
+  };
+}
+
 const OVERLAY_COLUMNS = {
   number: githubIssue.number,
   linkedPullRequestState: githubIssue.linkedPullRequestState,
@@ -279,21 +322,59 @@ const OVERLAY_COLUMNS = {
   babysitBlockedReason: githubIssue.babysitBlockedReason,
 } as const;
 
+// The topology-independent scope of a board repository: its owning organization and
+// its `owner/name`. A repo installed under two GitHub Apps has two
+// `github_repository` rows sharing one full name; resolving the scope from the row
+// the caller already authorized (via requireOrganizationRepository) lets the reads
+// below match synced rows pinned to EITHER app's record. Returns null when the row
+// is gone — the reads then report an empty store, exactly as an unknown repo-row id
+// did before this change.
+async function resolveRepositoryScope(
+  database: SyncDatabase,
+  githubRepositoryId: string,
+): Promise<{ organizationId: string; repositoryFullName: string } | null> {
+  const [row] = await database
+    .select({
+      organizationId: githubInstallation.organizationId,
+      repositoryFullName: githubRepository.fullName,
+    })
+    .from(githubRepository)
+    .innerJoin(githubInstallation, eq(githubRepository.installationId, githubInstallation.id))
+    .where(eq(githubRepository.id, githubRepositoryId))
+    .limit(1);
+
+  return row ?? null;
+}
+
 // Load every stored issue's overlay for a repository, keyed by issue number, ready
-// to hand to `buildBoard`. Issues with no stored row simply have no overlay and
-// fall through to their live label-derived stage.
+// to hand to `buildBoard`. Scoped by (organization, repository full name) so a claim
+// or linked PR recorded on the OTHER app's record still surfaces; overlays for the
+// same issue number across records are merged. Issues with no stored row simply have
+// no overlay and fall through to their live label-derived stage.
 export async function loadIssueOverlays(
   database: SyncDatabase,
   githubRepositoryId: string,
 ): Promise<Map<number, IssueOverlay>> {
+  const scope = await resolveRepositoryScope(database, githubRepositoryId);
+  if (!scope) {
+    return new Map();
+  }
+
   const rows = await database
     .select(OVERLAY_COLUMNS)
     .from(githubIssue)
-    .where(eq(githubIssue.githubRepositoryId, githubRepositoryId));
+    .where(
+      and(
+        eq(githubIssue.organizationId, scope.organizationId),
+        eq(githubIssue.repositoryFullName, scope.repositoryFullName),
+      ),
+    );
 
   const overlays = new Map<number, IssueOverlay>();
   for (const row of rows) {
-    overlays.set(row.number, overlayFromRow(row));
+    const overlay = overlayFromRow(row);
+    const existing = overlays.get(row.number);
+    overlays.set(row.number, existing ? mergeOverlays(existing, overlay) : overlay);
   }
   return overlays;
 }
@@ -322,6 +403,12 @@ function toEpochMillis(value: unknown): number {
 // GitHub on a timer (issue #19 story 22). Pass `issueNumber` to scope the
 // watermark to a single issue (the detail view); omit it for the whole board.
 //
+// Scoped by (organization, repository full name) so a change delivered to EITHER
+// app's record moves the watermark — a webhook-synced claim/comment on the Coder's
+// record must still refresh a board loaded through the reviewer's record. Rows on
+// both records are counted (no dedup needed): the token only has to change on any
+// synced change, and counting both records catches a change on either.
+//
 // The token combines row counts with the latest `updatedAt` across both tables,
 // so it moves on an insert (count up), an in-place edit or a claim / linked-PR
 // write (updatedAt up), and a comment delete (count down). Two changes that
@@ -332,20 +419,25 @@ export async function loadRepositoryIssuesRevision(
   githubRepositoryId: string,
   issueNumber?: number,
 ): Promise<string> {
+  const scope = await resolveRepositoryScope(database, githubRepositoryId);
+  if (!scope) {
+    return "0:0:0:0";
+  }
+
+  const issueScope = and(
+    eq(githubIssue.organizationId, scope.organizationId),
+    eq(githubIssue.repositoryFullName, scope.repositoryFullName),
+  );
+  const commentScope = and(
+    eq(githubIssueComment.organizationId, scope.organizationId),
+    eq(githubIssueComment.repositoryFullName, scope.repositoryFullName),
+  );
   const issueWhere =
-    issueNumber === undefined
-      ? eq(githubIssue.githubRepositoryId, githubRepositoryId)
-      : and(
-          eq(githubIssue.githubRepositoryId, githubRepositoryId),
-          eq(githubIssue.number, issueNumber),
-        );
+    issueNumber === undefined ? issueScope : and(issueScope, eq(githubIssue.number, issueNumber));
   const commentWhere =
     issueNumber === undefined
-      ? eq(githubIssueComment.githubRepositoryId, githubRepositoryId)
-      : and(
-          eq(githubIssueComment.githubRepositoryId, githubRepositoryId),
-          eq(githubIssueComment.issueNumber, issueNumber),
-        );
+      ? commentScope
+      : and(commentScope, eq(githubIssueComment.issueNumber, issueNumber));
 
   const [issues] = await database
     .select({ total: count(), latest: max(githubIssue.updatedAt) })
@@ -366,21 +458,33 @@ export async function loadRepositoryIssuesRevision(
 
 // The single-issue overlay for the detail transport; `undefined` when the issue
 // has no stored row yet (its stage then derives from live state + labels only).
+// Scoped by (organization, repository full name) and merged across records, so a
+// claim / linked PR recorded on the OTHER app's record still shows on the detail.
 export async function loadIssueOverlay(
   database: SyncDatabase,
   githubRepositoryId: string,
   issueNumber: number,
 ): Promise<IssueOverlay | undefined> {
-  const [row] = await database
+  const scope = await resolveRepositoryScope(database, githubRepositoryId);
+  if (!scope) {
+    return undefined;
+  }
+
+  const rows = await database
     .select(OVERLAY_COLUMNS)
     .from(githubIssue)
     .where(
       and(
-        eq(githubIssue.githubRepositoryId, githubRepositoryId),
+        eq(githubIssue.organizationId, scope.organizationId),
+        eq(githubIssue.repositoryFullName, scope.repositoryFullName),
         eq(githubIssue.number, issueNumber),
       ),
-    )
-    .limit(1);
+    );
 
-  return row ? overlayFromRow(row) : undefined;
+  let overlay: IssueOverlay | undefined;
+  for (const row of rows) {
+    const next = overlayFromRow(row);
+    overlay = overlay ? mergeOverlays(overlay, next) : next;
+  }
+  return overlay;
 }
