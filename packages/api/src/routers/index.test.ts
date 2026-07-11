@@ -276,6 +276,58 @@ async function createTables(testClient: TestClient) {
       "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
       "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
     );
+
+    CREATE TABLE "github_issue" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "github_installation_id" text,
+      "github_repository_id" text NOT NULL,
+      "repository_full_name" text NOT NULL,
+      "number" integer NOT NULL,
+      "github_issue_id" text,
+      "node_id" text,
+      "title" text NOT NULL,
+      "body" text,
+      "state" text DEFAULT 'open' NOT NULL,
+      "author_login" text,
+      "author_avatar_url" text,
+      "labels_json" text DEFAULT '[]' NOT NULL,
+      "html_url" text,
+      "comment_count" integer DEFAULT 0 NOT NULL,
+      "linked_pull_request_number" integer,
+      "linked_pull_request_state" text,
+      "linked_pull_request_merged" integer,
+      "closed_by_merge" integer DEFAULT 0 NOT NULL,
+      "claimed_by_worker_role" text,
+      "claimed_by_run_id" text,
+      "claimed_at" integer,
+      "github_created_at" integer,
+      "github_updated_at" integer,
+      "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+      "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+    );
+    CREATE UNIQUE INDEX "github_issue_repo_number_idx" ON "github_issue" ("github_repository_id","number");
+
+    CREATE TABLE "github_issue_comment" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "github_repository_id" text NOT NULL,
+      "issue_id" text,
+      "issue_number" integer NOT NULL,
+      "github_comment_id" text,
+      "author_login" text,
+      "author_avatar_url" text,
+      "author_kind" text DEFAULT 'external' NOT NULL,
+      "author_worker_role" text,
+      "author_user_id" text,
+      "body" text NOT NULL,
+      "html_url" text,
+      "github_created_at" integer,
+      "github_updated_at" integer,
+      "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+      "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+    );
+    CREATE UNIQUE INDEX "github_issue_comment_githubCommentId_idx" ON "github_issue_comment" ("github_comment_id");
   `);
 }
 
@@ -1125,6 +1177,184 @@ describe("listRepositoryIssues router procedure", () => {
 
       const allIssues = board.flatMap((columnEntry) => columnEntry.issues.map((i) => i.number));
       expect(allIssues).toEqual([7]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reflects stored claim + linked-PR state in the Executing and In PR lanes", async () => {
+    // Two ready-for-agent issues come live from GitHub; the store overlay says one
+    // is claimed (→ Executing) and one has an open linked PR (→ In PR). The board
+    // must move both out of Ready for agent into the lanes their stored state
+    // dictates — the store, not the label, decides once work has been picked up.
+    const seeded = await seedRepository({ slug: "board-overlay", installationId: "703" });
+    await database.insert(schema.githubIssue).values([
+      {
+        id: "overlay-issue-claimed",
+        organizationId: seeded.organizationId,
+        githubRepositoryId: seeded.repositoryId,
+        repositoryFullName: `${seeded.owner}/${seeded.name}`,
+        number: 11,
+        title: "Claimed issue",
+        claimedByRunId: "run-11",
+        claimedByWorkerRole: "implementation",
+      },
+      {
+        id: "overlay-issue-in-pr",
+        organizationId: seeded.organizationId,
+        githubRepositoryId: seeded.repositoryId,
+        repositoryFullName: `${seeded.owner}/${seeded.name}`,
+        number: 12,
+        title: "In-PR issue",
+        linkedPullRequestNumber: 40,
+        linkedPullRequestState: "open",
+        linkedPullRequestMerged: false,
+      },
+    ]);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubBoardFetch({
+      installationId: "703",
+      permissions: { issues: "read" },
+      issuesResponse: [
+        {
+          number: 11,
+          title: "Claimed issue",
+          state: "open",
+          labels: [{ name: "ready for agent" }],
+        },
+        { number: 12, title: "In-PR issue", state: "open", labels: [{ name: "ready for agent" }] },
+      ],
+    });
+
+    try {
+      const board = await createProcedureClient(appRouter.listRepositoryIssues, {
+        context: seeded.context,
+      })({ organizationId: seeded.organizationId, repositoryId: seeded.repositoryId });
+
+      const lane = (stage: string) =>
+        board.find((columnEntry) => columnEntry.stage === stage)?.issues.map((i) => i.number) ?? [];
+
+      expect(lane("ready_for_agent")).toEqual([]);
+      expect(lane("executing")).toEqual([11]);
+      expect(lane("in_pr")).toEqual([12]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("getRepositoryIssue router procedure", () => {
+  async function seedRepository(slug: string, installationId: string) {
+    const owner = "acme";
+    const name = "widgets";
+    await seedUser(`${slug}-user`);
+    await seedSession(`${slug}-user`, `${slug}-org`);
+    await seedOrganization(`${slug}-org`);
+    await seedMembership(`${slug}-user`, `${slug}-org`, "owner");
+    await database.insert(schema.githubInstallation).values({
+      id: `${slug}-installation`,
+      organizationId: `${slug}-org`,
+      installationId,
+      appSlug: "hosted-agents-test",
+      accountLogin: owner,
+      accountType: "Organization",
+      status: "connected",
+    });
+    await database.insert(schema.githubRepository).values({
+      id: `${slug}-repository`,
+      installationId: `${slug}-installation`,
+      githubRepositoryId: `${slug}-github-id`,
+      owner,
+      name,
+      fullName: `${owner}/${name}`,
+      selected: true,
+    });
+    return {
+      context: memberContext(`${slug}-user`, { activeOrganizationId: `${slug}-org` }),
+      repositoryId: `${slug}-repository`,
+      organizationId: `${slug}-org`,
+      owner,
+      name,
+    };
+  }
+
+  // Stub the three GitHub calls the detail makes: mint the token, GET the issue,
+  // GET its comments.
+  function stubIssueFetch(options: {
+    installationId: string;
+    issueNumber: number;
+    issue: Record<string, unknown>;
+    comments?: unknown[];
+  }) {
+    return (async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (
+        url.pathname === `/app/installations/${options.installationId}/access_tokens` &&
+        method === "POST"
+      ) {
+        return Response.json({ token: "installation-access-token" });
+      }
+      if (
+        url.pathname === `/repos/acme/widgets/issues/${options.issueNumber}` &&
+        method === "GET"
+      ) {
+        return Response.json(options.issue);
+      }
+      if (
+        url.pathname === `/repos/acme/widgets/issues/${options.issueNumber}/comments` &&
+        method === "GET"
+      ) {
+        return Response.json(options.comments ?? []);
+      }
+      return new Response(`unexpected GitHub API request: ${method} ${url.toString()}`, {
+        status: 500,
+      });
+    }) as typeof fetch;
+  }
+
+  test("derives the stage from the store overlay so a claimed issue reads as Executing", async () => {
+    const seeded = await seedRepository("detail-overlay", "704");
+    await database.insert(schema.githubIssue).values({
+      id: "detail-overlay-issue",
+      organizationId: seeded.organizationId,
+      githubRepositoryId: seeded.repositoryId,
+      repositoryFullName: `${seeded.owner}/${seeded.name}`,
+      number: 21,
+      title: "Claimed detail issue",
+      claimedByRunId: "run-21",
+      claimedByWorkerRole: "implementation",
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubIssueFetch({
+      installationId: "704",
+      issueNumber: 21,
+      issue: {
+        number: 21,
+        title: "Claimed detail issue",
+        state: "open",
+        labels: [{ name: "ready for agent" }],
+      },
+    });
+
+    try {
+      const detail = await createProcedureClient(appRouter.getRepositoryIssue, {
+        context: seeded.context,
+      })({
+        organizationId: seeded.organizationId,
+        repositoryId: seeded.repositoryId,
+        issueNumber: 21,
+      });
+
+      // Live labels say "ready for agent", but the store says it is claimed, so the
+      // detail's stage is Executing — matching the board lane, and the kick-off
+      // affordance is no longer offered.
+      expect(detail.stage).toBe("executing");
+      expect(detail.claimable).toBe(false);
+      expect(detail.issue.number).toBe(21);
     } finally {
       globalThis.fetch = originalFetch;
     }

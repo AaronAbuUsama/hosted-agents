@@ -72,6 +72,17 @@ export function buildBoard(
   return columns;
 }
 
+// Derive a single issue's stage + claimable flag from the live issue and its
+// store overlay — the detail transport's counterpart to buildBoard's per-issue
+// derivation, so the detail's stage matches the lane the board puts it in.
+export function deriveIssueStage(
+  issue: GitHubIssueSummary,
+  overlay?: IssueOverlay,
+): { stage: IssueStage; claimable: boolean } {
+  const input = stageInputFor(issue, overlay);
+  return { stage: deriveStage(input), claimable: isAgentClaimable(input) };
+}
+
 // The GitHub side of the module, as an interface so the transport can inject the
 // real adapter and tests can inject a fake.
 export type GitHubIssuesClient = {
