@@ -1,9 +1,4 @@
-import {
-  ISSUE_STAGE_LABELS,
-  deriveStage,
-  isAgentClaimable,
-  type IssueStage,
-} from "@hosted-agents/api/issues/stage";
+import { ISSUE_STAGE_LABELS, deriveStage, type IssueStage } from "@hosted-agents/api/issues/stage";
 
 // The issue detail renders live GitHub data — getRepositoryIssue returns
 // { issue, comments } straight from the API. These helpers turn that raw shape
@@ -61,13 +56,6 @@ export function issueStage(issue: StageDerivable): IssueStage {
 
 export function issueStageLabel(issue: StageDerivable): string {
   return ISSUE_STAGE_LABELS[issueStage(issue)];
-}
-
-// Whether an agent may claim this issue — drives whether the kick-off affordance
-// is shown. The affordance itself stays gated this phase (the coding worker role
-// does not exist yet), but it only appears on issues an agent could pick up.
-export function issueClaimable(issue: StageDerivable): boolean {
-  return isAgentClaimable(stageInput(issue));
 }
 
 // The StatusDot variant the detail renders per stage. Kept here (not inline in the

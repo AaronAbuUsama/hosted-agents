@@ -19,12 +19,14 @@ import {
 } from "@astryxdesign/core/Table";
 import type { TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { Token } from "@astryxdesign/core/Token";
-import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
-import { useQuery } from "@tanstack/react-query";
+import { ArrowTopRightOnSquareIcon, PlayCircleIcon } from "@heroicons/react/24/outline";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
 import { mapBoardLoadError } from "@/lib/board-load-error";
+import { createKickOffHandlers } from "@/lib/issue-kickoff";
 import { orpc } from "@/utils/orpc";
 
 type IssuesBoardProps = {
@@ -86,11 +88,35 @@ export default function IssuesBoard({
   installationSettingsUrl = null,
 }: IssuesBoardProps): ReactElement {
   const router = useRouter();
+  const showToast = useToast();
   const board = useQuery(
     orpc.listRepositoryIssues.queryOptions({
       input: { organizationId, repositoryId },
     }),
   );
+
+  const kickOff = useMutation(
+    orpc.kickOffIssue.mutationOptions(
+      createKickOffHandlers({
+        // Re-read the board so the kicked-off row moves to Executing on click
+        // (spec #21 stories 1–2), without a manual refresh.
+        refetch: () => board.refetch(),
+        showToast,
+      }),
+    ),
+  );
+
+  // Kick off from a claimable row without also navigating into the issue: the row
+  // is clickable, so stop the click from bubbling to the row's router.push. The
+  // Button's own clickAction owns the pending spinner, scoped to that row.
+  async function startKickOff(event: { stopPropagation?: () => void }, issueNumber: number) {
+    event?.stopPropagation?.();
+    try {
+      await kickOff.mutateAsync({ organizationId, repositoryId, issueNumber });
+    } catch {
+      // handled in createKickOffHandlers onError
+    }
+  }
 
   if (board.isLoading) {
     return (
@@ -188,7 +214,15 @@ export default function IssuesBoard({
                     <Text type="body" maxLines={1}>
                       {issue.title}
                     </Text>
-                    {issue.claimable ? <Token label="agent-ready" size="sm" /> : null}
+                    {issue.claimable ? (
+                      <Button
+                        label="Kick off"
+                        variant="secondary"
+                        size="sm"
+                        icon={<Icon icon={PlayCircleIcon} size="sm" />}
+                        clickAction={(event) => startKickOff(event, issue.number)}
+                      />
+                    ) : null}
                   </HStack>
                 </TableCell>
                 <TableCell>
