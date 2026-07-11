@@ -238,7 +238,11 @@ describe("issue-store reads are topology-independent across dual repo records", 
     });
 
     const overlays = await loadIssueOverlays(database, REVIEWER_REPOSITORY_ID);
-    expect(overlays.get(5)?.linkedPullRequest).toEqual({ state: "closed", merged: true });
+    expect(overlays.get(5)?.linkedPullRequest).toEqual({
+      number: 42,
+      state: "closed",
+      merged: true,
+    });
   });
 
   test("the revision watermark read through the reviewer record reflects a comment pinned to the Coder record and bumps", async () => {

@@ -9,6 +9,7 @@ import {
   mapAgentRunEventsToTranscriptRows,
   selectRunTranscriptFeed,
   selectIssueRunRows,
+  countRunsByIssue,
   sortRunTimelineEvents,
   mapAgentRunToRunRow,
   type AgentRunApiRecord,
@@ -851,5 +852,39 @@ describe("selectIssueRunRows", () => {
         repositoryFullName: "test-org/test-repo",
       }),
     ).toEqual([]);
+  });
+});
+
+describe("countRunsByIssue", () => {
+  test("counts runs per issue within the scoped repository", () => {
+    const runs = [
+      agentRun({ id: "r1", issueNumber: 4, repositoryOwner: "test-org", repositoryName: "test-repo" }),
+      agentRun({ id: "r2", issueNumber: 4, repositoryOwner: "test-org", repositoryName: "test-repo" }),
+      agentRun({ id: "r3", issueNumber: 7, repositoryOwner: "test-org", repositoryName: "test-repo" }),
+    ];
+
+    const counts = countRunsByIssue(runs, "test-org/test-repo");
+
+    expect(counts.get(4)).toBe(2);
+    expect(counts.get(7)).toBe(1);
+  });
+
+  test("ignores runs from other repositories that share an issue number", () => {
+    const runs = [
+      agentRun({ id: "r1", issueNumber: 4, repositoryOwner: "test-org", repositoryName: "test-repo" }),
+      agentRun({ id: "r2", issueNumber: 4, repositoryOwner: "other-org", repositoryName: "other-repo" }),
+    ];
+
+    const counts = countRunsByIssue(runs, "test-org/test-repo");
+
+    expect(counts.get(4)).toBe(1);
+  });
+
+  test("ignores runs with no issue linkage", () => {
+    const runs = [
+      agentRun({ id: "r1", issueNumber: null, repositoryOwner: "test-org", repositoryName: "test-repo" }),
+    ];
+
+    expect(countRunsByIssue(runs, "test-org/test-repo").size).toBe(0);
   });
 });

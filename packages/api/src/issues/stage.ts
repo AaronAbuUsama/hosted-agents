@@ -43,6 +43,9 @@ export const READY_FOR_AGENT_LABEL = "ready for agent";
 export const HUMAN_IN_THE_LOOP_LABEL = "human in the loop";
 
 export type LinkedPullRequestState = {
+  // The PR number, for display ("PR #57"). Optional and ignored by stage
+  // derivation — carried through so the board can render the linked PR.
+  number?: number | null;
   state: "open" | "closed";
   merged: boolean;
 };

@@ -249,6 +249,7 @@ export async function deleteSyncedIssueComment(
 // The columns the board's stage overlay is derived from.
 type IssueOverlayRow = {
   number: number;
+  linkedPullRequestNumber: number | null;
   linkedPullRequestState: string | null;
   linkedPullRequestMerged: boolean | null;
   closedByMerge: boolean;
@@ -264,6 +265,7 @@ type IssueOverlayRow = {
 function overlayFromRow(row: IssueOverlayRow): IssueOverlay {
   const linkedPullRequest = row.linkedPullRequestState
     ? {
+        number: row.linkedPullRequestNumber,
         state: row.linkedPullRequestState === "closed" ? ("closed" as const) : ("open" as const),
         merged: Boolean(row.linkedPullRequestMerged),
       }
@@ -314,6 +316,7 @@ function mergeOverlays(base: IssueOverlay, next: IssueOverlay): IssueOverlay {
 
 const OVERLAY_COLUMNS = {
   number: githubIssue.number,
+  linkedPullRequestNumber: githubIssue.linkedPullRequestNumber,
   linkedPullRequestState: githubIssue.linkedPullRequestState,
   linkedPullRequestMerged: githubIssue.linkedPullRequestMerged,
   closedByMerge: githubIssue.closedByMerge,
