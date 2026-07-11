@@ -1642,10 +1642,13 @@ export const appRouter = {
       }
 
       try {
+        // Mint with the app that owns this installation: a repo linked only through
+        // the Coder app 404s under the reviewer JWT (per-role tokens, ADR-0001).
         return await listOpenGitHubPullRequests(
           installation.installationId,
           repository.owner,
           repository.name,
+          resolveGitHubAppWorkerRole(installation.appSlug ?? null),
         );
       } catch (error) {
         throw new ORPCError("BAD_REQUEST", {
@@ -1668,9 +1671,15 @@ export const appRouter = {
         });
       }
 
+      // Mint issue reads with the app that owns this installation: a repo linked
+      // only through the Coder app 404s under the reviewer JWT (per-role tokens,
+      // ADR-0001). Bind the role into the client the board reads through.
+      const role = resolveGitHubAppWorkerRole(installation.appSlug ?? null);
       const client: GitHubIssuesClient = {
-        listIssues: listGitHubIssues,
-        getIssue: getGitHubIssue,
+        listIssues: (installationId, owner, repo) =>
+          listGitHubIssues(installationId, owner, repo, role),
+        getIssue: (installationId, owner, repo, issueNumber) =>
+          getGitHubIssue(installationId, owner, repo, issueNumber, role),
       };
 
       try {
@@ -1709,11 +1718,7 @@ export const appRouter = {
       // polling GitHub on a timer (issue #26; issue #19 story 22). Authorization is
       // the same org + repository boundary the board read enforces; connection
       // status is irrelevant to a read of our own rows.
-      const revision = await loadRepositoryIssuesRevision(
-        db,
-        repository.id,
-        input.issueNumber,
-      );
+      const revision = await loadRepositoryIssuesRevision(db, repository.id, input.issueNumber);
       return { revision };
     }),
   getRepositoryIssue: protectedProcedure
@@ -1731,6 +1736,9 @@ export const appRouter = {
         });
       }
 
+      // Mint with the app that owns this installation: a repo linked only through
+      // the Coder app 404s under the reviewer JWT (per-role tokens, ADR-0001).
+      const role = resolveGitHubAppWorkerRole(installation.appSlug ?? null);
       try {
         const [issue, comments, overlay] = await Promise.all([
           getGitHubIssue(
@@ -1738,12 +1746,14 @@ export const appRouter = {
             repository.owner,
             repository.name,
             input.issueNumber,
+            role,
           ),
           listGitHubIssueComments(
             installation.installationId,
             repository.owner,
             repository.name,
             input.issueNumber,
+            role,
           ),
           loadIssueOverlay(db, repository.id, input.issueNumber),
         ]);
@@ -1776,12 +1786,15 @@ export const appRouter = {
       // the member needs user-scoped GitHub auth — the identity follow-up tracked
       // in #19; true authorship is recorded on our side.
       try {
+        // Mint with the app that owns this installation: a repo linked only through
+        // the Coder app 404s under the reviewer JWT (per-role tokens, ADR-0001).
         return await createGitHubIssueComment(
           installation.installationId,
           repository.owner,
           repository.name,
           input.issueNumber,
           input.body,
+          resolveGitHubAppWorkerRole(installation.appSlug ?? null),
         );
       } catch (error) {
         throw new ORPCError("BAD_REQUEST", {
@@ -1813,11 +1826,14 @@ export const appRouter = {
         });
       }
 
+      // Mint with the app that owns this installation: a repo linked only through
+      // the Coder app 404s under the reviewer JWT (per-role tokens, ADR-0001).
       const pullRequest = await getGitHubPullRequest(
         installation.installationId,
         repository.owner,
         repository.name,
         input.pullRequestNumber,
+        resolveGitHubAppWorkerRole(installation.appSlug ?? null),
       ).catch((error: unknown) => {
         throw new ORPCError("BAD_REQUEST", {
           message: error instanceof Error ? error.message : "Failed to load the pull request.",

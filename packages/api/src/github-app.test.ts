@@ -41,7 +41,15 @@ const {
   getGitHubAppSlug,
   isGitHubAppConfigured,
   resolveGitHubAppWorkerRole,
+  listGitHubIssues,
+  getGitHubIssue,
+  listGitHubIssueComments,
+  createGitHubIssueComment,
+  listOpenGitHubPullRequests,
+  getGitHubPullRequest,
 } = await import("./github-app");
+
+type GitHubAppWorkerRole = typeof IMPLEMENTATION_WORKER_ROLE | typeof CODE_REVIEW_WORKER_ROLE;
 
 function base64UrlToBuffer(value: string): Buffer {
   const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
@@ -200,4 +208,90 @@ describe("GitHub App identity helpers", () => {
     expect(resolveGitHubAppWorkerRole("some-other-app")).toBe(CODE_REVIEW_WORKER_ROLE);
     expect(resolveGitHubAppWorkerRole(null)).toBe(CODE_REVIEW_WORKER_ROLE);
   });
+});
+
+// Finding B (PR #50 review): the repo-scoped issue/PR helpers minted the reviewer
+// JWT unconditionally, so a repository linked only through the Coder app 404s
+// (its installation token can't be minted with the reviewer app). Each helper now
+// threads a role; the repo-scoped procedures pass resolveGitHubAppWorkerRole of the
+// installation. Stub the token + API endpoints and assert the token-mint JWT is
+// signed by the installation's own app for the threaded role.
+function stubGitHubApiEndpoints(): { tokenRequests: CapturedRequest[] } {
+  const tokenRequests: CapturedRequest[] = [];
+
+  globalThis.fetch = (async (
+    input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ) => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    if (url.includes("/access_tokens")) {
+      const authorization = new Headers(init?.headers).get("authorization") ?? "";
+      tokenRequests.push({ url, jwt: authorization.replace(/^Bearer\s+/i, "") });
+      return new Response(
+        JSON.stringify({ token: "ghs_installation_token", permissions: { issues: "write" } }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    // Downstream API call: list endpoints carry a query string (array body); a
+    // single-resource GET or a create-comment POST wants an object.
+    return new Response(url.includes("?") ? "[]" : "{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  return { tokenRequests };
+}
+
+describe("repo-scoped GitHub helpers thread the installation's app role", () => {
+  const roleThreadedHelpers: {
+    name: string;
+    call: (role?: GitHubAppWorkerRole) => Promise<unknown>;
+  }[] = [
+    { name: "listGitHubIssues", call: (role) => listGitHubIssues("700", "octo", "widgets", role) },
+    { name: "getGitHubIssue", call: (role) => getGitHubIssue("700", "octo", "widgets", 3, role) },
+    {
+      name: "listGitHubIssueComments",
+      call: (role) => listGitHubIssueComments("700", "octo", "widgets", 3, role),
+    },
+    {
+      name: "createGitHubIssueComment",
+      call: (role) => createGitHubIssueComment("700", "octo", "widgets", 3, "hi", role),
+    },
+    {
+      name: "listOpenGitHubPullRequests",
+      call: (role) => listOpenGitHubPullRequests("700", "octo", "widgets", role),
+    },
+    {
+      name: "getGitHubPullRequest",
+      call: (role) => getGitHubPullRequest("700", "octo", "widgets", 9, role),
+    },
+  ];
+
+  for (const helper of roleThreadedHelpers) {
+    test(`${helper.name} mints with the Coder app for the implementation role`, async () => {
+      const { tokenRequests } = stubGitHubApiEndpoints();
+
+      await helper.call(IMPLEMENTATION_WORKER_ROLE);
+
+      const request = takeSingleRequest(tokenRequests);
+      expect(decodeJwt(request.jwt).claims.iss).toBe(CODER_APP_ID);
+      expect(
+        verifyJwtSignature(
+          request.jwt,
+          coderKeyPair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        ),
+      ).toBe(true);
+    });
+
+    test(`${helper.name} defaults to the reviewer app (regression: reviewer path untouched)`, async () => {
+      const { tokenRequests } = stubGitHubApiEndpoints();
+
+      await helper.call();
+
+      expect(decodeJwt(takeSingleRequest(tokenRequests).jwt).claims.iss).toBe(REVIEWER_APP_ID);
+    });
+  }
 });
