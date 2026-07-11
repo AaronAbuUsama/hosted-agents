@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import CoworkerPage from "@/components/coworker/coworker-page";
 import FeatureNotEnabled from "@/components/coworker/feature-not-enabled";
 import RepositoryWorkspaceClient from "@/components/coworker/repository-workspace-client";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import { APP_LANDING_PATH } from "@/lib/organization-routing";
 import { client } from "@/utils/orpc";
 
@@ -25,7 +26,11 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
   const installations = await client.githubInstallations({
     organizationId: activeOrganization.id,
   });
+  // The workspace reads issues/PRs with a code_review installation token, so it
+  // resolves against reviewer-app installations only. A Coder-installation repo
+  // id would be a distinct copy of the same repo that 404s on every read.
   const repository = installations
+    .filter(isReviewerInstallation)
     .flatMap((installation) => installation.repositories)
     .find((repo) => repo.id === projectId);
 

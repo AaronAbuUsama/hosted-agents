@@ -21,6 +21,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
 
+import { isCoderInstallation, isReviewerInstallation } from "@/lib/github-installations";
 import { client } from "@/utils/orpc";
 
 type GitHubStage = "apps" | "repositories" | "finish";
@@ -28,11 +29,6 @@ type AppId = "reviewer" | "coder";
 type GitHubInstallation = Awaited<ReturnType<typeof client.githubInstallations>>[number];
 type GitHubRepository = GitHubInstallation["repositories"][number];
 type CoderAppConfig = Awaited<ReturnType<typeof client.githubCoderAppInstallUrl>>;
-
-// Server-resolved worker role for a Coder-app installation. `githubInstallations`
-// tags every installation with its role (reviewer vs Coder) from env config, so
-// this classification never depends on the admin-gated Coder install-config call.
-const IMPLEMENTATION_WORKER_ROLE = "implementation";
 
 export default function GitHubOnboardingPage(): ReactElement {
   const router = useRouter();
@@ -44,32 +40,25 @@ export default function GitHubOnboardingPage(): ReactElement {
   const [isStartingCoderInstall, setIsStartingCoderInstall] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
 
-  // Classify installations from the server-resolved `workerRole` rather than the
-  // admin-gated Coder install-config call. `githubInstallations` is available to
-  // every member, so a non-admin (for whom `githubCoderAppInstallUrl` is FORBIDDEN
-  // and swallowed to null) still sees the reviewer app and its repositories.
-  const isReviewerInstallation = useCallback(
-    (installation: GitHubInstallation): boolean =>
-      installation.workerRole !== IMPLEMENTATION_WORKER_ROLE,
-    [],
-  );
+  // Classify installations from the server-resolved `workerRole` (see
+  // @/lib/github-installations) rather than the admin-gated Coder install-config
+  // call. `githubInstallations` is available to every member, so a non-admin (for
+  // whom `githubCoderAppInstallUrl` is FORBIDDEN and swallowed to null) still sees
+  // the reviewer app and its repositories.
   const coderInstallation = useMemo(
-    () =>
-      installations.find(
-        (installation) => installation.workerRole === IMPLEMENTATION_WORKER_ROLE,
-      ) ?? null,
+    () => installations.find(isCoderInstallation) ?? null,
     [installations],
   );
   const reviewerInstallation = useMemo(
     () => installations.find(isReviewerInstallation) ?? null,
-    [installations, isReviewerInstallation],
+    [installations],
   );
   const linkedRepositories = useMemo(
     () =>
       installations
         .filter(isReviewerInstallation)
         .flatMap((installation) => installation.repositories),
-    [installations, isReviewerInstallation],
+    [installations],
   );
   const accountLabel = reviewerInstallation?.accountLogin ?? "GitHub account linked on callback";
   const isCoderConfigured = coderAppConfig?.configured ?? false;

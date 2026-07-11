@@ -34,6 +34,7 @@ import { usePathname } from "next/navigation";
 
 import { agentRunsCollection } from "@/lib/collections/agent-runs";
 import { githubInstallationsCollection } from "@/lib/collections/github-installations";
+import { isReviewerInstallation } from "@/lib/github-installations";
 import type { RunViewModelRow, RunViewModelStatus } from "@/lib/run-view-model";
 
 const RUNS_PATH = "/app/runs";
@@ -94,7 +95,10 @@ function repoStatus(runs: RunViewModelRow[]): { variant: StatusDotVariant; label
 // each carrying its runs so the rail can show a status dot. Ordered by
 // most-recent run activity, then alphabetically.
 function buildRepoNav(
-  installations: { repositories: { id: string; fullName: string; selected: boolean }[] }[],
+  installations: {
+    workerRole: string;
+    repositories: { id: string; fullName: string; selected: boolean }[];
+  }[],
   runs: RunViewModelRow[],
 ): RepoNavItem[] {
   const runsByRepo = new Map<string, RunViewModelRow[]>();
@@ -113,7 +117,10 @@ function buildRepoNav(
   const items: RepoNavItem[] = [];
   const seen = new Set<string>();
 
-  for (const installation of installations) {
+  // Reviewer-app installations only. The Coder app exposes the same repos under
+  // distinct ids, which would duplicate every project link and route the copy to
+  // a workspace that 404s on its issue/PR reads.
+  for (const installation of installations.filter(isReviewerInstallation)) {
     for (const repo of installation.repositories) {
       if (!repo.selected || seen.has(repo.id)) {
         continue;
