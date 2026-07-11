@@ -48,7 +48,8 @@ import {
   createGitHubIssueComment,
   resolveGitHubAppWorkerRole,
 } from "../github-app";
-import { listBoard, type GitHubIssuesClient } from "../issues/service";
+import { deriveIssueStage, listBoard, type GitHubIssuesClient } from "../issues/service";
+import { loadIssueOverlay, loadIssueOverlays } from "../issues/sync";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
 
@@ -1657,11 +1658,21 @@ export const appRouter = {
       };
 
       try {
-        return await listBoard(client, {
-          installationId: installation.installationId,
-          owner: repository.owner,
-          repo: repository.name,
-        });
+        // Issues + labels come live from GitHub; the claim + linked-PR overlay
+        // comes from our store (kept current by the webhook sync). Layering the
+        // two is what lets Executing / In PR / Merged lanes populate for work our
+        // agents have picked up, while a repo with no sync history still shows its
+        // full issue list.
+        const overlays = await loadIssueOverlays(db, repository.id);
+        return await listBoard(
+          client,
+          {
+            installationId: installation.installationId,
+            owner: repository.owner,
+            repo: repository.name,
+          },
+          overlays,
+        );
       } catch (error) {
         throw new ORPCError("BAD_REQUEST", {
           message: error instanceof Error ? error.message : "Failed to list repository issues.",
@@ -1684,7 +1695,7 @@ export const appRouter = {
       }
 
       try {
-        const [issue, comments] = await Promise.all([
+        const [issue, comments, overlay] = await Promise.all([
           getGitHubIssue(
             installation.installationId,
             repository.owner,
@@ -1697,8 +1708,12 @@ export const appRouter = {
             repository.name,
             input.issueNumber,
           ),
+          loadIssueOverlay(db, repository.id, input.issueNumber),
         ]);
-        return { issue, comments };
+        // Derive the stage with the store overlay so the detail's stage reflects a
+        // claim or linked PR (Executing / In PR / Merged), matching the board lane.
+        const { stage, claimable } = deriveIssueStage(issue, overlay);
+        return { issue, comments, stage, claimable };
       } catch (error) {
         throw new ORPCError("BAD_REQUEST", {
           message: error instanceof Error ? error.message : "Failed to load the issue.",
