@@ -130,6 +130,7 @@ async function createTables(client: TestClient) {
       "repository_url" text,
       "branch" text,
       "base_branch" text,
+      "issue_number" integer,
       "pull_request_number" integer,
       "pull_request_base_ref" text,
       "pull_request_base_sha" text,

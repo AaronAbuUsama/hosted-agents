@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ORPCError, createProcedureClient } from "@orpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 
 import type { Context } from "../context";
@@ -199,6 +199,7 @@ async function createTables(testClient: TestClient) {
       "repository_url" text,
       "branch" text,
       "base_branch" text,
+      "issue_number" integer,
       "pull_request_number" integer,
       "pull_request_base_ref" text,
       "pull_request_base_sha" text,
@@ -219,6 +220,21 @@ async function createTables(testClient: TestClient) {
       "created_at" integer DEFAULT 0 NOT NULL,
       "updated_at" integer DEFAULT 0 NOT NULL
     );
+
+    CREATE TABLE "agent_run_event" (
+      "id" text PRIMARY KEY,
+      "run_id" text NOT NULL,
+      "sequence" integer NOT NULL,
+      "category" text NOT NULL,
+      "type" text NOT NULL,
+      "stage" text,
+      "message" text NOT NULL,
+      "payload_json" text,
+      "flue_event_index" integer,
+      "flue_event_type" text,
+      "created_at" integer DEFAULT 0 NOT NULL
+    );
+    CREATE UNIQUE INDEX "agent_run_event_runSequence_idx" ON "agent_run_event" ("run_id","sequence");
 
     CREATE TABLE "agent_run_artifact" (
       "id" text PRIMARY KEY,
@@ -1358,6 +1374,236 @@ describe("getRepositoryIssue router procedure", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("kickOffIssue router procedure", () => {
+  // Seed a connected installation + selected repository the owner can kick off on.
+  // owner/name are acme/widgets so the stubbed issue endpoint path matches.
+  async function seedRepository(slug: string, installationId: string) {
+    const owner = "acme";
+    const name = "widgets";
+    await seedUser(`${slug}-user`);
+    await seedSession(`${slug}-user`, `${slug}-org`);
+    await seedOrganization(`${slug}-org`);
+    await seedMembership(`${slug}-user`, `${slug}-org`, "owner");
+    await database.insert(schema.githubInstallation).values({
+      id: `${slug}-installation`,
+      organizationId: `${slug}-org`,
+      installationId,
+      appSlug: "hosted-agents-test",
+      accountLogin: owner,
+      accountType: "Organization",
+      status: "connected",
+    });
+    await database.insert(schema.githubRepository).values({
+      id: `${slug}-repository`,
+      installationId: `${slug}-installation`,
+      githubRepositoryId: `${slug}-github-id`,
+      owner,
+      name,
+      fullName: `${owner}/${name}`,
+      defaultBranch: "main",
+      selected: true,
+    });
+    return {
+      context: memberContext(`${slug}-user`, { activeOrganizationId: `${slug}-org` }),
+      repositoryId: `${slug}-repository`,
+      organizationId: `${slug}-org`,
+      owner,
+      name,
+    };
+  }
+
+  // Stub the two GitHub calls kick-off makes: mint the installation token and GET
+  // the issue it is kicking off.
+  function stubKickOffFetch(options: {
+    installationId: string;
+    issueNumber: number;
+    issue: Record<string, unknown>;
+  }) {
+    return (async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (
+        url.pathname === `/app/installations/${options.installationId}/access_tokens` &&
+        method === "POST"
+      ) {
+        return Response.json({ token: "installation-access-token" });
+      }
+      if (
+        url.pathname === `/repos/acme/widgets/issues/${options.issueNumber}` &&
+        method === "GET"
+      ) {
+        return Response.json(options.issue);
+      }
+      // The detail transport (getRepositoryIssue) also reads comments; kick-off
+      // itself does not, but the test re-reads the detail to confirm Executing.
+      if (
+        url.pathname === `/repos/acme/widgets/issues/${options.issueNumber}/comments` &&
+        method === "GET"
+      ) {
+        return Response.json([]);
+      }
+      return new Response(`unexpected GitHub API request: ${method} ${url.toString()}`, {
+        status: 500,
+      });
+    }) as typeof fetch;
+  }
+
+  const readyIssue = (issueNumber: number) => ({
+    number: issueNumber,
+    title: "Ready issue",
+    state: "open",
+    labels: [{ name: "ready for agent" }],
+  });
+
+  async function runsForRepository(repositoryId: string) {
+    return database
+      .select()
+      .from(schema.agentRun)
+      .where(eq(schema.agentRun.githubRepositoryId, repositoryId));
+  }
+
+  test("claims the issue, queues exactly one implementation run, and moves it to Executing", async () => {
+    const seeded = await seedRepository("kickoff-ok", "801");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubKickOffFetch({
+      installationId: "801",
+      issueNumber: 5,
+      issue: readyIssue(5),
+    });
+
+    try {
+      const result = await createProcedureClient(appRouter.kickOffIssue, {
+        context: seeded.context,
+      })({
+        organizationId: seeded.organizationId,
+        repositoryId: seeded.repositoryId,
+        issueNumber: 5,
+      });
+
+      expect(result.alreadyQueued).toBe(false);
+      expect(result.stage).toBe("executing");
+      expect(result.run.runType).toBe("github.issue_implementation");
+      expect(result.run.workerRole).toBe("implementation");
+      expect(result.run.status).toBe("queued");
+      expect(result.run.issueNumber).toBe(5);
+
+      // Exactly one queued run for this repository.
+      const runs = await runsForRepository(seeded.repositoryId);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.id).toBe(result.run.id);
+      expect(runs[0]?.baseBranch).toBe("main");
+
+      // The issue row is claimed by that run (Executing lane bookkeeping).
+      const [claimed] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(
+          and(
+            eq(schema.githubIssue.githubRepositoryId, seeded.repositoryId),
+            eq(schema.githubIssue.number, 5),
+          ),
+        )
+        .limit(1);
+      expect(claimed?.claimedByRunId).toBe(result.run.id);
+      expect(claimed?.claimedByWorkerRole).toBe("implementation");
+
+      // The detail transport now reads the issue as claimed → Executing, not claimable.
+      const detail = await createProcedureClient(appRouter.getRepositoryIssue, {
+        context: seeded.context,
+      })({
+        organizationId: seeded.organizationId,
+        repositoryId: seeded.repositoryId,
+        issueNumber: 5,
+      });
+      expect(detail.stage).toBe("executing");
+      expect(detail.claimable).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a second kick-off while claimed is an idempotent no-op returning the existing run", async () => {
+    const seeded = await seedRepository("kickoff-idempotent", "802");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubKickOffFetch({
+      installationId: "802",
+      issueNumber: 9,
+      issue: readyIssue(9),
+    });
+
+    try {
+      const call = () =>
+        createProcedureClient(appRouter.kickOffIssue, { context: seeded.context })({
+          organizationId: seeded.organizationId,
+          repositoryId: seeded.repositoryId,
+          issueNumber: 9,
+        });
+
+      const first = await call();
+      const second = await call();
+
+      expect(first.alreadyQueued).toBe(false);
+      expect(second.alreadyQueued).toBe(true);
+      // Same run — the double kick-off did not double-claim or double-queue.
+      expect(second.run.id).toBe(first.run.id);
+
+      const runs = await runsForRepository(seeded.repositoryId);
+      expect(runs).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("rejects an issue that is not labelled ready for an agent", async () => {
+    const seeded = await seedRepository("kickoff-not-ready", "803");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubKickOffFetch({
+      installationId: "803",
+      issueNumber: 3,
+      issue: { number: 3, title: "Backlog issue", state: "open", labels: [] },
+    });
+
+    try {
+      const call = createProcedureClient(appRouter.kickOffIssue, { context: seeded.context })({
+        organizationId: seeded.organizationId,
+        repositoryId: seeded.repositoryId,
+        issueNumber: 3,
+      });
+
+      await expectOrpcCode(call, "BAD_REQUEST");
+      // Nothing was claimed or queued for a non-ready issue.
+      const runs = await runsForRepository(seeded.repositoryId);
+      expect(runs).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("rejects a caller who cannot manage the organization", async () => {
+    // A plain member (not owner/admin) is a member of the org but may not spend a
+    // run — the transport rejects the kick-off before any GitHub call.
+    const seeded = await seedRepository("kickoff-forbidden", "804");
+    await seedUser("kickoff-forbidden-member");
+    await seedSession("kickoff-forbidden-member", "kickoff-forbidden-org");
+    await seedMembership("kickoff-forbidden-member", "kickoff-forbidden-org", "member");
+
+    const call = createProcedureClient(appRouter.kickOffIssue, {
+      context: memberContext("kickoff-forbidden-member", {
+        activeOrganizationId: "kickoff-forbidden-org",
+      }),
+    })({
+      organizationId: seeded.organizationId,
+      repositoryId: seeded.repositoryId,
+      issueNumber: 1,
+    });
+
+    await expectOrpcCode(call, "FORBIDDEN");
+    const runs = await runsForRepository(seeded.repositoryId);
+    expect(runs).toHaveLength(0);
   });
 });
 

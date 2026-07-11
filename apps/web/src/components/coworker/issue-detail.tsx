@@ -41,11 +41,11 @@ import {
   createPostCommentHandlers,
   formatIssueDate,
   issueAuthorDisplayName,
-  issueClaimable,
   issueStageDotVariant,
   issueStageLabel,
   normalizeCommentBody,
 } from "@/lib/issue-detail-view-model";
+import { createKickOffHandlers } from "@/lib/issue-kickoff";
 import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
 import { client, orpc } from "@/utils/orpc";
 
@@ -217,6 +217,17 @@ export default function IssueDetail({
     ),
   );
 
+  const kickOff = useMutation(
+    orpc.kickOffIssue.mutationOptions(
+      createKickOffHandlers({
+        // Re-read the issue so it lands in Executing without a manual refresh
+        // (spec #21 story 2).
+        refetch: () => issueQuery.refetch(),
+        showToast,
+      }),
+    ),
+  );
+
   if (issueQuery.isLoading) {
     return (
       <Layout
@@ -272,7 +283,10 @@ export default function IssueDetail({
   const stageLabel = issueStageLabel(issue);
   const authorName = issueAuthorDisplayName(issue.authorLogin);
   const canPost = normalizeCommentBody(draft) !== null;
-  const claimable = issueClaimable(issue);
+  // The server derives claimable with the store's claim overlay, so once the Coder
+  // has claimed the issue (Executing) the button disappears — unlike a labels-only
+  // check, which would keep offering kick-off on an already-claimed issue.
+  const claimable = issueQuery.data.claimable;
 
   async function submitComment(): Promise<void> {
     const body = normalizeCommentBody(draft);
@@ -283,6 +297,16 @@ export default function IssueDetail({
     // rejection here so it doesn't escape the Button's clickAction as unhandled.
     try {
       await postComment.mutateAsync({ ...input, body });
+    } catch {
+      // handled in onError
+    }
+  }
+
+  async function startKickOff(): Promise<void> {
+    // onError surfaces the failure as a toast; swallow the rejection so it doesn't
+    // escape the Button's clickAction as unhandled.
+    try {
+      await kickOff.mutateAsync(input);
     } catch {
       // handled in onError
     }
@@ -319,8 +343,8 @@ export default function IssueDetail({
                     variant="primary"
                     size="sm"
                     icon={<Icon icon={PlayCircleIcon} size="sm" />}
-                    isDisabled
-                    tooltip="Agent execution isn't enabled yet — it arrives with the coding worker role."
+                    isLoading={kickOff.isPending}
+                    clickAction={startKickOff}
                   />
                 ) : null}
                 <Button
