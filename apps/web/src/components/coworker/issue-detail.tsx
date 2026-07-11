@@ -43,8 +43,8 @@ import {
   createPostCommentHandlers,
   formatIssueDate,
   issueAuthorDisplayName,
-  issueStageDotVariant,
-  issueStageLabel,
+  stageDotVariant,
+  stageLabel,
   normalizeCommentBody,
   stripHtmlComments,
 } from "@/lib/issue-detail-view-model";
@@ -99,9 +99,11 @@ function openGitHub(url: string | null): void {
 
 function IssueMetadata({
   issue,
+  stage,
   fullName,
 }: {
   issue: IssueSummary;
+  stage: RepositoryIssue["stage"];
   fullName: string;
 }): ReactElement {
   return (
@@ -109,8 +111,8 @@ function IssueMetadata({
       <VStack gap={2}>
         <Text type="label">Stage</Text>
         <HStack gap={2} vAlign="center">
-          <StatusDot variant={issueStageDotVariant(issue)} label={issueStageLabel(issue)} />
-          <Text>{issueStageLabel(issue)}</Text>
+          <StatusDot variant={stageDotVariant(stage)} label={stageLabel(stage)} />
+          <Text>{stageLabel(stage)}</Text>
         </HStack>
       </VStack>
       <MetadataList label={{ position: "start" }}>
@@ -350,12 +352,12 @@ export default function IssueDetail({
     );
   }
 
-  const { issue, comments } = issueQuery.data;
+  const { issue, comments, stage } = issueQuery.data;
   const issueRuns = selectIssueRunRows(runsQuery.data ?? [], {
     issueNumber,
     repositoryFullName: fullName,
   });
-  const stageLabel = issueStageLabel(issue);
+  const stageText = stageLabel(stage);
   const authorName = issueAuthorDisplayName(issue.authorLogin);
   // Match GitHub: HTML comments in the issue body are hidden, not printed literally.
   const description = stripHtmlComments(issue.body ?? "");
@@ -408,9 +410,9 @@ export default function IssueDetail({
                 <Text type="supporting" color="secondary" hasTabularNumbers>
                   #{issue.number}
                 </Text>
-                <StatusDot variant={issueStageDotVariant(issue)} label={stageLabel} />
+                <StatusDot variant={stageDotVariant(stage)} label={stageText} />
                 <Text type="supporting" color="secondary">
-                  {stageLabel}
+                  {stageText}
                 </Text>
               </HStack>
               <HStack gap={2} vAlign="center" wrap="wrap">
@@ -532,7 +534,7 @@ export default function IssueDetail({
               <>
                 <Divider />
                 <Stack style={composerStyle}>
-                  <IssueMetadata issue={issue} fullName={fullName} />
+                  <IssueMetadata issue={issue} stage={stage} fullName={fullName} />
                 </Stack>
               </>
             ) : null}
@@ -542,7 +544,7 @@ export default function IssueDetail({
       end={
         !isNarrow ? (
           <LayoutPanel width={320} padding={4} role="complementary" label="Issue metadata">
-            <IssueMetadata issue={issue} fullName={fullName} />
+            <IssueMetadata issue={issue} stage={stage} fullName={fullName} />
           </LayoutPanel>
         ) : undefined
       }
