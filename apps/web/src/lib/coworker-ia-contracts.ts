@@ -189,13 +189,13 @@ export const screenDataContracts: ScreenDataContract[] = [
   },
   {
     route: "/app/runs/[runId]",
-    job: "Explain exactly what happened during one coworker execution.",
+    job: "The live workspace for one coworker execution: chat transcript, curated stage dividers, and a run-context panel.",
     renderBoundary: "server-shell-client-data",
     collections: ["runs", "coworkers", "repositories", "coworkerRules", "runEvents", "runMessages"],
     liveQueries: ["run facts", "ordered run events", "transcript messages", "triggering coworker rule"],
     mutations: ["cancel run", "retry run", "send follow-up message", "mark reviewed"],
     states: ["loading run", "not found", "live streaming", "waiting for GitHub", "blocked", "completed"],
-    notes: ["This should become the live cockpit once backend streaming exists."],
+    notes: ["The transcript workspace is the run page; the steer-mid-run composer is placeholder until the runtime inbox exists."],
   },
   {
     route: "/app/settings",

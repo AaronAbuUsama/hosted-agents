@@ -9,25 +9,20 @@ import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
 import { useLiveQuery } from "@tanstack/react-db";
 
-import { agentRunsCollection, createAgentRunEventsCollection } from "@/lib/collections/agent-runs";
 import {
-  mapAgentRunEventToTimelineRow,
-  mapAgentRunEventsToTranscriptRows,
-  sortRunTimelineEvents,
-  type RunViewModelRow,
-} from "@/lib/run-view-model";
+  agentRunsCollection,
+  createAgentRunArtifactsCollection,
+  createAgentRunEventsCollection,
+} from "@/lib/collections/agent-runs";
+import { selectRunTranscriptFeed, type RunViewModelRow } from "@/lib/run-view-model";
 
-import RunRollout, { type RunDetailTab } from "./run-rollout";
+import RunRollout from "./run-rollout";
 
 export type RunDetailDataIslandProps = {
   runId: string;
-  initialTab: RunDetailTab;
 };
 
-export default function RunDetailDataIsland({
-  runId,
-  initialTab,
-}: RunDetailDataIslandProps): ReactElement {
+export default function RunDetailDataIsland({ runId }: RunDetailDataIslandProps): ReactElement {
   const { data: runs, isError, isLoading } = useLiveQuery(agentRunsCollection);
 
   if (isError) {
@@ -54,32 +49,30 @@ export default function RunDetailDataIsland({
     );
   }
 
-  return <RunDetailEventsIsland key={run.id} run={run} initialTab={initialTab} />;
+  return <RunDetailWorkspaceIsland key={run.id} run={run} />;
 }
 
-function RunDetailEventsIsland({
-  run,
-  initialTab,
-}: {
-  run: RunViewModelRow;
-  initialTab: RunDetailTab;
-}): ReactElement {
+function RunDetailWorkspaceIsland({ run }: { run: RunViewModelRow }): ReactElement {
   const [eventsCollection] = useState(() => createAgentRunEventsCollection(run.id));
-  const { data: events, isError, isLoading } = useLiveQuery(eventsCollection);
-  const timelineState = getTimelineState(isError, isLoading, events.length);
+  const [artifactsCollection] = useState(() => createAgentRunArtifactsCollection(run.id));
+  const {
+    data: events,
+    isError: eventsError,
+    isLoading: eventsLoading,
+  } = useLiveQuery(eventsCollection);
+  const { data: artifacts } = useLiveQuery(artifactsCollection);
 
   return (
     <RunRollout
       run={run}
-      events={sortRunTimelineEvents(events.map(mapAgentRunEventToTimelineRow))}
-      transcriptRows={mapAgentRunEventsToTranscriptRows(events)}
-      timelineState={timelineState}
-      initialTab={initialTab}
+      feed={selectRunTranscriptFeed(events)}
+      artifacts={artifacts}
+      transcriptState={getTranscriptState(eventsError, eventsLoading, events.length)}
     />
   );
 }
 
-function getTimelineState(
+function getTranscriptState(
   isError: boolean,
   isLoading: boolean,
   eventCount: number,
