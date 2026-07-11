@@ -11,6 +11,55 @@
 > this branch (now including executed runtime-contract tests, below) narrows the
 > gap but does **not** discharge the gate.
 
+## Fix-agent re-verification pass (2026-07-11, HEAD `4de37aa`)
+
+A fix agent re-ran the branch's verification and established, empirically, that
+**neither** of the finding's two resolution paths is dischargeable from a fix
+worktree — so this note's gate stands and the decision belongs to the
+orchestrator. Findings of the pass:
+
+1. **The live proof cannot be captured from a fix worktree — proven, not
+   asserted.** With the stack running live (API `:3000` → `OK`, web `:3005` →
+   Coworker), an unauthenticated GET of the board/detail surface
+   (`/app/projects/50ebd641-694f-4beb-911e-cf9c50c76031`) returns **HTTP 307 →
+   `/login`**. The detail route is auth-gated; the *read* half of the proof
+   therefore requires Aaron's authenticated session, which exists only in his
+   own browser — a fix agent cannot log in (no password/OAuth entry). The
+   *write* half (post a comment on `AaronAbuUsama/test-repo`) is a live external
+   GitHub side-effect the charter routes to C8 and the note below deliberately
+   does not perform unilaterally. Both halves are out of a fix worktree's reach;
+   this is exactly why the proof lives in C8/P5.
+
+2. **Orchestrator acceptance remains the only in-scope unblock.** Accepting the
+   deferral is a Fable-only decision (per the STATUS block); a fix agent cannot
+   self-grant it. This note is left as the decision surface, not the decision.
+
+3. **Code-level evidence re-confirmed green at this HEAD.**
+   - `apps/web` `tsc --noEmit` exits **0**.
+   - `bun test apps/web/src/lib/issue-detail-view-model.test.ts` → **24 pass /
+     0 fail**.
+   - The 17 failures seen in a whole-repo `bun test` are **pre-existing and
+     unrelated to #22**: the same 17 fail on the branch base `c7942e3` (full
+     suite: 58 pass / 17 fail) *before any #22 commit exists*. They are a
+     `packages/api` cross-file test-isolation issue (the hermetic
+     `DATABASE_URL` / db singleton leaks between files in a combined run, so the
+     router queries a DB without the migrated schema → `no such table: member`);
+     the same API file passes **19/19 in isolation**. This branch's diff touches
+     **zero** files under `packages/api|db|env` (only `apps/web/**` + this note),
+     so it neither caused nor can responsibly fix those failures here. #22 adds
+     24 passing tests and **no new failures**.
+
+4. **Stale-lockfile hygiene fix (incidental, committed).** The committed
+   `bun.lock` still referenced `sonner` and `@hosted-agents/ui` for `apps/web`,
+   but the committed `apps/web/package.json` lists neither (sonner is
+   charter-banned; the view is Astryx/toast-native). `bun install` reconciled
+   the lockfile; a CI `--frozen-lockfile` install would otherwise fail. This is
+   the only code-adjacent change in the fix pass.
+
+**Net:** the fix pass reinforces the gate rather than discharging it. No
+self-merge, no self-accept, no unilateral live write was performed. The two
+unresolved items are handed to the orchestrator exactly as framed below.
+
 ## The finding
 
 Review flagged that the charter's per-issue **step 5** (`docs/goals/coder-mvp-overnight/goal-prompt.md:42`)
