@@ -250,14 +250,31 @@ type DeliveryClaim = {
   pullRequestNumber?: number | null;
 };
 
-// Insert the delivery-ledger row that makes admission exactly-once: the first
-// writer wins the unique delivery id, a redelivery conflicts and is treated as a
-// duplicate. Shared by the pull-request and issue-sync paths.
+// The delivery-ledger row id, keyed per (delivery GUID, receiving installation).
+// GitHub delivers ONE delivery GUID to EVERY GitHub App whose installation is
+// subscribed to the event, and both copies forward to this single endpoint — so a
+// repo installed under both the Reviewer and Coder apps receives the same GUID twice
+// (verified live: pull_request.opened GUID 638a7ac0-... delivered OK to both apps).
+// Keying the ledger row on the GUID alone made whichever copy landed SECOND collide
+// on the primary key and get swallowed as a "duplicate"; when the Coder's copy
+// (correctly ignored) arrived first, the Reviewer's copy was dropped and no review run
+// was created. Composing the installation id into the row id makes the same GUID to
+// two different installations two independent admissions, while a true redelivery
+// (same GUID + same installation) still collides and is deduplicated. A composite text
+// id reuses the existing `id` column, so no schema migration is needed.
+function deliveryLedgerId(deliveryId: string, installationId: string): string {
+  return `${deliveryId}:${installationId}`;
+}
+
+// Insert the delivery-ledger row that makes admission exactly-once per (delivery GUID,
+// receiving installation): the first writer wins the composite id, a redelivery to the
+// same installation conflicts and is treated as a duplicate. Shared by the
+// pull-request and issue-sync paths.
 async function claimDelivery(database: AdmissionDatabase, claim: DeliveryClaim) {
   const rows = await database
     .insert(githubWebhookDelivery)
     .values({
-      id: claim.deliveryId,
+      id: deliveryLedgerId(claim.deliveryId, claim.installationId),
       event: claim.event,
       action: claim.action,
       installationId: claim.installationId,
@@ -271,21 +288,21 @@ async function claimDelivery(database: AdmissionDatabase, claim: DeliveryClaim) 
   return rows.length === 1;
 }
 
-async function markDeliveryIgnored(
-  database: AdmissionDatabase,
-  deliveryId: string,
-  reason: string,
-) {
+async function markDeliveryIgnored(database: AdmissionDatabase, ledgerId: string, reason: string) {
   await database
     .update(githubWebhookDelivery)
     .set({
       status: `ignored:${reason}`,
       updatedAt: new Date(),
     })
-    .where(eq(githubWebhookDelivery.id, deliveryId));
+    .where(eq(githubWebhookDelivery.id, ledgerId));
 }
 
-async function getDuplicateAdmission(database: AdmissionDatabase, delivery: GitHubWebhookDelivery) {
+async function getDuplicateAdmission(
+  database: AdmissionDatabase,
+  delivery: GitHubWebhookDelivery,
+  ledgerId: string,
+) {
   const [claimed] = await database
     .select({
       agentRunId: githubWebhookDelivery.agentRunId,
@@ -293,7 +310,7 @@ async function getDuplicateAdmission(database: AdmissionDatabase, delivery: GitH
       status: githubWebhookDelivery.status,
     })
     .from(githubWebhookDelivery)
-    .where(eq(githubWebhookDelivery.id, delivery.deliveryId))
+    .where(eq(githubWebhookDelivery.id, ledgerId))
     .limit(1);
 
   if (!claimed || (claimed.status === "claimed" && !claimed.agentRunId && !claimed.reviewRunId)) {
@@ -490,6 +507,7 @@ async function admitPullRequestDelivery(
   metadata: PullRequestAdmissionMetadata,
   action: string | undefined,
 ): Promise<GitHubWebhookAdmission> {
+  const ledgerId = deliveryLedgerId(metadata.deliveryId, metadata.installationId);
   return database.transaction(async (transaction) => {
     const claimed = await claimDelivery(transaction, {
       deliveryId: metadata.deliveryId,
@@ -500,7 +518,7 @@ async function admitPullRequestDelivery(
       pullRequestNumber: metadata.pullRequestNumber,
     });
     if (!claimed) {
-      return getDuplicateAdmission(transaction, delivery);
+      return getDuplicateAdmission(transaction, delivery, ledgerId);
     }
 
     const [installation] = await transaction
@@ -510,7 +528,7 @@ async function admitPullRequestDelivery(
       .limit(1);
 
     if (!installation) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_not_linked");
+      await markDeliveryIgnored(transaction, ledgerId, "installation_not_linked");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -524,7 +542,7 @@ async function admitPullRequestDelivery(
     // delivery id. Only the reviewer app's installation triggers a review run;
     // admitting the Coder app's copy would double-review every pull request.
     if (resolveGitHubAppWorkerRole(installation.appSlug) === IMPLEMENTATION_WORKER_ROLE) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_app_not_reviewer");
+      await markDeliveryIgnored(transaction, ledgerId, "installation_app_not_reviewer");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -534,7 +552,7 @@ async function admitPullRequestDelivery(
     }
 
     if (installation.status !== "connected") {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_not_connected");
+      await markDeliveryIgnored(transaction, ledgerId, "installation_not_connected");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -544,7 +562,7 @@ async function admitPullRequestDelivery(
     }
 
     if (!installation.installedByUserId) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_missing_actor");
+      await markDeliveryIgnored(transaction, ledgerId, "installation_missing_actor");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -561,7 +579,7 @@ async function admitPullRequestDelivery(
     });
 
     if (!repository) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "repository_not_linked");
+      await markDeliveryIgnored(transaction, ledgerId, "repository_not_linked");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -595,7 +613,7 @@ async function admitPullRequestDelivery(
         await transaction
           .update(githubWebhookDelivery)
           .set({ status: `yielded:${BABYSIT_STOP_HUMAN}`, updatedAt: new Date() })
-          .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+          .where(eq(githubWebhookDelivery.id, ledgerId));
         return {
           ok: true,
           accepted: false,
@@ -681,7 +699,7 @@ async function admitPullRequestDelivery(
         agentRunId,
         updatedAt: new Date(),
       })
-      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+      .where(eq(githubWebhookDelivery.id, ledgerId));
 
     return {
       ok: true,
@@ -800,6 +818,7 @@ async function admitPullRequestReviewDelivery(
   action: string | undefined,
   deps: GitHubWebhookAdmissionDeps,
 ): Promise<GitHubWebhookAdmission> {
+  const ledgerId = deliveryLedgerId(metadata.deliveryId, metadata.installationId);
   const outcome = await database.transaction<ReviewAdmissionOutcome>(async (transaction) => {
     const claimed = await claimDelivery(transaction, {
       deliveryId: metadata.deliveryId,
@@ -810,11 +829,11 @@ async function admitPullRequestReviewDelivery(
       pullRequestNumber: metadata.pullRequestNumber,
     });
     if (!claimed) {
-      return { admission: await getDuplicateAdmission(transaction, delivery) };
+      return { admission: await getDuplicateAdmission(transaction, delivery, ledgerId) };
     }
 
     const ignore = async (reason: string): Promise<ReviewAdmissionOutcome> => {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, reason);
+      await markDeliveryIgnored(transaction, ledgerId, reason);
       return {
         admission: ignoredDelivery({
           event: delivery.name,
@@ -921,7 +940,7 @@ async function admitPullRequestReviewDelivery(
         await transaction
           .update(githubWebhookDelivery)
           .set({ status: `merging:${metadata.pullRequestNumber}`, updatedAt: new Date() })
-          .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+          .where(eq(githubWebhookDelivery.id, ledgerId));
         return {
           admission: {
             ok: true,
@@ -948,7 +967,7 @@ async function admitPullRequestReviewDelivery(
         await transaction
           .update(githubWebhookDelivery)
           .set({ status: `ready_to_merge:${metadata.pullRequestNumber}`, updatedAt: new Date() })
-          .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+          .where(eq(githubWebhookDelivery.id, ledgerId));
         const body = [
           `<!-- worker-role:${IMPLEMENTATION_WORKER_ROLE} role:ready-to-merge issue:${claim.number} -->`,
           `Pull request #${metadata.pullRequestNumber} is approved and ready to merge. Auto-merge is not enabled for \`${metadata.repositoryFullName}\`, so merging stays a human action.`,
@@ -1011,7 +1030,7 @@ async function admitPullRequestReviewDelivery(
       await transaction
         .update(githubWebhookDelivery)
         .set({ status: `yielded:${decision.reason}`, updatedAt: new Date() })
-        .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+        .where(eq(githubWebhookDelivery.id, ledgerId));
       return acceptedNoRun(decision.reason);
     }
 
@@ -1025,7 +1044,7 @@ async function admitPullRequestReviewDelivery(
       await transaction
         .update(githubWebhookDelivery)
         .set({ status: `blocked:${decision.reason}`, updatedAt: new Date() })
-        .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+        .where(eq(githubWebhookDelivery.id, ledgerId));
       const body = [
         `<!-- worker-role:${IMPLEMENTATION_WORKER_ROLE} role:babysit-blocked issue:${claim.number} -->`,
         `The Coder reached its babysit round cap (${BABYSIT_ROUND_CAP} fix rounds) on pull request #${metadata.pullRequestNumber} without a clean review and has stopped. This issue now needs a human — moving it to Failed / Blocked.`,
@@ -1062,7 +1081,7 @@ async function admitPullRequestReviewDelivery(
         pullRequestNumber: metadata.pullRequestNumber,
       })
     ) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "babysit_run_in_flight");
+      await markDeliveryIgnored(transaction, ledgerId, "babysit_run_in_flight");
       return acceptedNoRun("babysit_run_in_flight");
     }
 
@@ -1145,7 +1164,7 @@ async function admitPullRequestReviewDelivery(
     await transaction
       .update(githubWebhookDelivery)
       .set({ status: "accepted", agentRunId, updatedAt: new Date() })
-      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+      .where(eq(githubWebhookDelivery.id, ledgerId));
 
     return {
       admission: {
@@ -1219,6 +1238,7 @@ async function performAutoMerge(
   },
 ): Promise<GitHubWebhookAdmission> {
   const merge = deps.mergeCoderPullRequest ?? defaultMergeCoderPullRequest;
+  const ledgerId = deliveryLedgerId(target.deliveryId, target.installationId);
   const baseAdmission: GitHubWebhookAdmission = {
     ok: true,
     accepted: false,
@@ -1249,7 +1269,7 @@ async function performAutoMerge(
     await database
       .update(githubWebhookDelivery)
       .set({ status: `merged:${target.pullRequestNumber}`, updatedAt: new Date() })
-      .where(eq(githubWebhookDelivery.id, target.deliveryId));
+      .where(eq(githubWebhookDelivery.id, ledgerId));
 
     const postComment = deps.postCoderIssueComment ?? defaultPostCoderIssueComment;
     try {
@@ -1274,7 +1294,7 @@ async function performAutoMerge(
       await database
         .update(githubWebhookDelivery)
         .set({ status: `merge_failed:${target.pullRequestNumber}`, updatedAt: new Date() })
-        .where(eq(githubWebhookDelivery.id, target.deliveryId));
+        .where(eq(githubWebhookDelivery.id, ledgerId));
     } catch (updateError) {
       console.error("Failed to record Coder auto-merge failure", updateError);
     }
@@ -1352,6 +1372,7 @@ async function admitPullRequestCommentDelivery(
   metadata: PullRequestCommentAdmissionMetadata,
   action: string | undefined,
 ): Promise<GitHubWebhookAdmission> {
+  const ledgerId = deliveryLedgerId(metadata.deliveryId, metadata.installationId);
   const pullRequestShaped = (): GitHubWebhookAdmission =>
     ignoredDelivery({
       event: delivery.name,
@@ -1395,7 +1416,7 @@ async function admitPullRequestCommentDelivery(
       pullRequestNumber: metadata.pullRequestNumber,
     });
     if (!claimed) {
-      return getDuplicateAdmission(transaction, delivery);
+      return getDuplicateAdmission(transaction, delivery, ledgerId);
     }
 
     // Re-read inside the transaction so a concurrent yield (another human event on
@@ -1407,11 +1428,11 @@ async function admitPullRequestCommentDelivery(
       branchIssueNumber: null,
     });
     if (!claim) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "pull_request_shaped");
+      await markDeliveryIgnored(transaction, ledgerId, "pull_request_shaped");
       return pullRequestShaped();
     }
     if (claim.babysitBlockedReason != null) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "babysit_already_stopped");
+      await markDeliveryIgnored(transaction, ledgerId, "babysit_already_stopped");
       return {
         ok: true,
         accepted: false,
@@ -1431,7 +1452,7 @@ async function admitPullRequestCommentDelivery(
     await transaction
       .update(githubWebhookDelivery)
       .set({ status: `yielded:${BABYSIT_STOP_HUMAN}`, updatedAt: new Date() })
-      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+      .where(eq(githubWebhookDelivery.id, ledgerId));
     return {
       ok: true,
       accepted: false,
@@ -1693,6 +1714,7 @@ async function admitIssueSyncDelivery(
   metadata: IssueSyncMetadata,
   action: string | undefined,
 ): Promise<GitHubWebhookAdmission> {
+  const ledgerId = deliveryLedgerId(metadata.deliveryId, metadata.installationId);
   return database.transaction(async (transaction) => {
     const claimed = await claimDelivery(transaction, {
       deliveryId: metadata.deliveryId,
@@ -1703,7 +1725,7 @@ async function admitIssueSyncDelivery(
       pullRequestNumber: null,
     });
     if (!claimed) {
-      return getDuplicateAdmission(transaction, delivery);
+      return getDuplicateAdmission(transaction, delivery, ledgerId);
     }
 
     const [installation] = await transaction
@@ -1713,7 +1735,7 @@ async function admitIssueSyncDelivery(
       .limit(1);
 
     if (!installation) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_not_linked");
+      await markDeliveryIgnored(transaction, ledgerId, "installation_not_linked");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -1723,7 +1745,7 @@ async function admitIssueSyncDelivery(
     }
 
     if (installation.status !== "connected") {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "installation_not_connected");
+      await markDeliveryIgnored(transaction, ledgerId, "installation_not_connected");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -1744,7 +1766,7 @@ async function admitIssueSyncDelivery(
     });
 
     if (!repository) {
-      await markDeliveryIgnored(transaction, metadata.deliveryId, "repository_not_linked");
+      await markDeliveryIgnored(transaction, ledgerId, "repository_not_linked");
       return ignoredDelivery({
         event: delivery.name,
         action,
@@ -1774,7 +1796,7 @@ async function admitIssueSyncDelivery(
     await transaction
       .update(githubWebhookDelivery)
       .set({ status: "accepted", updatedAt: new Date() })
-      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+      .where(eq(githubWebhookDelivery.id, ledgerId));
 
     return {
       ok: true,

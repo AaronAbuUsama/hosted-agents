@@ -45,6 +45,14 @@ const ADMITTED_PULL_REQUEST_ACTIONS = [
   "ready_for_review",
 ] as const;
 
+// The delivery-ledger row is keyed per (delivery GUID, receiving installation), so a
+// repo installed under both apps yields two independent rows for one GUID. Tests that
+// read the ledger row back look it up by this composite id — mirrors deliveryLedgerId
+// in github-webhook.ts.
+function ledgerId(deliveryId: string, installationId: number | string): string {
+  return `${deliveryId}:${installationId}`;
+}
+
 async function createTestDatabase() {
   const testDatabaseDirectory = mkdtempSync(join(tmpdir(), "github-webhook-test-"));
   const databaseUrl = `file:${join(testDatabaseDirectory, "test.sqlite")}`;
@@ -630,9 +638,9 @@ describe("GitHub webhook admission", () => {
         const [delivery] = await database
           .select()
           .from(schema.githubWebhookDelivery)
-          .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+          .where(eq(schema.githubWebhookDelivery.id, ledgerId(deliveryId, INSTALLATION_ID)));
         expect(delivery).toMatchObject({
-          id: deliveryId,
+          id: ledgerId(deliveryId, INSTALLATION_ID),
           event: "pull_request",
           action,
           installationId: String(INSTALLATION_ID),
@@ -701,9 +709,9 @@ describe("GitHub webhook admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+        .where(eq(schema.githubWebhookDelivery.id, ledgerId(deliveryId, INSTALLATION_ID)));
       expect(delivery).toMatchObject({
-        id: deliveryId,
+        id: ledgerId(deliveryId, INSTALLATION_ID),
         status: "ignored:installation_not_connected",
         agentRunId: null,
         reviewRunId: null,
@@ -744,9 +752,9 @@ describe("GitHub webhook admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+        .where(eq(schema.githubWebhookDelivery.id, ledgerId(deliveryId, CODER_INSTALLATION_ID)));
       expect(delivery).toMatchObject({
-        id: deliveryId,
+        id: ledgerId(deliveryId, CODER_INSTALLATION_ID),
         status: "ignored:installation_app_not_reviewer",
         agentRunId: null,
         reviewRunId: null,
@@ -762,7 +770,7 @@ describe("GitHub webhook admission", () => {
       await seedLinkedPullRequestTarget(database);
       const deliveryId = "delivery-incomplete-claimed";
       await database.insert(schema.githubWebhookDelivery).values({
-        id: deliveryId,
+        id: ledgerId(deliveryId, INSTALLATION_ID),
         event: "pull_request",
         action: "opened",
         installationId: String(INSTALLATION_ID),
@@ -785,13 +793,134 @@ describe("GitHub webhook admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+        .where(eq(schema.githubWebhookDelivery.id, ledgerId(deliveryId, INSTALLATION_ID)));
       expect(delivery).toMatchObject({
-        id: deliveryId,
+        id: ledgerId(deliveryId, INSTALLATION_ID),
         status: "claimed",
         agentRunId: null,
         reviewRunId: null,
       });
+    } finally {
+      client.close();
+    }
+  });
+
+  // Regression (#21): GitHub delivers ONE delivery GUID to BOTH the Reviewer and Coder
+  // apps for a repo installed under both, and both copies forward to this single
+  // endpoint. Keying the ledger row on the GUID alone made whichever copy landed SECOND
+  // collide on the primary key and get swallowed as a duplicate — live, the Coder's
+  // (correctly) ignored copy landed FIRST and swallowed the Reviewer's copy, so no
+  // review run was ever created. The same GUID to two DIFFERENT installations must be
+  // two independent admissions.
+  test("the same delivery GUID from two installations admits both independently (the second copy is not swallowed)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      const app = createWebhookApp(database);
+      const sharedDeliveryId = "delivery-shared-guid";
+
+      // The Coder app's copy arrives FIRST (the live ordering) and is correctly ignored.
+      const coderResponse = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: sharedDeliveryId,
+        payload: coderPullRequestPayload("opened"),
+      });
+      expect(coderResponse.status).toBe(202);
+      expect((await coderResponse.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        duplicate: false,
+        deliveryId: sharedDeliveryId,
+        reason: "installation_app_not_reviewer",
+      });
+
+      // The Reviewer app's copy of the SAME GUID must still be admitted — not swallowed
+      // as a duplicate — and queue the review run.
+      const reviewerResponse = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: sharedDeliveryId,
+        payload: pullRequestPayload("opened"),
+      });
+      expect(reviewerResponse.status).toBe(202);
+      const reviewerAdmission = (await reviewerResponse.json()) as GitHubWebhookAdmission;
+      expect(reviewerAdmission).toMatchObject({
+        accepted: true,
+        duplicate: false,
+        deliveryId: sharedDeliveryId,
+      });
+      expect(reviewerAdmission.agentRunId).toBeTruthy();
+
+      // Exactly one review run (the Reviewer's), and two independent ledger rows keyed
+      // per (GUID, installation): the Coder's ignored copy and the Reviewer's accepted
+      // copy coexist under one GUID.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(1);
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(2);
+
+      const [coderRow] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(
+          eq(schema.githubWebhookDelivery.id, ledgerId(sharedDeliveryId, CODER_INSTALLATION_ID)),
+        );
+      expect(coderRow).toMatchObject({
+        installationId: String(CODER_INSTALLATION_ID),
+        status: "ignored:installation_app_not_reviewer",
+        agentRunId: null,
+      });
+
+      const [reviewerRow] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, ledgerId(sharedDeliveryId, INSTALLATION_ID)));
+      expect(reviewerRow).toMatchObject({
+        installationId: String(INSTALLATION_ID),
+        status: "accepted",
+        agentRunId: reviewerAdmission.agentRunId,
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  // The dedup that MUST survive the fix: the same GUID redelivered to the SAME
+  // installation is still a duplicate (a genuine GitHub redelivery), leaving exactly one
+  // ledger row and one run.
+  test("the same delivery GUID redelivered to the SAME installation is still deduplicated", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+      const sharedDeliveryId = "delivery-same-guid-same-install";
+      const payload = pullRequestPayload("opened");
+
+      const first = (await (
+        await postGitHubWebhook({
+          app,
+          event: "pull_request",
+          deliveryId: sharedDeliveryId,
+          payload,
+        })
+      ).json()) as GitHubWebhookAdmission;
+      expect(first.accepted).toBe(true);
+
+      const second = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: sharedDeliveryId,
+        payload,
+      });
+      expect((await second.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        duplicate: true,
+        agentRunId: first.agentRunId,
+        reason: "duplicate_delivery",
+      });
+
+      // One run, one ledger row — the redelivery to the same installation changed nothing.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(1);
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(1);
     } finally {
       client.close();
     }
@@ -961,9 +1090,9 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+        .where(eq(schema.githubWebhookDelivery.id, ledgerId(deliveryId, CODER_INSTALLATION_ID)));
       expect(delivery).toMatchObject({
-        id: deliveryId,
+        id: ledgerId(deliveryId, CODER_INSTALLATION_ID),
         event: "pull_request_review",
         action: "submitted",
         status: "accepted",
@@ -1071,7 +1200,12 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-cap"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-babysit-cap", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery).toMatchObject({
         status: "blocked:round_cap_reached",
         agentRunId: null,
@@ -1127,7 +1261,12 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-human"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-babysit-human", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe("yielded:human_in_the_loop");
     } finally {
       client.close();
@@ -1215,7 +1354,12 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-approved"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-babysit-approved", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe(`ready_to_merge:${BABYSIT_PR_NUMBER}`);
     } finally {
       client.close();
@@ -1268,7 +1412,12 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-human-approved"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-babysit-human-approved", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe(`ready_to_merge:${BABYSIT_PR_NUMBER}`);
 
       // Crucially, the board overlay keeps the approved PR OUT of Failed / Blocked —
@@ -1470,7 +1619,12 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-reviewer-copy"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-babysit-reviewer-copy", INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe("ignored:installation_app_not_coder");
     } finally {
       client.close();
@@ -1579,7 +1733,9 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-human-push"));
+        .where(
+          eq(schema.githubWebhookDelivery.id, ledgerId("delivery-human-push", INSTALLATION_ID)),
+        );
       expect(delivery?.status).toBe("yielded:human_in_the_loop");
     } finally {
       client.close();
@@ -1690,7 +1846,9 @@ describe("GitHub webhook babysit admission", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-human-comment"));
+        .where(
+          eq(schema.githubWebhookDelivery.id, ledgerId("delivery-human-comment", INSTALLATION_ID)),
+        );
       expect(delivery?.status).toBe("yielded:human_in_the_loop");
     } finally {
       client.close();
@@ -1848,7 +2006,12 @@ describe("GitHub webhook auto-merge (C7)", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-automerge", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe(`merged:${BABYSIT_PR_NUMBER}`);
     } finally {
       client.close();
@@ -1951,7 +2114,12 @@ describe("GitHub webhook auto-merge (C7)", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge-human-stopped"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-automerge-human-stopped", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe("ignored:babysit_stopped");
     } finally {
       client.close();
@@ -2002,7 +2170,12 @@ describe("GitHub webhook auto-merge (C7)", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge-second"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-automerge-second", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe("ignored:already_merged");
     } finally {
       client.close();
@@ -2050,7 +2223,12 @@ describe("GitHub webhook auto-merge (C7)", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, "delivery-automerge-fail"));
+        .where(
+          eq(
+            schema.githubWebhookDelivery.id,
+            ledgerId("delivery-automerge-fail", CODER_INSTALLATION_ID),
+          ),
+        );
       expect(delivery?.status).toBe(`merge_failed:${BABYSIT_PR_NUMBER}`);
     } finally {
       client.close();
@@ -2239,9 +2417,9 @@ describe("GitHub webhook issue sync", () => {
       const [delivery] = await database
         .select()
         .from(schema.githubWebhookDelivery)
-        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+        .where(eq(schema.githubWebhookDelivery.id, ledgerId(deliveryId, INSTALLATION_ID)));
       expect(delivery).toMatchObject({
-        id: deliveryId,
+        id: ledgerId(deliveryId, INSTALLATION_ID),
         event: "issues",
         action: "opened",
         status: "accepted",
