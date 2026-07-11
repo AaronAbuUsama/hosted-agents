@@ -21,6 +21,7 @@ import type {
   CodeReviewSandboxRunResult,
 } from "./code-review-sandbox-runner";
 import { CodeReviewSandboxRunError } from "./code-review-sandbox-runner";
+import { assertGitHubName, executeSandboxCommand, shellQuote } from "./daytona-sandbox-helpers";
 import { createGitHubCodeReviewTools } from "./github-code-review-tools";
 
 const REPOSITORY_PATH = "repo";
@@ -55,20 +56,6 @@ export type DaytonaSandboxCleanupResult =
       errorMessage: string;
     };
 
-function sanitizeSecret(value: string, secret: string) {
-  return secret ? value.replaceAll(secret, "[redacted]") : value;
-}
-
-function shellQuote(value: string) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function assertGitHubName(value: string, label: string) {
-  if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
-    throw new Error(`Unsafe GitHub ${label}: ${value}`);
-  }
-}
-
 function truncate(value: string, maxChars: number) {
   if (value.length <= maxChars) {
     return value;
@@ -79,49 +66,6 @@ function truncate(value: string, maxChars: number) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown Daytona code review failure";
-}
-
-function commandOutput(result: Awaited<ReturnType<Sandbox["process"]["executeCommand"]>>) {
-  return result.result || result.artifacts?.stdout || "";
-}
-
-async function executeSandboxCommand({
-  sandbox,
-  command,
-  cwd,
-  env,
-  timeout,
-  logs,
-  redactions,
-}: {
-  sandbox: Sandbox;
-  command: string;
-  cwd?: string;
-  env?: Record<string, string>;
-  timeout?: number;
-  logs: string[];
-  redactions: string[];
-}) {
-  const redactedCommand = redactions.reduce(
-    (current, secret) => sanitizeSecret(current, secret),
-    command,
-  );
-  logs.push(`$ ${redactedCommand}`);
-  const result = await sandbox.process.executeCommand(`${command} 2>&1`, cwd, env, timeout);
-  const output = redactions.reduce(
-    (current, secret) => sanitizeSecret(current, secret),
-    commandOutput(result),
-  );
-
-  if (output.trim()) {
-    logs.push(output.trimEnd());
-  }
-
-  if (result.exitCode !== 0) {
-    throw new Error(`Sandbox command failed with exit code ${result.exitCode}: ${redactedCommand}`);
-  }
-
-  return output;
 }
 
 function createReviewContext(input: CodeReviewSandboxRunInput, diffStat: string, diff: string) {

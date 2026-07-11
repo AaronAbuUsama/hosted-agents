@@ -32,6 +32,10 @@ export type ImplementationSandboxRunInput = {
   githubRepositoryId: string;
   installationId: string;
   installationAccessToken: string;
+  // The Coder GitHub App slug (from the installation record). Used to attribute the
+  // commit to the Coder bot identity via a `<slug>[bot]@users.noreply.github.com`
+  // author, mirroring how GitHub attributes App-authored commits.
+  appSlug?: string;
   owner: string;
   repo: string;
   // The branch the sandbox checks out and cuts the Coder's branch from.
