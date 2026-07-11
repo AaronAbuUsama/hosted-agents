@@ -9,9 +9,12 @@ import { db } from "@hosted-agents/db";
 import {
   CODE_REVIEW_WORKER_DISPLAY_NAME,
   CODE_REVIEW_WORKER_ROLE,
+  GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
   GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+  IMPLEMENTATION_WORKER_DISPLAY_NAME,
   IMPLEMENTATION_WORKER_ROLE,
   LEGACY_CODE_REVIEW_COWORKER_SLUG,
+  LEGACY_IMPLEMENTATION_COWORKER_SLUG,
   agentRun,
   agentRunArtifact,
   agentRunEvent,
@@ -48,8 +51,9 @@ import {
   createGitHubIssueComment,
   resolveGitHubAppWorkerRole,
 } from "../github-app";
+import { claimIssueForWorker } from "../issues/claim";
 import { deriveIssueStage, listBoard, type GitHubIssuesClient } from "../issues/service";
-import { loadIssueOverlay, loadIssueOverlays } from "../issues/sync";
+import { loadIssueOverlay, loadIssueOverlays, upsertSyncedIssue } from "../issues/sync";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
 
@@ -213,6 +217,7 @@ function mapAgentRun(row: typeof agentRun.$inferSelect) {
     repositoryUrl: row.repositoryUrl,
     branch: row.branch,
     baseBranch: row.baseBranch,
+    issueNumber: row.issueNumber,
     pullRequestNumber: row.pullRequestNumber,
     pullRequestBaseRef: row.pullRequestBaseRef,
     pullRequestBaseSha: row.pullRequestBaseSha,
@@ -1875,6 +1880,178 @@ export const appRouter = {
 
       return mapAgentRun(row);
     }),
+  // Kick off the implementation ("Coder") worker on a ready-for-agent issue (spec
+  // #21 stories 1–4). Authorization lives in the transport; the atomic claim +
+  // single run insert live in one transaction so a double kick-off yields exactly
+  // one claim and one queued run, and the issue moves to Executing immediately.
+  kickOffIssue: protectedProcedure.input(issueScopedInput).handler(async ({ input, context }) => {
+    const userId = context.session.user.id;
+    const organizationId = await requireOrganizationId(context, input.organizationId);
+    await assertCanManageOrganizationCredentials(userId, organizationId);
+
+    const { repository, installation } = await requireOrganizationRepository(
+      organizationId,
+      input.repositoryId,
+    );
+
+    if (installation.status !== "connected") {
+      throw new ORPCError("BAD_REQUEST", {
+        message: `GitHub installation is ${installation.status}.`,
+      });
+    }
+
+    if (!repository.selected) {
+      throw new ORPCError("BAD_REQUEST", {
+        message: "Enable this repository before kicking off an agent.",
+      });
+    }
+
+    // Read the issue live so the claim decision is made on GitHub's truth
+    // (labels + open/closed), then layered with our store's claim overlay.
+    const issue = await getGitHubIssue(
+      installation.installationId,
+      repository.owner,
+      repository.name,
+      input.issueNumber,
+    ).catch((error: unknown) => {
+      throw new ORPCError("BAD_REQUEST", {
+        message: error instanceof Error ? error.message : "Failed to load the issue.",
+      });
+    });
+
+    const overlay = await loadIssueOverlay(db, repository.id, input.issueNumber);
+    const { claimable } = deriveIssueStage(issue, overlay);
+
+    // Reject only when the issue is neither already claimed nor claimable — a
+    // backlog or human-in-the-loop issue can't be kicked off. An already-claimed
+    // issue is not rejected: the atomic claim below returns it idempotently.
+    if (!overlay?.claimed && !claimable) {
+      throw new ORPCError("BAD_REQUEST", {
+        message:
+          'This issue is not ready for an agent. Label it "ready for agent" (and remove "human in the loop") first.',
+      });
+    }
+
+    // Mirror the review trigger: dev proceeds without a connected credential so
+    // the loop is exercisable locally; production requires one before spending.
+    const providerCredential = await getConnectedOpenAICodexCredential(organizationId);
+    if (!providerCredential && env.NODE_ENV === "production") {
+      throw new ORPCError("BAD_REQUEST", {
+        message: "Connect OpenAI Codex before kicking off an agent.",
+      });
+    }
+
+    const runId = crypto.randomUUID();
+    const baseBranch = repository.defaultBranch ?? "main";
+
+    const claim = await db.transaction(async (transaction) => {
+      // Ensure the issue is synced (kick-off can precede any issue webhook) so
+      // the claim has a row to stamp; the upsert never clobbers an existing claim.
+      await upsertSyncedIssue(transaction, {
+        organizationId,
+        githubInstallationId: installation.id,
+        githubRepositoryId: repository.id,
+        repositoryFullName: repository.fullName,
+        number: issue.number,
+        githubIssueId: issue.githubId,
+        nodeId: issue.nodeId,
+        title: issue.title,
+        body: issue.body,
+        state: issue.state,
+        authorLogin: issue.authorLogin,
+        authorAvatarUrl: issue.authorAvatarUrl,
+        labels: issue.labels,
+        htmlUrl: issue.htmlUrl,
+        commentCount: issue.commentCount,
+        githubCreatedAt: issue.createdAt ? new Date(issue.createdAt) : null,
+        githubUpdatedAt: issue.updatedAt ? new Date(issue.updatedAt) : null,
+      });
+
+      const result = await claimIssueForWorker(transaction, {
+        githubRepositoryId: repository.id,
+        issueNumber: issue.number,
+        workerRole: IMPLEMENTATION_WORKER_ROLE,
+        runId,
+      });
+
+      // Only the winning claim queues a run — the loser (a concurrent or repeat
+      // kick-off) returns the existing claim and inserts nothing.
+      if (result.outcome === "claimed") {
+        await transaction.insert(agentRun).values({
+          id: runId,
+          organizationId,
+          userId,
+          providerCredentialId: providerCredential?.id ?? null,
+          coworkerSlug: LEGACY_IMPLEMENTATION_COWORKER_SLUG,
+          workerRole: IMPLEMENTATION_WORKER_ROLE,
+          workerDisplayName: IMPLEMENTATION_WORKER_DISPLAY_NAME,
+          runType: GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
+          sourceProvider: "github",
+          sourceDeliveryId: null,
+          repositoryOwner: repository.owner,
+          repositoryName: repository.name,
+          repositoryUrl: repository.htmlUrl,
+          branch: null,
+          baseBranch,
+          issueNumber: issue.number,
+          githubInstallationId: installation.id,
+          githubRepositoryId: repository.id,
+          status: "queued",
+          currentStage: "queued",
+          lastHeartbeatAt: new Date(),
+        });
+
+        await transaction.insert(agentRunEvent).values({
+          id: crypto.randomUUID(),
+          runId,
+          sequence: 1,
+          category: "github",
+          type: "github.issue.kickoff_requested",
+          stage: "manual_trigger",
+          message: `Kick-off requested for issue #${issue.number}`,
+          payloadJson: JSON.stringify({
+            requestedByUserId: userId,
+            issueNumber: issue.number,
+            repositoryFullName: repository.fullName,
+          }),
+        });
+        await transaction.insert(agentRunEvent).values({
+          id: crypto.randomUUID(),
+          runId,
+          sequence: 2,
+          category: "queue",
+          type: "queue.created",
+          stage: "queued",
+          message: "Queued implementation worker run",
+          payloadJson: JSON.stringify({
+            workerRole: IMPLEMENTATION_WORKER_ROLE,
+            workerDisplayName: IMPLEMENTATION_WORKER_DISPLAY_NAME,
+            runType: GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
+          }),
+        });
+      }
+
+      return result;
+    });
+
+    const [row] = await db
+      .select()
+      .from(agentRun)
+      .where(eq(agentRun.id, claim.claim.runId))
+      .limit(1);
+
+    if (!row) {
+      throw new ORPCError("INTERNAL_SERVER_ERROR");
+    }
+
+    // `alreadyQueued` tells the client the click was an idempotent no-op (the
+    // issue was already claimed); either way the issue is now Executing.
+    return {
+      run: mapAgentRun(row),
+      alreadyQueued: claim.outcome === "already_claimed",
+      stage: "executing" as const,
+    };
+  }),
 };
 export type AppRouter = typeof appRouter;
 export type AppRouterClient = RouterClient<typeof appRouter>;
