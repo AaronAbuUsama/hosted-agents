@@ -503,8 +503,9 @@ export async function getGitHubIssue(
   owner: string,
   repo: string,
   issueNumber: number,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubIssueSummary> {
-  const token = await createGitHubInstallationAccessToken(installationId);
+  const token = await createGitHubInstallationAccessToken(installationId, role);
   const response = await fetchGitHubJson<GitHubIssueResponse>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
     { token },

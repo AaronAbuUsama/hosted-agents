@@ -1940,11 +1940,14 @@ export const appRouter = {
 
     // Read the issue live so the claim decision is made on GitHub's truth
     // (labels + open/closed), then layered with our store's claim overlay.
+    // Mint with the app that owns this installation — a Coder-app installation
+    // (e.g. a repo linked only through the Coder app) 404s under the reviewer JWT.
     const issue = await getGitHubIssue(
       installation.installationId,
       repository.owner,
       repository.name,
       input.issueNumber,
+      resolveGitHubAppWorkerRole(installation.appSlug ?? null),
     ).catch((error: unknown) => {
       throw new ORPCError("BAD_REQUEST", {
         message: error instanceof Error ? error.message : "Failed to load the issue.",
