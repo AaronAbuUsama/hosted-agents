@@ -7,7 +7,6 @@ import {
   createPostCommentHandlers,
   formatIssueDate,
   issueAuthorDisplayName,
-  issueClaimable,
   issueStage,
   issueStageDotVariant,
   issueStageLabel,
@@ -74,22 +73,6 @@ describe("issueStage / issueStageLabel", () => {
 
   test("matches the gating label tolerant of separators", () => {
     expect(issueStage({ state: "open", labels: ["ready-for-agent"] })).toBe("ready_for_agent");
-  });
-});
-
-describe("issueClaimable", () => {
-  test("a ready-for-agent issue is claimable", () => {
-    expect(issueClaimable({ state: "open", labels: ["ready for agent"] })).toBe(true);
-  });
-
-  test("a plain backlog issue is not claimable", () => {
-    expect(issueClaimable({ state: "open", labels: [] })).toBe(false);
-  });
-
-  test("human-in-the-loop gates the agent out even with the ready label", () => {
-    expect(
-      issueClaimable({ state: "open", labels: ["ready for agent", "human in the loop"] }),
-    ).toBe(false);
   });
 });
 

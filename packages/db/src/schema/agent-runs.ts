@@ -57,6 +57,11 @@ export const agentRun = sqliteTable(
     repositoryUrl: text("repository_url"),
     branch: text("branch"),
     baseBranch: text("base_branch"),
+    // The issue an implementation run implements. Kick-off (spec #21 stories 1–4)
+    // links the ready-for-agent issue to the run it queues, so the implementation
+    // worker knows which issue to turn into a branch and pull request. Null for
+    // review runs, which are keyed by pull request instead.
+    issueNumber: integer("issue_number"),
     pullRequestNumber: integer("pull_request_number"),
     pullRequestBaseRef: text("pull_request_base_ref"),
     pullRequestBaseSha: text("pull_request_base_sha"),
