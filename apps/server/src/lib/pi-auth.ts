@@ -1,10 +1,9 @@
 import { registerProvider } from "@flue/runtime";
+import { OPENAI_CODEX_PROVIDER } from "@hosted-agents/api/codex-model-policy";
 import { getOAuthApiKey, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-
-const OPENAI_CODEX_PROVIDER = "openai-codex";
 
 type PiAuthFile = Record<string, OAuthCredentials>;
 
@@ -54,6 +53,9 @@ export async function registerPiOpenAICodexProvider() {
     });
   }
 
+  // Provider registration carries transport only; the model + reasoning-effort
+  // policy (default `gpt-5.5` at "minimal"/lowest) is applied by each agent that
+  // uses this provider — see codex-model-policy.ts and agents/code-review.ts.
   registerProvider(OPENAI_CODEX_PROVIDER, {
     apiKey: result.apiKey,
   });

@@ -16,6 +16,9 @@ export const workerConfig = sqliteTable(
     workerRole: text("worker_role").notNull(),
     displayName: text("display_name"),
     model: text("model"),
+    // Reasoning-effort override for this worker role. Null means the platform
+    // default ("minimal"/lowest). See @hosted-agents/api/codex-model-policy.
+    reasoningEffort: text("reasoning_effort"),
     instructions: text("instructions"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)

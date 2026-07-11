@@ -25,6 +25,11 @@ import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/g
 import { agentProviderCredential } from "@hosted-agents/db/schema/provider-credentials";
 import { reviewRun } from "@hosted-agents/db/schema/reviews";
 import { env } from "@hosted-agents/env/server";
+import {
+  DEFAULT_CODEX_MODEL_ID,
+  DEFAULT_CODEX_REASONING_EFFORT,
+  REASONING_EFFORTS,
+} from "../codex-model-policy";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
@@ -521,12 +526,11 @@ async function assertCanManageOrganizationCredentials(userId: string, organizati
   }
 }
 
-const DEFAULT_CODEX_MODEL_ID = "gpt-5.5";
-
 const updateWorkerConfigurationInput = z.object({
   organizationId: z.string().optional(),
   displayName: z.string().trim().max(80).nullable().optional(),
   model: z.string().trim().max(120).nullable().optional(),
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
   instructions: z.string().max(20_000).nullable().optional(),
 });
 
@@ -656,6 +660,7 @@ function mapWorkerConfig(row: typeof workerConfig.$inferSelect) {
     workerRole: row.workerRole,
     displayName: row.displayName,
     model: row.model,
+    reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -1379,6 +1384,7 @@ export const appRouter = {
         defaults: {
           displayName: CODE_REVIEW_WORKER_DISPLAY_NAME,
           model: DEFAULT_CODEX_MODEL_ID,
+          reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
         },
         config: config ? mapWorkerConfig(config) : null,
         skills: skills.map((skill) => mapWorkerSkill(skill, filesBySkillId.get(skill.id) ?? [])),
@@ -1409,6 +1415,10 @@ export const appRouter = {
           .set({
             displayName: input.displayName === undefined ? existing.displayName : input.displayName,
             model: input.model === undefined ? existing.model : input.model,
+            reasoningEffort:
+              input.reasoningEffort === undefined
+                ? existing.reasoningEffort
+                : input.reasoningEffort,
             instructions:
               input.instructions === undefined ? existing.instructions : input.instructions,
             updatedAt: now,
@@ -1431,6 +1441,7 @@ export const appRouter = {
           workerRole: CODE_REVIEW_WORKER_ROLE,
           displayName: input.displayName ?? null,
           model: input.model ?? null,
+          reasoningEffort: input.reasoningEffort ?? null,
           instructions: input.instructions ?? null,
         })
         .returning();

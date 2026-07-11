@@ -36,13 +36,29 @@ type ReviewerClientProps = {
 const SKILLS_PATH = "/app/skills";
 
 // Curated Codex models for the connected OpenAI provider. Runs prefix these
-// with "openai-codex/" — only ids the Codex API accepts belong here.
+// with "openai-codex/" — only ids the Codex API accepts belong here. Verified
+// live against the ChatGPT-account Codex backend on 2026-07-10; the requested
+// `gpt-5.6-lunar` and every other 5.6-family slug are rejected there, so the
+// default stays on the flagship `gpt-5.5`.
 const CODEX_MODELS: { value: string; description: string }[] = [
   { value: "gpt-5.5", description: "Flagship Codex model — platform default" },
-  { value: "gpt-5.5-codex", description: "Tuned for agentic coding and review depth" },
-  { value: "gpt-5.1-codex", description: "Previous-generation Codex, proven and stable" },
-  { value: "gpt-5.1-codex-mini", description: "Fastest and lightest for quick passes" },
+  { value: "gpt-5.4", description: "Prior-generation flagship, proven and stable" },
+  { value: "gpt-5.4-mini", description: "Fastest and lightest for quick passes" },
+  { value: "gpt-5.3-codex-spark", description: "Codex-tuned, low-latency coding model" },
 ];
+
+// Reasoning-effort tiers, lowest to highest. Mirrors the server policy in
+// @hosted-agents/api/codex-model-policy. Clearing falls back to the platform
+// default (lowest).
+const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+type ReasoningEffortValue = (typeof REASONING_EFFORTS)[number];
+const REASONING_EFFORT_DESCRIPTIONS: Record<ReasoningEffortValue, string> = {
+  minimal: "Lowest effort — cheapest and fastest (platform default)",
+  low: "Light reasoning for straightforward changes",
+  medium: "Balanced reasoning depth",
+  high: "Deeper reasoning for complex work",
+  xhigh: "Maximum reasoning — slowest and most expensive",
+};
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed.";
@@ -168,6 +184,9 @@ function BasePromptEditor({
 }): ReactElement {
   const [displayName, setDisplayName] = useState(config?.displayName ?? "");
   const [model, setModel] = useState(config?.model ?? "");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortValue | "">(
+    (config?.reasoningEffort as ReasoningEffortValue | null) ?? "",
+  );
   const [instructions, setInstructions] = useState(config?.instructions ?? "");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -179,6 +198,7 @@ function BasePromptEditor({
           ...CODEX_MODELS.map((entry) => ({ value: entry.value, label: entry.value })),
           { value: model, label: model },
         ];
+  const reasoningEffortOptions = REASONING_EFFORTS.map((value) => ({ value, label: value }));
 
   async function save(): Promise<void> {
     setIsSaving(true);
@@ -186,6 +206,7 @@ function BasePromptEditor({
       const saved = await client.updateWorkerConfiguration({
         displayName: displayName.trim() || null,
         model: model.trim() || null,
+        reasoningEffort: reasoningEffort || null,
         instructions: instructions.trim() || null,
       });
       onSaved(saved);
@@ -232,6 +253,23 @@ function BasePromptEditor({
                     CODEX_MODELS.find((entry) => entry.value === option.value)?.description ??
                     "Custom model id saved earlier"
                   }
+                />
+              )}
+            />
+          </StackItem>
+          <StackItem size="fill">
+            <Selector
+              label="Reasoning effort"
+              value={reasoningEffort || null}
+              onChange={(value) => setReasoningEffort((value as ReasoningEffortValue) ?? "")}
+              hasClear
+              placeholder={`${defaults.reasoningEffort} (default)`}
+              description="Codex reasoning effort for review runs. Clear to use the platform default."
+              options={reasoningEffortOptions}
+              renderOption={(option) => (
+                <SelectorOption
+                  label={option.label}
+                  description={REASONING_EFFORT_DESCRIPTIONS[option.value as ReasoningEffortValue]}
                 />
               )}
             />

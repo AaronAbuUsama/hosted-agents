@@ -251,6 +251,7 @@ async function createTables(testClient: TestClient) {
       "worker_role" text NOT NULL,
       "display_name" text,
       "model" text,
+      "reasoning_effort" text,
       "instructions" text,
       "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
       "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
@@ -1425,5 +1426,50 @@ describe("agentRunArtifacts router procedure", () => {
       callAgentRunArtifacts("artifact-user-3")({ runId: "artifact-outside-run-3" }),
       "FORBIDDEN",
     );
+  });
+});
+
+describe("worker configuration procedures", () => {
+  test("round-trips the reasoning-effort override and exposes the policy default", async () => {
+    await seedUser("wc-user-1");
+    await seedOrganization("wc-org-1");
+    await seedMembership("wc-user-1", "wc-org-1", "owner");
+    await seedSession("wc-user-1", "wc-org-1");
+
+    const context = memberContext("wc-user-1", { activeOrganizationId: "wc-org-1" });
+    const update = createProcedureClient(appRouter.updateWorkerConfiguration, { context });
+    const read = createProcedureClient(appRouter.workerConfiguration, { context });
+
+    const saved = await update({
+      organizationId: "wc-org-1",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+    });
+    expect(saved.model).toBe("gpt-5.4");
+    expect(saved.reasoningEffort).toBe("high");
+
+    const config = await read({ organizationId: "wc-org-1" });
+    expect(config.defaults.model).toBe("gpt-5.5");
+    expect(config.defaults.reasoningEffort).toBe("minimal");
+    expect(config.config?.reasoningEffort).toBe("high");
+
+    // Clearing only the effort persists null and leaves the model untouched.
+    const cleared = await update({ organizationId: "wc-org-1", reasoningEffort: null });
+    expect(cleared.reasoningEffort).toBeNull();
+    expect(cleared.model).toBe("gpt-5.4");
+  });
+
+  test("rejects an unrecognized reasoning-effort value", async () => {
+    await seedUser("wc-user-2");
+    await seedOrganization("wc-org-2");
+    await seedMembership("wc-user-2", "wc-org-2", "admin");
+    await seedSession("wc-user-2", "wc-org-2");
+
+    const context = memberContext("wc-user-2", { activeOrganizationId: "wc-org-2" });
+    const update = createProcedureClient(appRouter.updateWorkerConfiguration, { context });
+
+    await expect(
+      update({ organizationId: "wc-org-2", reasoningEffort: "lowest" as never }),
+    ).rejects.toBeInstanceOf(Error);
   });
 });
