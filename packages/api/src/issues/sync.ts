@@ -3,6 +3,7 @@ import { and, count, eq, max } from "drizzle-orm";
 import type { db as productionDb } from "@hosted-agents/db";
 import { githubIssue, githubIssueComment } from "@hosted-agents/db/schema/issues";
 
+import { BABYSIT_BLOCKED_LANE_REASONS } from "./babysit";
 import type { IssueOverlay } from "./service";
 
 // The store-sync half of the issues deep module (see issue #19). The signed
@@ -218,6 +219,7 @@ type IssueOverlayRow = {
   closedByMerge: boolean;
   claimedByRunId: string | null;
   claimedByWorkerRole: string | null;
+  babysitBlockedReason: string | null;
 };
 
 // Turn a stored issue row into the board's claim / linked-PR overlay. Labels and
@@ -236,6 +238,13 @@ function overlayFromRow(row: IssueOverlayRow): IssueOverlay {
     claimed: Boolean(row.claimedByRunId ?? row.claimedByWorkerRole),
     linkedPullRequest,
     closedByMerge: row.closedByMerge,
+    // Babysitting stopped by the round cap or a human takeover parks the issue in
+    // Failed / Blocked — `deriveStage` reads `blocked` first. A `human_approved`
+    // stop is deliberately excluded: it halts the Coder but the PR is approved and
+    // mergeable, so the issue stays In PR / Merged rather than dropping to Blocked.
+    blocked:
+      row.babysitBlockedReason != null &&
+      BABYSIT_BLOCKED_LANE_REASONS.includes(row.babysitBlockedReason),
   };
 }
 
@@ -246,6 +255,7 @@ const OVERLAY_COLUMNS = {
   closedByMerge: githubIssue.closedByMerge,
   claimedByRunId: githubIssue.claimedByRunId,
   claimedByWorkerRole: githubIssue.claimedByWorkerRole,
+  babysitBlockedReason: githubIssue.babysitBlockedReason,
 } as const;
 
 // Load every stored issue's overlay for a repository, keyed by issue number, ready

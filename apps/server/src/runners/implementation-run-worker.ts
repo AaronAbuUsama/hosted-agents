@@ -116,6 +116,16 @@ export async function runNextQueuedImplementation({
     });
     const { configuration, installation, repository, workerDisplayName } = context;
 
+    // A babysit fix round (C6) is a queued implementation run that already carries a
+    // pull request + its Coder branch (stamped by the review admission). The first
+    // implementation run has neither, so this cleanly distinguishes the two: with a
+    // branch + PR, the runner resumes the existing branch instead of cutting a new
+    // one and opening a new pull request.
+    const babysit =
+      run.pullRequestNumber != null && run.branch
+        ? { branch: run.branch, pullRequestNumber: run.pullRequestNumber }
+        : undefined;
+
     const result = await runner.run({
       agentRunId: run.id,
       organizationId: run.organizationId,
@@ -139,6 +149,9 @@ export async function runNextQueuedImplementation({
       // and body stay unset here; the write-capable runner (C5) reads the live
       // issue + comments itself, so the seam only needs the number to link them.
       issueNumber: run.issueNumber ?? undefined,
+      // Babysit context (C6): when set, the runner resumes the existing branch and
+      // pushes the review fix to it rather than opening a new pull request.
+      babysit,
       onEvent: (event) => recordRunnerEvent(database, run.id, event),
     });
 

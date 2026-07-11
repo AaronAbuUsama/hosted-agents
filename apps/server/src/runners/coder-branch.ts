@@ -21,3 +21,17 @@ export function slugifyIssueTitle(title: string): string {
 export function coderBranchName(issueNumber: number, title: string): string {
   return `coder/issue-${issueNumber}-${slugifyIssueTitle(title)}`;
 }
+
+// The inverse of `coderBranchName`: recover the issue number from a Coder branch
+// ref so the babysit admission (C6) can match a `pull_request_review` to the issue
+// its PR closes, even before/without the linked-PR stamp. Only matches the exact
+// `coder/issue-<n>-<slug>` shape this module produces; any other ref (a human's
+// branch, a differently-named branch) returns null so it is never babysat.
+export function parseCoderIssueBranch(ref: string): number | null {
+  const match = /^coder\/issue-(\d+)-/.exec(ref.trim());
+  if (!match) {
+    return null;
+  }
+  const issueNumber = Number.parseInt(match[1] ?? "", 10);
+  return Number.isSafeInteger(issueNumber) && issueNumber > 0 ? issueNumber : null;
+}

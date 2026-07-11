@@ -15,10 +15,9 @@ export const githubIssue = sqliteTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    githubInstallationId: text("github_installation_id").references(
-      () => githubInstallation.id,
-      { onDelete: "set null" },
-    ),
+    githubInstallationId: text("github_installation_id").references(() => githubInstallation.id, {
+      onDelete: "set null",
+    }),
     githubRepositoryId: text("github_repository_id")
       .notNull()
       .references(() => githubRepository.id, { onDelete: "cascade" }),
@@ -44,6 +43,18 @@ export const githubIssue = sqliteTable(
     claimedByWorkerRole: text("claimed_by_worker_role"),
     claimedByRunId: text("claimed_by_run_id"),
     claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+    // Babysit bookkeeping (spec #21 stories 7–9, C6). `babysitRound` counts the
+    // review-driven fix rounds the Coder has been dispatched on this issue's pull
+    // request; a `changes_requested` review enqueues a fix run only while it is
+    // below the cap. `babysitBlockedReason` is non-null once babysitting has
+    // stopped for good — the round cap was reached (`round_cap_reached`), a human
+    // took over the pull request (`human_in_the_loop`, humans always win), or a
+    // human approved it (`human_approved`). Any non-null reason makes every later
+    // review a no-op, so the Coder never resumes a yielded PR. The first two drive
+    // the board's Failed / Blocked lane; `human_approved` does not — the PR is good
+    // and stays mergeable (the board overlay excludes that reason from Blocked).
+    babysitRound: integer("babysit_round").default(0).notNull(),
+    babysitBlockedReason: text("babysit_blocked_reason"),
     githubCreatedAt: integer("github_created_at", { mode: "timestamp_ms" }),
     githubUpdatedAt: integer("github_updated_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
@@ -100,10 +111,7 @@ export const githubIssueComment = sqliteTable(
   (table) => [
     uniqueIndex("github_issue_comment_githubCommentId_idx").on(table.githubCommentId),
     index("github_issue_comment_issueId_idx").on(table.issueId),
-    index("github_issue_comment_repo_issue_idx").on(
-      table.githubRepositoryId,
-      table.issueNumber,
-    ),
+    index("github_issue_comment_repo_issue_idx").on(table.githubRepositoryId, table.issueNumber),
     index("github_issue_comment_organizationId_idx").on(table.organizationId),
   ],
 );

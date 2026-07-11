@@ -155,6 +155,7 @@ async function defaultRunImplementationAgent(
   const displayName = workerDisplayName(input);
   const skillNames = (input.skills ?? []).map((skill) => skill.name);
   const configuredInstructions = input.configuredInstructions?.trim();
+  const babysit = input.babysit;
   const agent = defineAgent(() => ({
     model,
     thinkingLevel: reasoningEffort,
@@ -165,9 +166,13 @@ async function defaultRunImplementationAgent(
       "You are Coworker's implementation worker (the Coder).",
       `Your configured display name is ${displayName}.`,
       "Your worker role is implementation. Do not assume a personal identity beyond the configured display name.",
-      `You are on a fresh branch checked out from ${input.defaultBranch} inside the sandbox workspace.`,
+      babysit
+        ? `You are resuming your existing branch for pull request #${babysit.pullRequestNumber}; it is already checked out in the sandbox workspace with your prior work. A reviewer requested changes — address that review feedback.`
+        : `You are on a fresh branch checked out from ${input.defaultBranch} inside the sandbox workspace.`,
       `Read ../${ISSUE_CONTEXT_PATH} first, then call read_issue (and read_issue_comments if useful) for the live issue.`,
-      "Implement the issue by editing files and running commands with your shell/file tools inside this sandbox only.",
+      babysit
+        ? "Call read_pull_request_review to get the reviewer's requested changes — the review summary and any inline file/line comments live on the pull request, NOT in the issue comments. Then edit files and run commands with your shell/file tools inside this sandbox only to address every requested change."
+        : "Implement the issue by editing files and running commands with your shell/file tools inside this sandbox only.",
       "Make focused, minimal changes that satisfy the issue. Do not commit, push, or open a pull request — the runner does that after you finish.",
       "You may post a short progress comment with post_issue_progress_comment; keep it concise.",
       ...(skillNames.length > 0
@@ -272,6 +277,10 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       await input.onEvent?.({ type: "github.tool", toolName, status, message, payload });
     };
 
+    // A babysit fix round (C6) resumes the pull request's existing Coder branch;
+    // the first implementation cuts a fresh branch named from the live issue title.
+    const babysit = input.babysit;
+
     // Resolve the live issue before creating the sandbox so the branch is named from
     // the real title and a missing/renamed issue fails fast (no wasted sandbox).
     await emitStage("issue_resolving", `Reading issue #${issueNumber}`);
@@ -280,7 +289,7 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       repo: input.repo,
       issueNumber,
     });
-    const branch = coderBranchName(issueNumber, issue.title);
+    const branch = babysit ? babysit.branch : coderBranchName(issueNumber, issue.title);
 
     const client = this.createClient();
     await emitStage("sandbox_starting", "Creating Daytona sandbox", { labels });
@@ -310,15 +319,19 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       const cloneUrl = `https://github.com/${input.owner}/${input.repo}.git`;
       const authenticatedCloneUrl = `https://x-access-token:${encodedInstallationAccessToken}@github.com/${input.owner}/${input.repo}.git`;
 
-      // Full checkout of the default branch (differs from the review runner's
+      // Full checkout of the branch we operate on (differs from the review runner's
       // --no-checkout SHA fetch: the Coder needs a working tree to edit + commit).
+      // A first implementation clones the default branch and cuts a new branch from
+      // it; a babysit clones the existing Coder branch directly and resumes it.
+      const cloneBranch = babysit ? branch : input.defaultBranch;
       await emitStage("repository_cloning", `Cloning ${input.owner}/${input.repo}`, {
+        branch: cloneBranch,
         defaultBranch: input.defaultBranch,
       });
       await executeSandboxCommand({
         sandbox,
         command: `GIT_TERMINAL_PROMPT=0 git clone --single-branch --branch ${shellQuote(
-          input.defaultBranch,
+          cloneBranch,
         )} ${shellQuote(authenticatedCloneUrl)} ${shellQuote(REPOSITORY_PATH)}`,
         timeout: 600,
         logs,
@@ -339,15 +352,24 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
         redactions,
       });
 
-      await emitStage("branch_creating", `Creating branch ${branch}`, { branch });
-      await executeSandboxCommand({
-        sandbox,
-        command: `git switch -c ${shellQuote(branch)}`,
-        cwd: REPOSITORY_PATH,
-        timeout: 60,
-        logs,
-        redactions,
-      });
+      if (babysit) {
+        // The Coder branch already exists and is checked out by the clone above —
+        // there is nothing to create, just narrate that we resumed it.
+        await emitStage("branch_checkout", `Resuming branch ${branch}`, {
+          branch,
+          pullRequestNumber: babysit.pullRequestNumber,
+        });
+      } else {
+        await emitStage("branch_creating", `Creating branch ${branch}`, { branch });
+        await executeSandboxCommand({
+          sandbox,
+          command: `git switch -c ${shellQuote(branch)}`,
+          cwd: REPOSITORY_PATH,
+          timeout: 60,
+          logs,
+          redactions,
+        });
+      }
 
       const identity = commitIdentity(input);
       await executeSandboxCommand({
@@ -409,6 +431,10 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       const githubTools = createGitHubImplementationTools(input, {
         client: githubClient,
         issueNumber,
+        // A babysit fix round adds the read_pull_request_review tool bound to the
+        // existing PR so the Coder can read the Reviewer's requested changes (they
+        // live on the pull request, not the linked issue's comments).
+        pullRequestNumber: babysit?.pullRequestNumber,
       });
 
       await emitStage("flue_implementation", "Starting Flue implementation session", {
@@ -465,21 +491,26 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
       // The real gate is whether the branch has any commits ahead of the default
       // branch — that is what a pull request pushes. A clean tree with the agent's own
       // commits is a valid PR; only a branch with zero commits ahead is a genuine
-      // "nothing to open a pull request from" failure.
-      const commitsAheadOutput = await executeSandboxCommand({
-        sandbox,
-        command: `git rev-list --count ${shellQuote(`origin/${input.defaultBranch}..HEAD`)}`,
-        cwd: REPOSITORY_PATH,
-        timeout: 60,
-        logs,
-        redactions,
-      });
-      const commitsAhead = Number.parseInt(commitsAheadOutput.trim(), 10);
-      if (!Number.isFinite(commitsAhead) || commitsAhead <= 0) {
-        throw new ImplementationSandboxRunError(
-          "The Coder produced no changes to open a pull request from: the working tree is clean and the branch has no commits ahead of the default branch.",
-          { sandboxId },
-        );
+      // "nothing to open a pull request from" failure. Skipped for a babysit round:
+      // the single-branch clone of the Coder branch never fetched origin/<default>,
+      // and the pull request already exists, so a no-new-commit push is a harmless
+      // no-op rather than a failure.
+      if (!babysit) {
+        const commitsAheadOutput = await executeSandboxCommand({
+          sandbox,
+          command: `git rev-list --count ${shellQuote(`origin/${input.defaultBranch}..HEAD`)}`,
+          cwd: REPOSITORY_PATH,
+          timeout: 60,
+          logs,
+          redactions,
+        });
+        const commitsAhead = Number.parseInt(commitsAheadOutput.trim(), 10);
+        if (!Number.isFinite(commitsAhead) || commitsAhead <= 0) {
+          throw new ImplementationSandboxRunError(
+            "The Coder produced no changes to open a pull request from: the working tree is clean and the branch has no commits ahead of the default branch.",
+            { sandboxId },
+          );
+        }
       }
 
       // Push straight to the authenticated URL passed as a positional argument, never
@@ -505,63 +536,104 @@ export class DaytonaImplementationSandboxRunner implements ImplementationSandbox
         redactions,
       });
 
-      await emitStage("pull_request_opening", `Opening pull request for #${issueNumber}`, {
-        branch,
-        base: input.defaultBranch,
-      });
-      await emitTool("create_pull_request", "started", "Opening pull request", {
-        head: branch,
-        base: input.defaultBranch,
-        issueNumber,
-      });
-      const pullRequest = await openPullRequest(githubClient, {
-        owner: input.owner,
-        repo: input.repo,
-        title: issue.title,
-        head: branch,
-        base: input.defaultBranch,
-        issueNumber,
-        summary: agentOutcome.summary,
-      });
-      await emitTool("create_pull_request", "completed", "Opened pull request", {
-        pullRequestNumber: pullRequest.number,
-        pullRequestUrl: pullRequest.htmlUrl,
-      });
-      logs.push(`opened pull request #${pullRequest.number}`);
+      const artifacts = [
+        {
+          name: ISSUE_CONTEXT_PATH,
+          contentType: "text/markdown",
+          content: issueContext,
+        },
+      ];
 
-      // Post a progress comment on the issue AS the Coder, linking the pull request.
-      await emitStage("issue_comment_posting", "Posting progress comment on the issue");
-      await emitTool("post_issue_progress_comment", "started", "Posting issue progress comment", {
-        issueNumber,
-      });
-      const comment = await postIssueComment(githubClient, input, {
-        issueNumber,
-        body: pullRequest.htmlUrl
-          ? `Opened pull request #${pullRequest.number} (${pullRequest.htmlUrl}) to close this issue.`
-          : `Opened pull request #${pullRequest.number} to close this issue.`,
-      });
-      await emitTool("post_issue_progress_comment", "completed", "Posted issue progress comment", {
-        issueNumber,
-        commentId: comment.commentId,
-      });
-
-      completedResult = {
-        sandboxProvider: "daytona",
-        sandboxId,
-        model,
-        summary: agentOutcome.summary,
-        artifacts: [
+      if (babysit) {
+        // The pull request already exists; the push re-triggers review via
+        // `synchronize`. Post a progress comment noting the fix round and return the
+        // existing branch + pull request unchanged.
+        await emitStage("issue_comment_posting", "Posting babysit progress comment on the issue");
+        await emitTool("post_issue_progress_comment", "started", "Posting issue progress comment", {
+          issueNumber,
+        });
+        const comment = await postIssueComment(githubClient, input, {
+          issueNumber,
+          body: `Pushed updates to \`${branch}\` addressing the latest review on pull request #${babysit.pullRequestNumber}.`,
+        });
+        await emitTool(
+          "post_issue_progress_comment",
+          "completed",
+          "Posted issue progress comment",
           {
-            name: ISSUE_CONTEXT_PATH,
-            contentType: "text/markdown",
-            content: issueContext,
+            issueNumber,
+            commentId: comment.commentId,
           },
-        ],
-        branch,
-        pullRequestNumber: pullRequest.number,
-        pullRequestState: pullRequest.state,
-        pullRequestUrl: pullRequest.htmlUrl ?? undefined,
-      };
+        );
+
+        completedResult = {
+          sandboxProvider: "daytona",
+          sandboxId,
+          model,
+          summary: agentOutcome.summary,
+          artifacts,
+          branch,
+          pullRequestNumber: babysit.pullRequestNumber,
+          pullRequestState: "open",
+        };
+      } else {
+        await emitStage("pull_request_opening", `Opening pull request for #${issueNumber}`, {
+          branch,
+          base: input.defaultBranch,
+        });
+        await emitTool("create_pull_request", "started", "Opening pull request", {
+          head: branch,
+          base: input.defaultBranch,
+          issueNumber,
+        });
+        const pullRequest = await openPullRequest(githubClient, {
+          owner: input.owner,
+          repo: input.repo,
+          title: issue.title,
+          head: branch,
+          base: input.defaultBranch,
+          issueNumber,
+          summary: agentOutcome.summary,
+        });
+        await emitTool("create_pull_request", "completed", "Opened pull request", {
+          pullRequestNumber: pullRequest.number,
+          pullRequestUrl: pullRequest.htmlUrl,
+        });
+        logs.push(`opened pull request #${pullRequest.number}`);
+
+        // Post a progress comment on the issue AS the Coder, linking the pull request.
+        await emitStage("issue_comment_posting", "Posting progress comment on the issue");
+        await emitTool("post_issue_progress_comment", "started", "Posting issue progress comment", {
+          issueNumber,
+        });
+        const comment = await postIssueComment(githubClient, input, {
+          issueNumber,
+          body: pullRequest.htmlUrl
+            ? `Opened pull request #${pullRequest.number} (${pullRequest.htmlUrl}) to close this issue.`
+            : `Opened pull request #${pullRequest.number} to close this issue.`,
+        });
+        await emitTool(
+          "post_issue_progress_comment",
+          "completed",
+          "Posted issue progress comment",
+          {
+            issueNumber,
+            commentId: comment.commentId,
+          },
+        );
+
+        completedResult = {
+          sandboxProvider: "daytona",
+          sandboxId,
+          model,
+          summary: agentOutcome.summary,
+          artifacts,
+          branch,
+          pullRequestNumber: pullRequest.number,
+          pullRequestState: pullRequest.state,
+          pullRequestUrl: pullRequest.htmlUrl ?? undefined,
+        };
+      }
     } catch (error) {
       runError = error;
     } finally {

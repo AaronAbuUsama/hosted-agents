@@ -17,6 +17,8 @@ import type { ImplementationSandboxRunInput } from "./implementation-sandbox-run
 
 const MAX_COMMENT_BODY = 60_000;
 const MAX_ISSUE_COMMENTS = 50;
+const MAX_PR_REVIEWS = 30;
+const MAX_PR_REVIEW_COMMENTS = 50;
 
 // The Octokit surface these tools + helpers touch, narrowed so a test can supply a
 // structural fake instead of a live Octokit.
@@ -72,6 +74,41 @@ export type ImplementationGitHubClient = {
         request?: { signal?: AbortSignal };
       }): Promise<{
         data: { number: number; html_url?: string | null; state?: string | null };
+      }>;
+      // Submitted reviews on the pull request (the Reviewer's `changes_requested`
+      // review body + state). The babysit fix round reads these to see the feedback
+      // it must address — the review lives on the PR, not the linked issue.
+      listReviews(input: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        per_page?: number;
+        request?: { signal?: AbortSignal };
+      }): Promise<{
+        data: Array<{
+          id: number;
+          body?: string | null;
+          state?: string | null;
+          user?: { login?: string | null } | null;
+          submitted_at?: string | null;
+        }>;
+      }>;
+      // Inline (diff-anchored) review comments on the pull request — the file/line
+      // specifics the Reviewer left, which the review body alone does not carry.
+      listReviewComments(input: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        per_page?: number;
+        request?: { signal?: AbortSignal };
+      }): Promise<{
+        data: Array<{
+          id: number;
+          body?: string | null;
+          path?: string | null;
+          line?: number | null;
+          user?: { login?: string | null } | null;
+        }>;
       }>;
     };
   };
@@ -198,6 +235,7 @@ export async function postIssueComment(
 export type GitHubImplementationToolState = {
   readIssue: boolean;
   readComments: boolean;
+  readPullRequestReview: boolean;
   postedCommentIds: number[];
 };
 
@@ -208,17 +246,25 @@ export type GitHubImplementationTools = {
 
 // The agent-facing issue tools. Every tool is bound to the trusted run's
 // repository + issue number so the model cannot redirect a write to another
-// issue/repo; it only supplies free text.
+// issue/repo; it only supplies free text. `pullRequestNumber` is present only for a
+// babysit fix round: it adds a `read_pull_request_review` tool bound to that PR so
+// the Coder can read the Reviewer's requested changes (which live on the pull
+// request, not the linked issue's comments).
 export function createGitHubImplementationTools(
   input: ImplementationSandboxRunInput,
-  options: { client: ImplementationGitHubClient; issueNumber: number },
+  options: {
+    client: ImplementationGitHubClient;
+    issueNumber: number;
+    pullRequestNumber?: number;
+  },
 ): GitHubImplementationTools {
-  const { client, issueNumber } = options;
+  const { client, issueNumber, pullRequestNumber } = options;
   const ref = { owner: input.owner, repo: input.repo, issueNumber };
   const displayName = workerDisplayName(input);
   const state: GitHubImplementationToolState = {
     readIssue: false,
     readComments: false,
+    readPullRequestReview: false,
     postedCommentIds: [],
   };
 
@@ -312,6 +358,97 @@ export function createGitHubImplementationTools(
     },
   });
 
+  // Only present on a babysit fix round (a PR to read reviews on). Bound to the
+  // trusted PR number so the model cannot redirect it; it takes no input.
+  const readPullRequestReview =
+    pullRequestNumber == null
+      ? null
+      : defineTool({
+          name: "read_pull_request_review",
+          description:
+            "Read the reviewer's requested changes on this run's pull request: each submitted review (state + summary body) and every inline (file/line) review comment. Call this first on a fix round to see exactly what to address.",
+          output: v.object({
+            pullRequestNumber: v.number(),
+            reviews: v.array(
+              v.object({
+                state: v.string(),
+                body: v.string(),
+                authorLogin: v.optional(v.string()),
+                submittedAt: v.optional(v.string()),
+              }),
+            ),
+            comments: v.array(
+              v.object({
+                path: v.optional(v.string()),
+                line: v.optional(v.number()),
+                body: v.string(),
+                authorLogin: v.optional(v.string()),
+              }),
+            ),
+          }),
+          async run({ signal }) {
+            const toolName = "read_pull_request_review";
+            const pullRef = { owner: input.owner, repo: input.repo, pullRequestNumber };
+            await emitTool(toolName, "started", "Reading pull request review feedback", pullRef);
+            try {
+              const [reviewsResponse, commentsResponse] = await Promise.all([
+                client.rest.pulls.listReviews({
+                  owner: input.owner,
+                  repo: input.repo,
+                  pull_number: pullRequestNumber,
+                  per_page: MAX_PR_REVIEWS,
+                  request: { signal },
+                }),
+                client.rest.pulls.listReviewComments({
+                  owner: input.owner,
+                  repo: input.repo,
+                  pull_number: pullRequestNumber,
+                  per_page: MAX_PR_REVIEW_COMMENTS,
+                  request: { signal },
+                }),
+              ]);
+              // Keep reviews that carry signal: a written summary, or a
+              // changes-requested verdict (which is meaningful even with an empty
+              // body). Drop empty approvals/pending noise.
+              const reviews = reviewsResponse.data
+                .slice(0, MAX_PR_REVIEWS)
+                .map((rev) => ({
+                  state: rev.state ?? "",
+                  body: rev.body ?? "",
+                  authorLogin: rev.user?.login ?? undefined,
+                  submittedAt: rev.submitted_at ?? undefined,
+                }))
+                .filter(
+                  (rev) =>
+                    rev.body.trim().length > 0 || rev.state.toLowerCase() === "changes_requested",
+                );
+              const comments = commentsResponse.data
+                .slice(0, MAX_PR_REVIEW_COMMENTS)
+                .map((comment) => ({
+                  path: comment.path ?? undefined,
+                  line: comment.line ?? undefined,
+                  body: comment.body ?? "",
+                  authorLogin: comment.user?.login ?? undefined,
+                }))
+                .filter((comment) => comment.body.trim().length > 0);
+              state.readPullRequestReview = true;
+              await emitTool(toolName, "completed", "Read pull request review feedback", {
+                ...pullRef,
+                reviewCount: reviews.length,
+                commentCount: comments.length,
+              });
+              return { pullRequestNumber, reviews, comments };
+            } catch (error) {
+              await emitTool(toolName, "failed", "Reading pull request review feedback failed", {
+                ...pullRef,
+                errorMessage:
+                  error instanceof Error ? error.message : "Unknown GitHub tool failure",
+              });
+              throw error;
+            }
+          },
+        });
+
   const postProgressComment = defineTool({
     name: "post_issue_progress_comment",
     description: `Post a progress comment on the issue as ${displayName}. Use for status updates while implementing.`,
@@ -342,5 +479,13 @@ export function createGitHubImplementationTools(
     },
   });
 
-  return { state, tools: [readIssue, readIssueComments, postProgressComment] };
+  return {
+    state,
+    tools: [
+      readIssue,
+      readIssueComments,
+      ...(readPullRequestReview ? [readPullRequestReview] : []),
+      postProgressComment,
+    ],
+  };
 }

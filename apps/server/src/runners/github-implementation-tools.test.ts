@@ -74,6 +74,38 @@ function createFakeClient(calls: Call[]): ImplementationGitHubClient {
           calls.push({ method: "pulls.create", input });
           return { data: { number: 7, html_url: "https://github.test/pull/7", state: "open" } };
         },
+        async listReviews(input) {
+          calls.push({ method: "pulls.listReviews", input });
+          return {
+            data: [
+              // An empty-body approval — filtered out as noise.
+              { id: 10, body: "", state: "approved", user: { login: "someone" } },
+              {
+                id: 11,
+                body: "Please add a test and rename the export.",
+                state: "changes_requested",
+                user: { login: "coworker-reviewer[bot]" },
+                submitted_at: "2026-07-11T00:00:00Z",
+              },
+            ],
+          };
+        },
+        async listReviewComments(input) {
+          calls.push({ method: "pulls.listReviewComments", input });
+          return {
+            data: [
+              {
+                id: 20,
+                body: "This name is misleading.",
+                path: "src/widget.ts",
+                line: 12,
+                user: { login: "coworker-reviewer[bot]" },
+              },
+              // An empty comment body — filtered out.
+              { id: 21, body: "", path: "src/widget.ts", line: 30, user: { login: "ghost" } },
+            ],
+          };
+        },
       },
     },
   };
@@ -136,6 +168,78 @@ describe("GitHub implementation tools", () => {
         "post_issue_progress_comment.completed",
       ]),
     );
+  });
+
+  test("read_pull_request_review is bound to the run's PR and returns the reviewer's requested changes", async () => {
+    const events: SandboxLifecycleEvent[] = [];
+    const calls: Call[] = [];
+    const client = createFakeClient(calls);
+    const { tools, state } = createGitHubImplementationTools(createInput(events), {
+      client,
+      issueNumber: 42,
+      // A babysit fix round: bound to the existing pull request.
+      pullRequestNumber: 7,
+    });
+
+    const result = (await toolByName(tools, "read_pull_request_review").run({
+      signal: undefined,
+    })) as {
+      pullRequestNumber: number;
+      reviews: Array<{ state: string; body: string; authorLogin?: string; submittedAt?: string }>;
+      comments: Array<{ path?: string; line?: number; body: string; authorLogin?: string }>;
+    };
+
+    // Both reads target the trusted PR number the run supplied, never a model value.
+    for (const call of calls) {
+      expect(call.input).toMatchObject({ owner: "octo-org", repo: "widgets", pull_number: 7 });
+    }
+    expect(calls.map((call) => call.method)).toEqual(
+      expect.arrayContaining(["pulls.listReviews", "pulls.listReviewComments"]),
+    );
+
+    expect(result.pullRequestNumber).toBe(7);
+    // The empty-body approval is filtered; the changes-requested review survives.
+    expect(result.reviews).toEqual([
+      {
+        state: "changes_requested",
+        body: "Please add a test and rename the export.",
+        authorLogin: "coworker-reviewer[bot]",
+        submittedAt: "2026-07-11T00:00:00Z",
+      },
+    ]);
+    // The empty inline comment is filtered; the substantive one survives with its
+    // file + line anchor.
+    expect(result.comments).toEqual([
+      {
+        path: "src/widget.ts",
+        line: 12,
+        body: "This name is misleading.",
+        authorLogin: "coworker-reviewer[bot]",
+      },
+    ]);
+    expect(state.readPullRequestReview).toBe(true);
+    expect(
+      events
+        .filter((event) => event.type === "github.tool")
+        .map((event) => `${event.toolName}.${event.status}`),
+    ).toContain("read_pull_request_review.completed");
+  });
+
+  test("read_pull_request_review is absent on a first implementation run (no PR yet)", () => {
+    const events: SandboxLifecycleEvent[] = [];
+    const calls: Call[] = [];
+    const client = createFakeClient(calls);
+    // No pullRequestNumber — the first implementation run has no PR to read.
+    const { tools } = createGitHubImplementationTools(createInput(events), {
+      client,
+      issueNumber: 42,
+    });
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "read_issue",
+      "read_issue_comments",
+      "post_issue_progress_comment",
+    ]);
   });
 
   test("openPullRequest sends a Closes #<n> body and the branch + base refs", async () => {

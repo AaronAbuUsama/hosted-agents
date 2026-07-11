@@ -9,7 +9,7 @@ import { Hono } from "hono";
 import type { GitHubWebhookDelivery as FlueGitHubWebhookDelivery } from "@flue/github";
 import type { db as productionDb } from "@hosted-agents/db";
 import * as schema from "@hosted-agents/db/schema/index";
-import { loadRepositoryIssuesRevision } from "@hosted-agents/api/issues/sync";
+import { loadIssueOverlays, loadRepositoryIssuesRevision } from "@hosted-agents/api/issues/sync";
 import type { GitHubWebhookAdmission } from "./github-webhook";
 
 process.env.SKIP_ENV_VALIDATION = "true";
@@ -267,6 +267,8 @@ async function createTables(client: TestClient) {
       "claimed_by_worker_role" text,
       "claimed_by_run_id" text,
       "claimed_at" integer,
+      "babysit_round" integer DEFAULT 0 NOT NULL,
+      "babysit_blocked_reason" text,
       "github_created_at" integer,
       "github_updated_at" integer,
       "created_at" integer DEFAULT 0 NOT NULL,
@@ -378,10 +380,14 @@ async function seedCoderInstallationTarget(database: TestDatabase) {
   });
 }
 
-function createWebhookApp(database: TestDatabase) {
+function createWebhookApp(
+  database: TestDatabase,
+  deps?: NonNullable<Parameters<typeof createGitHubWebhookChannel>[0]>["deps"],
+) {
   const channel = createGitHubWebhookChannel({
     database,
     webhookSecret: WEBHOOK_SECRET,
+    deps,
   });
   if (!channel) {
     throw new Error("expected test webhook channel to be configured");
@@ -441,7 +447,11 @@ async function signBody(body: string) {
   return `sha256=${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function pullRequestPayload(action: string) {
+function pullRequestPayload(
+  action: string,
+  overrides: { senderType?: string; headRef?: string; pullRequestNumber?: number } = {},
+) {
+  const login = overrides.senderType === "User" ? "octo-maintainer" : "coworker-coder[bot]";
   return {
     action,
     installation: { id: INSTALLATION_ID },
@@ -455,16 +465,19 @@ function pullRequestPayload(action: string) {
       default_branch: "main",
     },
     pull_request: {
-      number: 42,
+      number: overrides.pullRequestNumber ?? 42,
       base: {
         ref: "main",
         sha: "base-sha-123",
       },
       head: {
-        ref: "feature/slice-1",
+        ref: overrides.headRef ?? "feature/slice-1",
         sha: "head-sha-456",
       },
     },
+    // Only attach a sender when a test opts in — the base pull_request cases assert
+    // the review-run path, which must stay untouched by the human-push yield.
+    ...(overrides.senderType ? { sender: { login, type: overrides.senderType } } : {}),
   };
 }
 
@@ -785,6 +798,936 @@ describe("GitHub webhook admission", () => {
   });
 });
 
+const BABYSIT_ISSUE_NUMBER = 7;
+const BABYSIT_PR_NUMBER = 42;
+const BABYSIT_BRANCH = `coder/issue-${BABYSIT_ISSUE_NUMBER}-add-a-widget`;
+
+// A `pull_request_review.submitted` delivery from the Coder app's installation on
+// the Coder-linked repository — the copy the babysit admission acts on. Defaults to
+// the Reviewer bot requesting changes on the Coder's PR; overrides drive the other
+// cases (approved, human actor, a different PR/branch).
+function pullRequestReviewPayload(
+  overrides: {
+    reviewState?: string;
+    senderType?: string;
+    reviewId?: number;
+    pullRequestNumber?: number;
+    headRef?: string;
+    baseRef?: string;
+    installationId?: number;
+    repositoryId?: number;
+  } = {},
+) {
+  const login = overrides.senderType === "User" ? "octo-maintainer" : "coworker-reviewer[bot]";
+  return {
+    action: "submitted",
+    installation: { id: overrides.installationId ?? CODER_INSTALLATION_ID },
+    repository: {
+      id: overrides.repositoryId ?? CODER_GITHUB_REPOSITORY_ID,
+      full_name: "octo-org/widgets",
+      owner: { login: "octo-org" },
+      name: "widgets",
+      html_url: "https://github.com/octo-org/widgets",
+      private: false,
+      default_branch: "main",
+    },
+    pull_request: {
+      number: overrides.pullRequestNumber ?? BABYSIT_PR_NUMBER,
+      state: "open",
+      head: { ref: overrides.headRef ?? BABYSIT_BRANCH },
+      base: { ref: overrides.baseRef ?? "main" },
+    },
+    review: {
+      id: overrides.reviewId ?? 5001,
+      state: overrides.reviewState ?? "changes_requested",
+      user: { login, type: overrides.senderType ?? "Bot" },
+    },
+    sender: { login, type: overrides.senderType ?? "Bot" },
+  };
+}
+
+// Seed a Coder-claimed issue on the Coder-linked repository, with its babysit
+// bookkeeping, so a review admission has a claim to match + increment.
+async function seedCoderClaimedIssue(
+  database: TestDatabase,
+  overrides: {
+    number?: number;
+    linkedPullRequestNumber?: number | null;
+    babysitRound?: number;
+    babysitBlockedReason?: string | null;
+    // Which `github_repository` row the claim is stamped on. Defaults to the Coder
+    // app's row; kick-off actually stamps it on whichever row the board project is
+    // linked through, which may be the Reviewer app's row (see the cross-installation
+    // review-admission test).
+    githubRepositoryId?: string;
+    githubInstallationId?: string;
+  } = {},
+) {
+  const number = overrides.number ?? BABYSIT_ISSUE_NUMBER;
+  await database.insert(schema.githubIssue).values({
+    id: `issue-record-${number}`,
+    organizationId: "org-1",
+    githubInstallationId: overrides.githubInstallationId ?? "installation-record-coder",
+    githubRepositoryId: overrides.githubRepositoryId ?? "repository-record-coder",
+    repositoryFullName: "octo-org/widgets",
+    number,
+    title: "Add a Widget!",
+    state: "open",
+    claimedByWorkerRole: "implementation",
+    claimedByRunId: `run-${number}`,
+    claimedAt: new Date(0),
+    linkedPullRequestNumber:
+      overrides.linkedPullRequestNumber === undefined
+        ? BABYSIT_PR_NUMBER
+        : overrides.linkedPullRequestNumber,
+    linkedPullRequestState: "open",
+    linkedPullRequestMerged: false,
+    babysitRound: overrides.babysitRound ?? 0,
+    babysitBlockedReason: overrides.babysitBlockedReason ?? null,
+  });
+}
+
+describe("GitHub webhook babysit admission", () => {
+  test("a Reviewer changes_requested review under the cap enqueues one fix run on the same branch and bumps the round", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      // One fix round already done; this review is round 2.
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+      const deliveryId = "delivery-babysit-round-2";
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId,
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      expect(response.status).toBe(202);
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission).toMatchObject({
+        ok: true,
+        accepted: true,
+        duplicate: false,
+        event: "pull_request_review",
+        action: "submitted",
+        deliveryId,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+      });
+      expect(admission.agentRunId).toBeTruthy();
+
+      const runs = await database.select().from(schema.agentRun);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        id: admission.agentRunId,
+        organizationId: "org-1",
+        userId: "user-1",
+        providerCredentialId: "credential-1",
+        workerRole: "implementation",
+        workerDisplayName: "The Coder",
+        runType: "github.issue_implementation",
+        sourceProvider: "github",
+        sourceDeliveryId: deliveryId,
+        // The EXISTING Coder branch + PR — the runner resumes it, no new branch/PR.
+        branch: BABYSIT_BRANCH,
+        baseBranch: "main",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        githubInstallationId: "installation-record-coder",
+        githubRepositoryId: "repository-record-coder",
+        pullRequestNumber: BABYSIT_PR_NUMBER,
+        pullRequestHeadRef: BABYSIT_BRANCH,
+        status: "queued",
+        currentStage: "queued",
+      });
+
+      // The round counter advanced 1 → 2 on the claim.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 2, babysitBlockedReason: null });
+
+      const runEvents = await database
+        .select()
+        .from(schema.agentRunEvent)
+        .where(eq(schema.agentRunEvent.runId, admission.agentRunId ?? ""));
+      expect(runEvents.map((event) => event.type)).toEqual([
+        "github.webhook.accepted",
+        "queue.created",
+      ]);
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, deliveryId));
+      expect(delivery).toMatchObject({
+        id: deliveryId,
+        event: "pull_request_review",
+        action: "submitted",
+        status: "accepted",
+        agentRunId: admission.agentRunId,
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("matches the Coder claim by branch name when the linked PR is not yet stamped", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      // No linked-PR stamp yet; the claim is matched by the coder/issue-<n> branch.
+      await seedCoderClaimedIssue(database, { babysitRound: 0, linkedPullRequestNumber: null });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-branch-match",
+        payload: pullRequestReviewPayload({ pullRequestNumber: 99, headRef: BABYSIT_BRANCH }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission).toMatchObject({ accepted: true, issueNumber: BABYSIT_ISSUE_NUMBER });
+      const runs = await database.select().from(schema.agentRun);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        branch: BABYSIT_BRANCH,
+        pullRequestNumber: 99,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+      });
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitRound).toBe(1);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("at the round cap, no run is enqueued: the issue is blocked and the Coder posts an explanation comment", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 3 });
+
+      const postedComments: Array<{
+        installationId: string;
+        owner: string;
+        repo: string;
+        issueNumber: number;
+        body: string;
+      }> = [];
+      const app = createWebhookApp(database, {
+        async postCoderIssueComment(input) {
+          postedComments.push(input);
+        },
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-cap",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        duplicate: false,
+        event: "pull_request_review",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "round_cap_reached",
+      });
+
+      // No fix run — the cap is exhausted.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      // The issue is parked Failed / Blocked (the overlay reads this reason).
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({
+        babysitRound: 3,
+        babysitBlockedReason: "round_cap_reached",
+      });
+
+      // The Coder posted exactly one explanation comment on the issue.
+      expect(postedComments).toHaveLength(1);
+      expect(postedComments[0]).toMatchObject({
+        installationId: String(CODER_INSTALLATION_ID),
+        owner: "octo-org",
+        repo: "widgets",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+      });
+      expect(postedComments[0]?.body).toContain("round cap");
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-cap"));
+      expect(delivery).toMatchObject({
+        status: "blocked:round_cap_reached",
+        agentRunId: null,
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human review yields: no run, the PR is dropped to human-in-the-loop, no comment", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+
+      const postedComments: unknown[] = [];
+      const app = createWebhookApp(database, {
+        async postCoderIssueComment(input) {
+          postedComments.push(input);
+        },
+      });
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-human",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested", senderType: "User" }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "pull_request_review",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_in_the_loop",
+      });
+
+      // Humans always win: no fix run, and no cap comment.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      expect(postedComments).toHaveLength(0);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({
+        // The round is untouched; the stop reason records the human takeover.
+        babysitRound: 1,
+        babysitBlockedReason: "human_in_the_loop",
+      });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-human"));
+      expect(delivery?.status).toBe("yielded:human_in_the_loop");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("once yielded to a human, a later Reviewer changes_requested is a no-op", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 1,
+        babysitBlockedReason: "human_in_the_loop",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-after-yield",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_already_stopped",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a bot approved review does nothing here (C7 owns the approval path)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-approved",
+        payload: pullRequestReviewPayload({ reviewState: "approved" }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "approved_review",
+      });
+      // No run, and the babysit bookkeeping is left untouched for C7.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: null });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a HUMAN approval stops babysitting but keeps the PR mergeable (not Failed / Blocked)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-human-approved",
+        payload: pullRequestReviewPayload({ reviewState: "approved", senderType: "User" }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "pull_request_review",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_approved",
+      });
+
+      // Humans always win: no fix run is dispatched onto a PR a human has approved.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      // The stop is recorded so a later bot changes_requested cannot resume the loop.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: "human_approved" });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-human-approved"));
+      expect(delivery?.status).toBe("yielded:human_approved");
+
+      // Crucially, the board overlay keeps the approved PR OUT of Failed / Blocked —
+      // it stays In PR (mergeable) so C7 can merge it.
+      const overlays = await loadIssueOverlays(database, "repository-record-coder");
+      expect(overlays.get(BABYSIT_ISSUE_NUMBER)).toMatchObject({
+        blocked: false,
+        linkedPullRequest: { state: "open", merged: false },
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  // Regression: a later bot changes_requested after a human approval must not resume.
+  test("after a human approval, a later Reviewer changes_requested is a no-op (loop stays stopped)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 1,
+        babysitBlockedReason: "human_approved",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-after-approval",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_already_stopped",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  // Finding 3: the claim is stamped by kick-off on whichever repo row the board
+  // project is linked through — here the Reviewer app's row (repository-record-1),
+  // NOT the Coder app's row the review resolves under. A repo-row-id scoped lookup
+  // would miss it and drop the review as no_matching_coder_issue, leaving the whole
+  // loop inert. The (org, repo full name) finder matches it across installations.
+  test("matches a claim stamped on a DIFFERENT installation's repo row (cross-installation topology)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      // Claim lives on the Reviewer app's repo row, not the Coder app's.
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 1,
+        githubRepositoryId: "repository-record-1",
+        githubInstallationId: "installation-record-1",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-cross-install",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested" }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission).toMatchObject({
+        accepted: true,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+      });
+      // The fix run was enqueued and the round advanced on the claim, despite the
+      // claim living on the other installation's repo row.
+      const runs = await database.select().from(schema.agentRun);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        branch: BABYSIT_BRANCH,
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        pullRequestNumber: BABYSIT_PR_NUMBER,
+      });
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitRound).toBe(2);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a redelivery of the same review is a duplicate — one run, round bumped once", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+      const deliveryId = "delivery-babysit-dup";
+      const payload = pullRequestReviewPayload({ reviewState: "changes_requested" });
+
+      const first = (await (
+        await postGitHubWebhook({ app, event: "pull_request_review", deliveryId, payload })
+      ).json()) as GitHubWebhookAdmission;
+      expect(first.accepted).toBe(true);
+
+      const second = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId,
+        payload,
+      });
+      expect((await second.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        duplicate: true,
+        agentRunId: first.agentRunId,
+        reason: "duplicate_delivery",
+      });
+
+      // Exactly one run, and the round advanced exactly once.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(1);
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitRound).toBe(2);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a second distinct review while a fix run is still queued does not stack a second run or spend a round", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      // First review enqueues the fix run (still queued — the worker hasn't run).
+      await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-inflight-1",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested", reviewId: 6001 }),
+      });
+
+      // A second, DISTINCT review delivery for the same PR arrives before the fix
+      // lands (a distinct delivery id, so the ledger does not dedup it).
+      const second = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-inflight-2",
+        payload: pullRequestReviewPayload({ reviewState: "changes_requested", reviewId: 6002 }),
+      });
+      expect((await second.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_run_in_flight",
+      });
+
+      // Still exactly one run, and the round advanced only once (1 → 2).
+      expect(await database.select().from(schema.agentRun)).toHaveLength(1);
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitRound).toBe(2);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("ignores the Reviewer app's copy of the review — only the Coder app's copy babysits", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      // The reviewer app (installation-record-1 / hosted-agents slug) delivers its
+      // copy on the reviewer-linked repository — its worker role is code_review.
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-reviewer-copy",
+        payload: pullRequestReviewPayload({
+          installationId: INSTALLATION_ID,
+          repositoryId: GITHUB_REPOSITORY_ID,
+        }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "installation_app_not_coder",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-babysit-reviewer-copy"));
+      expect(delivery?.status).toBe("ignored:installation_app_not_coder");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("ignores a review on a PR that no Coder-claimed issue owns", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      // No claimed issue seeded for this PR/branch.
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-no-claim",
+        payload: pullRequestReviewPayload({
+          pullRequestNumber: 777,
+          headRef: "feature/human-work",
+        }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "no_matching_coder_issue",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("acknowledges a non-submitted review action without side effects", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request_review",
+        deliveryId: "delivery-babysit-dismissed",
+        payload: { ...pullRequestReviewPayload(), action: "dismissed" },
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "event_not_admitted",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      // A non-submitted action never claims a delivery-ledger row.
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  // Humans always win (spec #21 story 8): a human push to a Coder-owned PR ends
+  // babysitting. Without this the Reviewer's re-review of the human push would
+  // dispatch the Coder onto the human's branch for the remaining rounds.
+  test("a human push (synchronize) to a Coder-owned PR yields: no review run, PR dropped to human-in-the-loop", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-human-push",
+        payload: pullRequestPayload("synchronize", {
+          senderType: "User",
+          headRef: BABYSIT_BRANCH,
+          pullRequestNumber: BABYSIT_PR_NUMBER,
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "pull_request",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_in_the_loop",
+      });
+
+      // Humans always win: no Reviewer run is queued for the human's push.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({
+        // The round is untouched; the stop reason records the human takeover.
+        babysitRound: 1,
+        babysitBlockedReason: "human_in_the_loop",
+      });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-human-push"));
+      expect(delivery?.status).toBe("yielded:human_in_the_loop");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("the Coder's own fix push (bot synchronize) still triggers a re-review — the loop is untouched", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-bot-push",
+        payload: pullRequestPayload("synchronize", {
+          senderType: "Bot",
+          headRef: BABYSIT_BRANCH,
+          pullRequestNumber: BABYSIT_PR_NUMBER,
+        }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission.accepted).toBe(true);
+      expect(admission.agentRunId).toBeTruthy();
+
+      // A bot push is the intended re-review trigger — one review run, no yield.
+      const runs = await database.select().from(schema.agentRun);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ workerRole: "code_review" });
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: null });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human push to a PR no Coder-claimed issue owns still queues a review (Reviewer runs freely)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      // No Coder claim for this PR/branch — it is an ordinary human PR.
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-human-push-no-claim",
+        payload: pullRequestPayload("synchronize", {
+          senderType: "User",
+          headRef: "feature/human-work",
+          pullRequestNumber: 999,
+        }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission.accepted).toBe(true);
+      expect(await database.select().from(schema.agentRun)).toHaveLength(1);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human comment on a Coder-owned PR yields babysitting: no run, PR dropped to human-in-the-loop", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-human-comment",
+        payload: issueCommentPayload("created", {
+          number: BABYSIT_PR_NUMBER,
+          prShaped: true,
+          senderType: "User",
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "issue_comment",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_in_the_loop",
+      });
+
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      // A PR comment is never synced to the issues board.
+      expect(await database.select().from(schema.githubIssueComment)).toHaveLength(0);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: "human_in_the_loop" });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-human-comment"));
+      expect(delivery?.status).toBe("yielded:human_in_the_loop");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human comment once yielded is a no-op (already stopped), never re-recorded", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 2,
+        babysitBlockedReason: "round_cap_reached",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-human-comment-stopped",
+        payload: issueCommentPayload("created", {
+          number: BABYSIT_PR_NUMBER,
+          prShaped: true,
+          senderType: "User",
+        }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_already_stopped",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      // The prior stop reason is left intact — the human comment does not clobber it.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitBlockedReason).toBe("round_cap_reached");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human comment on a PR no Coder-claimed issue owns is off-board (pull_request_shaped, no ledger row)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      // No Coder claim — an ordinary human PR comment is off the issues board.
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-human-comment-no-claim",
+        payload: issueCommentPayload("created", {
+          number: BABYSIT_PR_NUMBER,
+          prShaped: true,
+          senderType: "User",
+        }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "pull_request_shaped",
+      });
+      // Same as any other PR comment: nothing synced, no ledger row claimed.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 const ISSUE_NODE_GITHUB_ID = 555_000;
 
 function issuePayload(
@@ -830,7 +1773,15 @@ function issuePayload(
 
 function issueCommentPayload(
   action: string,
-  overrides: { number?: number; commentId?: number; body?: string; prShaped?: boolean } = {},
+  overrides: {
+    number?: number;
+    commentId?: number;
+    body?: string;
+    prShaped?: boolean;
+    senderType?: string;
+    installationId?: number;
+    repositoryId?: number;
+  } = {},
 ) {
   const number = overrides.number ?? 7;
   const base = issuePayload("opened", { number });
@@ -844,19 +1795,30 @@ function issueCommentPayload(
       }
     : base.issue;
 
+  const installation =
+    overrides.installationId === undefined ? base.installation : { id: overrides.installationId };
+  const repository =
+    overrides.repositoryId === undefined
+      ? base.repository
+      : { ...base.repository, id: overrides.repositoryId };
+  const login = overrides.senderType === "User" ? "octo-maintainer" : "octocat";
+
   return {
     action,
-    installation: base.installation,
-    repository: base.repository,
+    installation,
+    repository,
     issue,
     comment: {
       id: overrides.commentId ?? 900_100,
       body: overrides.body ?? "A synced comment",
       html_url: `https://github.com/octo-org/widgets/issues/${number}#issuecomment-1`,
-      user: { login: "octocat", avatar_url: "https://avatars.githubusercontent.com/u/1" },
+      user: { login, avatar_url: "https://avatars.githubusercontent.com/u/1" },
       created_at: "2026-07-08T12:00:00Z",
       updated_at: "2026-07-08T12:00:00Z",
     },
+    // Only attach a sender when a test opts in — the base sync cases must keep
+    // routing to the board store, not the human-comment yield.
+    ...(overrides.senderType ? { sender: { login, type: overrides.senderType } } : {}),
   };
 }
 

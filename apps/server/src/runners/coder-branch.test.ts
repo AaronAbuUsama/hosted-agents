@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { coderBranchName, slugifyIssueTitle } from "./coder-branch";
+import { coderBranchName, parseCoderIssueBranch, slugifyIssueTitle } from "./coder-branch";
 
 describe("coder branch naming", () => {
   test("slugifies a title into a safe, lowercased, hyphenated ref segment", () => {
@@ -28,5 +28,20 @@ describe("coder branch naming", () => {
   test("builds the coder/issue-<n>-<slug> branch name", () => {
     expect(coderBranchName(42, "Add a Widget!")).toBe("coder/issue-42-add-a-widget");
     expect(coderBranchName(7, "🚀")).toBe("coder/issue-7-issue");
+  });
+
+  test("recovers the issue number from a coder branch ref, round-tripping coderBranchName", () => {
+    expect(parseCoderIssueBranch("coder/issue-42-add-a-widget")).toBe(42);
+    expect(parseCoderIssueBranch(coderBranchName(7, "🚀"))).toBe(7);
+    expect(parseCoderIssueBranch("  coder/issue-123-fix  ")).toBe(123);
+  });
+
+  test("returns null for any ref that is not a coder/issue-<n>-<slug> branch", () => {
+    // A human's branch, another naming scheme, or a malformed ref is never babysat.
+    expect(parseCoderIssueBranch("feature/slice-1")).toBeNull();
+    expect(parseCoderIssueBranch("main")).toBeNull();
+    expect(parseCoderIssueBranch("coder/issue-abc-thing")).toBeNull();
+    expect(parseCoderIssueBranch("coder/issue-42")).toBeNull();
+    expect(parseCoderIssueBranch("coder/issue--slug")).toBeNull();
   });
 });
