@@ -6,32 +6,28 @@ import {
   GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
   agentRun,
 } from "@hosted-agents/db/schema/agent-runs";
-import { githubInstallation, githubRepository } from "@hosted-agents/db/schema/github";
-import { workerConfig, workerSkill, workerSkillFile } from "@hosted-agents/db/schema/worker-config";
-import { and, asc, eq, inArray, isNull, lt, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
-import {
-  appendAgentRunEvent,
-  appendFlueRunEvent,
-  insertAgentRunArtifact,
-  recordAgentRunSandboxCompleted,
-  recordAgentRunSandboxCreated,
-  recordAgentRunStage,
-} from "./agent-run-events";
+import { appendAgentRunEvent, insertAgentRunArtifact } from "./agent-run-events";
 import {
   CodeReviewSandboxRunError,
-  type CodeReviewSandboxLifecycleEvent,
   type CodeReviewSandboxRunner,
 } from "./code-review-sandbox-runner";
 import { cleanupDaytonaSandboxesByLabels } from "./daytona-code-review-sandbox-runner";
+import {
+  type CreateInstallationAccessToken,
+  type WorkerDatabase,
+  claimNextQueuedGitHubRun,
+  drainQueuedGitHubRuns,
+  failQueuedGitHubRun,
+  queuedRunErrorMessage,
+  recordRunnerEvent,
+  recoverStaleRunningGitHubRuns,
+  resolveQueuedGitHubRunContext,
+} from "./queued-github-run-worker";
 
-type Database = typeof db;
 type AgentRun = typeof agentRun.$inferSelect;
-type WorkerDatabase = Pick<Database, "insert" | "select" | "update" | "transaction">;
-type CreateInstallationAccessToken = (installationId: string) => Promise<string>;
 type CleanupSandboxesByLabels = typeof cleanupDaytonaSandboxesByLabels;
-
-const STALE_RUNNING_RUN_MS = 30 * 60 * 1000;
 
 export type RunQueuedCodeReviewResult =
   | {
@@ -49,44 +45,7 @@ export type RunQueuedCodeReviewResult =
     };
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown code review worker failure";
-}
-
-async function claimNextQueuedGitHubAgentRun(database: WorkerDatabase) {
-  return database.transaction(async (transaction) => {
-    const [candidate] = await transaction
-      .select()
-      .from(agentRun)
-      .where(
-        and(
-          eq(agentRun.sourceProvider, "github"),
-          eq(agentRun.runType, GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE),
-          eq(agentRun.workerRole, CODE_REVIEW_WORKER_ROLE),
-          eq(agentRun.status, "queued"),
-        ),
-      )
-      .orderBy(asc(agentRun.createdAt))
-      .limit(1);
-
-    if (!candidate) {
-      return null;
-    }
-
-    const now = new Date();
-    const [claimed] = await transaction
-      .update(agentRun)
-      .set({
-        status: "running",
-        currentStage: "worker_claimed",
-        startedAt: candidate.startedAt ?? now,
-        lastHeartbeatAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(agentRun.id, candidate.id), eq(agentRun.status, "queued")))
-      .returning();
-
-    return claimed ?? null;
-  });
+  return queuedRunErrorMessage(error, "Unknown code review worker failure");
 }
 
 function requireRunMetadata(run: AgentRun) {
@@ -144,181 +103,22 @@ function requireRunMetadata(run: AgentRun) {
   };
 }
 
-function categoryForStage(stage: string) {
-  if (stage.startsWith("sandbox")) {
-    return "sandbox" as const;
-  }
-  if (stage.startsWith("flue")) {
-    return "flue" as const;
-  }
-  if (stage.startsWith("result")) {
-    return "result" as const;
-  }
-  return "worker" as const;
-}
-
-async function recordRunnerEvent(
-  database: WorkerDatabase,
-  runId: string,
-  event: CodeReviewSandboxLifecycleEvent,
-) {
-  switch (event.type) {
-    case "sandbox.created":
-      await recordAgentRunSandboxCreated(database, {
-        runId,
-        provider: event.sandboxProvider,
-        sandboxId: event.sandboxId,
-        labels: event.labels,
-      });
-      return;
-    case "sandbox.deleted":
-      await recordAgentRunSandboxCompleted(database, {
-        runId,
-        sandboxId: event.sandboxId,
-        status: "deleted",
-      });
-      return;
-    case "sandbox.delete_failed":
-      await recordAgentRunSandboxCompleted(database, {
-        runId,
-        sandboxId: event.sandboxId,
-        status: "delete_failed",
-        errorMessage: event.errorMessage,
-      });
-      return;
-    case "stage":
-      await recordAgentRunStage(database, {
-        runId,
-        category: categoryForStage(event.stage),
-        type: `stage.${event.stage}`,
-        stage: event.stage,
-        message: event.message,
-        payload: event.payload,
-        status: "running",
-      });
-      return;
-    case "flue.event":
-      await appendFlueRunEvent(database, { runId, event: event.event });
-      return;
-    case "github.tool":
-      await appendAgentRunEvent(database, {
-        runId,
-        category: "tool",
-        type: `github.tool.${event.toolName}.${event.status}`,
-        stage: "github_tool",
-        message: event.message,
-        payload: event.payload,
-      });
-      return;
-    case "github.artifact":
-      await insertAgentRunArtifact(database, {
-        runId,
-        name: event.name,
-        contentType: event.contentType,
-        content: event.content,
-        payload: event.payload,
-      });
-      return;
-  }
-}
-
-async function failAgentRun(
-  database: WorkerDatabase,
-  runId: string,
-  message: string,
-  details: { logs?: string; sandboxId?: string } = {},
-) {
-  const now = new Date();
-  await database
-    .update(agentRun)
-    .set({
-      status: "failed",
-      errorMessage: message,
-      sandboxId: details.sandboxId,
-      currentStage: "failed",
-      lastHeartbeatAt: now,
-      completedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(agentRun.id, runId));
-
-  if (details.logs) {
-    await insertAgentRunArtifact(database, {
-      runId,
-      name: "sandbox-execution.log",
-      contentType: "text/plain",
-      content: details.logs,
-    });
-  }
-
-  await appendAgentRunEvent(database, {
-    runId,
-    category: "result",
-    type: "result.failed",
-    stage: "failed",
-    message,
-    payload: { sandboxId: details.sandboxId },
-  });
-}
-
 export async function recoverStaleRunningCodeReviews({
   database = db,
-  staleAfterMs = STALE_RUNNING_RUN_MS,
+  staleAfterMs,
   cleanupSandboxesByLabels = cleanupDaytonaSandboxesByLabels,
 }: {
   database?: WorkerDatabase;
   staleAfterMs?: number;
   cleanupSandboxesByLabels?: CleanupSandboxesByLabels;
 } = {}) {
-  const cutoff = new Date(Date.now() - staleAfterMs);
-  const staleRuns = await database
-    .select()
-    .from(agentRun)
-    .where(
-      and(
-        eq(agentRun.sourceProvider, "github"),
-        eq(agentRun.runType, GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE),
-        eq(agentRun.workerRole, CODE_REVIEW_WORKER_ROLE),
-        eq(agentRun.status, "running"),
-        or(isNull(agentRun.lastHeartbeatAt), lt(agentRun.lastHeartbeatAt, cutoff)),
-      ),
-    );
-
-  for (const run of staleRuns) {
-    try {
-      const cleanupResults = await cleanupSandboxesByLabels({
-        labels: {
-          app: "hosted-agents",
-          workerRole: CODE_REVIEW_WORKER_ROLE,
-          agentRunId: run.id,
-          organizationId: run.organizationId,
-        },
-      });
-      await appendAgentRunEvent(database, {
-        runId: run.id,
-        category: "cleanup",
-        type: "cleanup.stale_sandboxes_by_labels",
-        stage: "stale_recovery",
-        message: "Cleaned up Daytona sandboxes by agent run labels",
-        payload: { cleanupResults },
-      });
-    } catch (error) {
-      await appendAgentRunEvent(database, {
-        runId: run.id,
-        category: "cleanup",
-        type: "cleanup.stale_sandboxes_by_labels_failed",
-        stage: "stale_recovery",
-        message: errorMessage(error),
-        payload: { sandboxId: run.sandboxId },
-      });
-    }
-
-    await failAgentRun(database, run.id, "Recovered stale running agent run.", {
-      sandboxId: run.sandboxId ?? undefined,
-    });
-  }
-
-  return staleRuns.map((run) => ({ agentRunId: run.id, sandboxId: run.sandboxId }));
+  return recoverStaleRunningGitHubRuns({
+    database,
+    runType: GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+    workerRole: CODE_REVIEW_WORKER_ROLE,
+    staleAfterMs,
+    cleanupSandboxesByLabels,
+  });
 }
 
 export async function runNextQueuedCodeReview({
@@ -330,7 +130,10 @@ export async function runNextQueuedCodeReview({
   database?: WorkerDatabase;
   createInstallationAccessToken?: CreateInstallationAccessToken;
 }): Promise<RunQueuedCodeReviewResult> {
-  const run = await claimNextQueuedGitHubAgentRun(database);
+  const run = await claimNextQueuedGitHubRun(database, {
+    runType: GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+    workerRole: CODE_REVIEW_WORKER_ROLE,
+  });
 
   if (!run) {
     return { status: "idle" };
@@ -350,133 +153,11 @@ export async function runNextQueuedCodeReview({
 
   try {
     const metadata = requireRunMetadata(run);
-    await recordAgentRunStage(database, {
-      runId: run.id,
-      category: "worker",
-      type: "worker.installation_lookup",
-      stage: "installation_lookup",
-      message: "Looking up linked GitHub installation",
-      status: "running",
+    const context = await resolveQueuedGitHubRunContext(database, run, {
+      createInstallationAccessToken,
+      defaultDisplayName: CODE_REVIEW_WORKER_DISPLAY_NAME,
     });
-
-    const [installation] = await database
-      .select()
-      .from(githubInstallation)
-      .where(eq(githubInstallation.id, metadata.githubInstallationId))
-      .limit(1);
-
-    if (!installation) {
-      throw new Error("Linked GitHub installation record was not found.");
-    }
-
-    if (installation.status !== "connected") {
-      throw new Error(`Linked GitHub installation is ${installation.status}.`);
-    }
-
-    await recordAgentRunStage(database, {
-      runId: run.id,
-      category: "worker",
-      type: "worker.repository_lookup",
-      stage: "repository_lookup",
-      message: "Looking up selected GitHub repository",
-      status: "running",
-    });
-
-    const [repository] = await database
-      .select()
-      .from(githubRepository)
-      .where(eq(githubRepository.id, metadata.githubRepositoryId))
-      .limit(1);
-
-    if (!repository || !repository.selected) {
-      throw new Error("Linked GitHub repository record was not found or is not selected.");
-    }
-
-    await recordAgentRunStage(database, {
-      runId: run.id,
-      category: "worker",
-      type: "worker.config_lookup",
-      stage: "config_lookup",
-      message: "Loading worker configuration and skills",
-      status: "running",
-    });
-
-    const [configuration] = await database
-      .select()
-      .from(workerConfig)
-      .where(
-        and(
-          eq(workerConfig.organizationId, run.organizationId),
-          eq(workerConfig.workerRole, run.workerRole),
-        ),
-      )
-      .limit(1);
-    const enabledSkills = await database
-      .select()
-      .from(workerSkill)
-      .where(
-        and(
-          eq(workerSkill.organizationId, run.organizationId),
-          eq(workerSkill.workerRole, run.workerRole),
-          eq(workerSkill.enabled, true),
-        ),
-      )
-      .orderBy(asc(workerSkill.name));
-    // A skill is a bundle of markdown files with a SKILL.md entry; load every
-    // file of every enabled bundle for the sandbox upload.
-    const skillFiles =
-      enabledSkills.length > 0
-        ? await database
-            .select()
-            .from(workerSkillFile)
-            .where(
-              inArray(
-                workerSkillFile.skillId,
-                enabledSkills.map((skill) => skill.id),
-              ),
-            )
-            .orderBy(asc(workerSkillFile.path))
-        : [];
-    const skillBundles = enabledSkills.map((skill) => ({
-      name: skill.name,
-      files: skillFiles
-        .filter((file) => file.skillId === skill.id)
-        .map((file) => ({ path: file.path, content: file.content })),
-    }));
-
-    const workerDisplayName = configuration?.displayName?.trim() || metadata.workerDisplayName;
-
-    await appendAgentRunEvent(database, {
-      runId: run.id,
-      category: "worker",
-      type: "worker.config_loaded",
-      stage: "config_lookup",
-      message:
-        enabledSkills.length > 0
-          ? `Loaded worker configuration with ${enabledSkills.length} skill${
-              enabledSkills.length === 1 ? "" : "s"
-            }`
-          : "Loaded worker configuration",
-      payload: {
-        hasConfiguration: Boolean(configuration),
-        configuredModel: configuration?.model ?? null,
-        configuredReasoningEffort: configuration?.reasoningEffort ?? null,
-        hasInstructions: Boolean(configuration?.instructions?.trim()),
-        skills: enabledSkills.map((skill) => skill.name),
-      },
-    });
-
-    await recordAgentRunStage(database, {
-      runId: run.id,
-      category: "worker",
-      type: "worker.installation_token",
-      stage: "installation_token",
-      message: "Creating GitHub installation access token",
-      status: "running",
-    });
-    const installationAccessToken = await createInstallationAccessToken(
-      installation.installationId,
-    );
+    const { configuration, workerDisplayName } = context;
 
     const result = await runner.run({
       agentRunId: run.id,
@@ -486,12 +167,12 @@ export async function runNextQueuedCodeReview({
       configuredModel: configuration?.model ?? undefined,
       configuredReasoningEffort: configuration?.reasoningEffort ?? undefined,
       configuredInstructions: configuration?.instructions ?? undefined,
-      skills: skillBundles,
+      skills: context.skills,
       providerCredentialId: run.providerCredentialId ?? undefined,
       githubInstallationId: metadata.githubInstallationId,
       githubRepositoryId: metadata.githubRepositoryId,
-      installationId: installation.installationId,
-      installationAccessToken,
+      installationId: context.installation.installationId,
+      installationAccessToken: context.installationAccessToken,
       owner: metadata.owner,
       repo: metadata.repo,
       pullRequestNumber: metadata.pullRequestNumber,
@@ -558,7 +239,7 @@ export async function runNextQueuedCodeReview({
     };
   } catch (error) {
     const message = errorMessage(error);
-    await failAgentRun(database, run.id, message, {
+    await failQueuedGitHubRun(database, run.id, message, {
       logs: error instanceof CodeReviewSandboxRunError ? error.logs : undefined,
       sandboxId: error instanceof CodeReviewSandboxRunError ? error.sandboxId : undefined,
     });
@@ -584,24 +265,9 @@ export async function drainQueuedCodeReviews({
   limit?: number;
   recoverStaleRuns?: boolean;
 }) {
-  if (recoverStaleRuns) {
-    await recoverStaleRunningCodeReviews({ database });
-  }
-
-  const results: RunQueuedCodeReviewResult[] = [];
-
-  for (let index = 0; index < limit; index += 1) {
-    const result = await runNextQueuedCodeReview({
-      runner,
-      database,
-      createInstallationAccessToken,
-    });
-    results.push(result);
-
-    if (result.status === "idle") {
-      break;
-    }
-  }
-
-  return results;
+  return drainQueuedGitHubRuns<RunQueuedCodeReviewResult>({
+    limit,
+    recoverStale: recoverStaleRuns ? () => recoverStaleRunningCodeReviews({ database }) : undefined,
+    runOne: () => runNextQueuedCodeReview({ runner, database, createInstallationAccessToken }),
+  });
 }
