@@ -5,6 +5,7 @@ import {
   deriveStage,
   isAgentClaimable,
   type IssueStage,
+  type LinkedPullRequestState,
   type StageInput,
 } from "./stage";
 
@@ -16,6 +17,9 @@ import {
 export type BoardIssue = GitHubIssueSummary & {
   stage: IssueStage;
   claimable: boolean;
+  // The pull request linked to this issue (from our store's overlay), for the
+  // board's "Pull request" column. Null when no PR is linked yet.
+  linkedPullRequest: LinkedPullRequestState | null;
 };
 
 export type BoardColumn = {
@@ -61,11 +65,17 @@ export function buildBoard(
   const byStage = new Map(columns.map((column) => [column.stage, column]));
 
   for (const issue of issues) {
-    const input = stageInputFor(issue, overlays.get(issue.number));
+    const overlay = overlays.get(issue.number);
+    const input = stageInputFor(issue, overlay);
     const stage = deriveStage(input);
     const column = byStage.get(stage);
     if (column) {
-      column.issues.push({ ...issue, stage, claimable: isAgentClaimable(input) });
+      column.issues.push({
+        ...issue,
+        stage,
+        claimable: isAgentClaimable(input),
+        linkedPullRequest: overlay?.linkedPullRequest ?? null,
+      });
     }
   }
 

@@ -34,25 +34,46 @@ import { mapBoardLoadError } from "@/lib/board-load-error";
 import { createKickOffHandlers } from "@/lib/issue-kickoff";
 import { isLaneExpanded, toggleLaneCollapsed } from "@/lib/issues-board-lanes";
 import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
+import { countRunsByIssue } from "@/lib/run-view-model";
 import { orpc } from "@/utils/orpc";
 
 type IssuesBoardProps = {
   organizationId: string;
   repositoryId: string;
+  // The repository's "owner/name" label, used to scope this board's org-wide runs
+  // to this repository for the per-issue "Runs" count.
+  repoFullName: string;
   // The repository's installation settings page on GitHub, used only by the
   // error branch's fix CTA when the installation lacks Issues access. Null when
   // it can't be addressed; the CTA is then omitted.
   installationSettingsUrl?: string | null;
 };
 
-// Column widths for the board rows; a leading stage dot, the issue, its labels,
-// a comment count, and when it last moved.
+// A board issue as the list transport returns it (BoardIssue), narrowed to the
+// fields the rows render.
+type BoardIssueRow = {
+  number: number;
+  title: string;
+  stage: string;
+  claimable: boolean;
+  labels: string[];
+  commentCount: number;
+  updatedAt: string | null;
+  linkedPullRequest: { number?: number | null; state: "open" | "closed"; merged: boolean } | null;
+};
+
+// Column widths for the board rows, in the runs-table language: a leading stage
+// dot, the issue, its labels, the linked PR, its run count, comments, when it
+// last moved, and a trailing Kick-off action slot.
 const columns: TableColumn<Record<string, unknown>>[] = [
   { key: "stage", header: "", width: pixel(44) },
   { key: "issue", header: "Issue", width: proportional(1) },
-  { key: "labels", header: "Labels", width: pixel(240) },
+  { key: "labels", header: "Labels", width: pixel(200) },
+  { key: "pr", header: "Pull request", width: pixel(140) },
+  { key: "runs", header: "Runs", width: pixel(80) },
   { key: "comments", header: "Comments", width: pixel(96) },
   { key: "updated", header: "Updated", width: pixel(96) },
+  { key: "action", header: "", width: pixel(120) },
 ];
 
 const groupHeaderCell: CSSProperties = {
@@ -60,6 +81,29 @@ const groupHeaderCell: CSSProperties = {
   backgroundColor: "var(--color-background-muted)",
   padding: "var(--spacing-3) var(--spacing-4)",
 };
+
+const interactiveRowStyle: CSSProperties = {
+  cursor: "pointer",
+};
+
+// The linked PR, in the board's plain-text column: "PR #57 · open" (or merged /
+// closed). No colored dot — the one status dot per row is the leading stage dot.
+function formatLinkedPullRequest(
+  pr: BoardIssueRow["linkedPullRequest"],
+): string {
+  if (!pr) {
+    return "—";
+  }
+  const state = pr.merged ? "merged" : pr.state;
+  return pr.number ? `PR #${pr.number} · ${state}` : `PR · ${state}`;
+}
+
+function formatRunCount(count: number): string {
+  if (count === 0) {
+    return "—";
+  }
+  return `${count} ${count === 1 ? "run" : "runs"}`;
+}
 
 // The board is a grouped table that reads like a kanban — one lane per pipeline
 // stage. Stage is derived server-side (see the issues service), so there is no
@@ -93,11 +137,23 @@ function formatUpdated(iso: string | null): string {
 export default function IssuesBoard({
   organizationId,
   repositoryId,
+  repoFullName,
   installationSettingsUrl = null,
 }: IssuesBoardProps): ReactElement {
   const router = useRouter();
   const showToast = useToast();
   const input = { organizationId, repositoryId };
+
+  // The org's runs, narrowed client-side to this repo and counted per issue for
+  // the "Runs" column — the same scoping the issue detail's Runs block uses. No
+  // extra API surface; polled on the board's cadence so a new run shows up.
+  const runsQuery = useQuery(
+    orpc.agentRuns.queryOptions({
+      input: { organizationId },
+      refetchInterval: issuesRevisionPollInterval,
+    }),
+  );
+  const runCounts = countRunsByIssue(runsQuery.data ?? [], repoFullName);
 
   // Which stage lanes the user has collapsed. Empty means every lane is expanded
   // (the default), matching the Runs table's collapsible groups (runs-table.tsx).
@@ -259,29 +315,76 @@ export default function IssuesBoard({
                   </TableCell>
                 </TableRow>
                 {expanded
-                  ? column.issues.map((issue) => (
-                      <TableRow
-                        key={issue.number}
-                        onClick={() =>
-                          router.push(`/app/projects/${repositoryId}/issues/${issue.number}`)
-                        }
-                      >
-                        <TableCell>
-                          <Center axis="horizontal">
-                            <StatusDot
-                              variant={stageDotVariant(issue.stage)}
-                              label={column.label}
-                            />
-                          </Center>
-                        </TableCell>
-                        <TableCell>
-                          <HStack gap={2} vAlign="center">
+                  ? column.issues.map((issue) => {
+                      const openIssue = () =>
+                        router.push(`/app/projects/${repositoryId}/issues/${issue.number}`);
+
+                      return (
+                        <TableRow
+                          key={issue.number}
+                          role="link"
+                          tabIndex={0}
+                          style={interactiveRowStyle}
+                          onClick={openIssue}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openIssue();
+                            }
+                          }}
+                        >
+                          <TableCell>
+                            <Center axis="horizontal">
+                              <StatusDot
+                                variant={stageDotVariant(issue.stage)}
+                                label={column.label}
+                              />
+                            </Center>
+                          </TableCell>
+                          <TableCell>
+                            <HStack gap={2} vAlign="center">
+                              <Text type="supporting" color="secondary">
+                                #{issue.number}
+                              </Text>
+                              <Text type="body" maxLines={1}>
+                                {issue.title}
+                              </Text>
+                            </HStack>
+                          </TableCell>
+                          <TableCell>
+                            <HStack gap={1} wrap="wrap">
+                              {issue.labels.length === 0 ? (
+                                <Text type="supporting" color="secondary">
+                                  —
+                                </Text>
+                              ) : (
+                                issue.labels
+                                  .slice(0, 3)
+                                  .map((label) => <Token key={label} label={label} size="sm" />)
+                              )}
+                            </HStack>
+                          </TableCell>
+                          <TableCell>
+                            <Text type="supporting" color="secondary" maxLines={1}>
+                              {formatLinkedPullRequest(issue.linkedPullRequest)}
+                            </Text>
+                          </TableCell>
+                          <TableCell>
                             <Text type="supporting" color="secondary">
-                              #{issue.number}
+                              {formatRunCount(runCounts.get(issue.number) ?? 0)}
                             </Text>
-                            <Text type="body" maxLines={1}>
-                              {issue.title}
+                          </TableCell>
+                          <TableCell>
+                            <Text type="supporting" color="secondary">
+                              {issue.commentCount > 0 ? String(issue.commentCount) : "—"}
                             </Text>
+                          </TableCell>
+                          <TableCell>
+                            <Text type="supporting" color="secondary">
+                              {formatUpdated(issue.updatedAt)}
+                            </Text>
+                          </TableCell>
+                          <TableCell>
                             {issue.claimable ? (
                               <Button
                                 label="Kick off"
@@ -291,33 +394,10 @@ export default function IssuesBoard({
                                 clickAction={(event) => startKickOff(event, issue.number)}
                               />
                             ) : null}
-                          </HStack>
-                        </TableCell>
-                        <TableCell>
-                          <HStack gap={1} wrap="wrap">
-                            {issue.labels.length === 0 ? (
-                              <Text type="supporting" color="secondary">
-                                —
-                              </Text>
-                            ) : (
-                              issue.labels
-                                .slice(0, 3)
-                                .map((label) => <Token key={label} label={label} size="sm" />)
-                            )}
-                          </HStack>
-                        </TableCell>
-                        <TableCell>
-                          <Text type="supporting" color="secondary">
-                            {issue.commentCount > 0 ? String(issue.commentCount) : "—"}
-                          </Text>
-                        </TableCell>
-                        <TableCell>
-                          <Text type="supporting" color="secondary">
-                            {formatUpdated(issue.updatedAt)}
-                          </Text>
-                        </TableCell>
-                      </TableRow>
-                    ))
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   : null}
               </Fragment>
             );

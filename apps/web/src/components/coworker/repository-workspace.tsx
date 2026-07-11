@@ -79,6 +79,7 @@ export default function RepositoryWorkspace({
           <IssuesBoard
             organizationId={organizationId}
             repositoryId={repositoryId}
+            repoFullName={fullName}
             installationSettingsUrl={installationSettingsUrl}
           />
         ) : (

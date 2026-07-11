@@ -72,6 +72,20 @@ describe("buildBoard", () => {
     expect(column(board, "in_pr")?.issues.map((i) => i.number)).toEqual([3]);
   });
 
+  test("exposes the overlay's linked PR (number + state) on the board issue", () => {
+    const overlays = new Map<number, IssueOverlay>([
+      [3, { claimed: true, linkedPullRequest: { number: 57, state: "open", merged: false } }],
+    ]);
+    const board = buildBoard([issue({ number: 3, labels: [READY_FOR_AGENT_LABEL] })], overlays);
+    const boardIssue = column(board, "in_pr")?.issues[0];
+    expect(boardIssue?.linkedPullRequest).toEqual({ number: 57, state: "open", merged: false });
+  });
+
+  test("board issues without a linked PR carry linkedPullRequest: null", () => {
+    const board = buildBoard([issue({ number: 1 })]);
+    expect(column(board, "backlog")?.issues[0]?.linkedPullRequest).toBeNull();
+  });
+
   test("carries the claimable flag onto each board issue", () => {
     const board = buildBoard([issue({ number: 2, labels: [READY_FOR_AGENT_LABEL] })]);
     const boardIssue = column(board, "ready_for_agent")?.issues[0];

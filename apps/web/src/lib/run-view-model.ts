@@ -245,6 +245,25 @@ export function selectIssueRunRows(
     .map(mapAgentRunToIssueRunRow);
 }
 
+// How many runs worked each issue in one repository, for the board's "Runs"
+// column. Same scoping as selectIssueRunRows (issue number AND repository label,
+// since agentRuns is org-scoped and two repos can share an issue number), but
+// aggregated into a number-keyed count map so the board resolves every lane's
+// rows in one pass. Pure + unit-tested.
+export function countRunsByIssue(
+  runs: readonly AgentRunApiRecord[],
+  repositoryFullName: string,
+): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const run of runs) {
+    if (run.issueNumber === null || repositoryLabel(run) !== repositoryFullName) {
+      continue;
+    }
+    counts.set(run.issueNumber, (counts.get(run.issueNumber) ?? 0) + 1);
+  }
+  return counts;
+}
+
 function mapAgentRunToIssueRunRow(run: AgentRunApiRecord): IssueRunRow {
   const status = mapAgentRunStatus(run.status);
   return {
