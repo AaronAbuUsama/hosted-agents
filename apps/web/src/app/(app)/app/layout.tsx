@@ -7,12 +7,24 @@ import { DEFAULT_ORGANIZATION_NEXT_PATH, createOrganizationHref } from "@/lib/or
 import { client } from "@/utils/orpc";
 
 export default async function CoworkerAppLayout({ children }: { children: React.ReactNode }) {
-  const session = await authClient.getSession({
-    fetchOptions: {
-      headers: await headers(),
-      throw: true,
-    },
-  });
+  const requestHeaders = await headers();
+
+  let session: Awaited<ReturnType<typeof authClient.getSession>> | null = null;
+  try {
+    session = await authClient.getSession({
+      fetchOptions: {
+        headers: requestHeaders,
+        throw: true,
+      },
+    });
+  } catch {
+    // The API is unreachable (or rejected the request) during SSR. A full page load
+    // must not 500 the whole app (issue #53: unguarded `throw: true` turned any
+    // hard navigation while the API was down into an unhandled "fetch failed").
+    // Send the user to /login, which lives outside this layout and renders without
+    // the API. `redirect` throws NEXT_REDIRECT, which propagates out of this catch.
+    redirect("/login");
+  }
 
   if (!session?.user) {
     redirect("/login");

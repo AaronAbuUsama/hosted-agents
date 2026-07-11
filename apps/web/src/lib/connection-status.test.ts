@@ -13,9 +13,41 @@ import {
   createConnectionStatusReporter,
   initialConnectionState,
   isConnectivityError,
+  reconnectingToast,
   reduceConnectionError,
   reduceConnectionSuccess,
+  suppressesGlobalErrorToast,
+  RENDERS_ERROR_INLINE,
 } from "./connection-status";
+
+// A faithful-enough model of the Astryx toast viewport for the self-heal contract:
+// every show() gets a fresh internal id, but toasts dedupe by uniqueID. The dismiss
+// handle returned by show() is bound to THAT call's id — so under collisionBehavior
+// "ignore", a colliding show is dropped yet still returns a dismiss for an id that was
+// never added (a dead handle). This is the exact Astryx behavior behind issue #53's
+// stuck indicator; a reporter that survives it must not depend on such a dead handle.
+function fakeViewport() {
+  let counter = 0;
+  const onScreen = new Map<string, number>(); // uniqueID -> current internal id
+  const show = (options: ToastOptions): ToastDismissFn => {
+    const id = ++counter;
+    const uid = options.uniqueID ?? `anon-${id}`;
+    const existing = onScreen.get(uid);
+    if (existing !== undefined && options.collisionBehavior === "ignore") {
+      // Dropped — but Astryx still hands back a dismiss for this never-added id.
+      return () => {
+        /* dead: nothing on screen carries `id` */
+      };
+    }
+    onScreen.set(uid, id); // add, or overwrite the existing entry in place
+    return () => {
+      if (onScreen.get(uid) === id) {
+        onScreen.delete(uid);
+      }
+    };
+  };
+  return { show, isVisible: (uid: string) => onScreen.has(uid) };
+}
 
 // oRPC surfaces an unreachable/restarting API as an error carrying an HTTP status
 // (503 Service Unavailable, 502, …). A dead server rejects fetch with a TypeError
@@ -56,6 +88,15 @@ describe("isConnectivityError", () => {
     expect(isConnectivityError(new Error("resource not accessible by integration"))).toBe(false);
     expect(isConnectivityError("some validation failed")).toBe(false);
     expect(isConnectivityError(null)).toBe(false);
+  });
+});
+
+describe("suppressesGlobalErrorToast", () => {
+  test("true only when the query meta opts out of the global toast", () => {
+    expect(suppressesGlobalErrorToast({ [RENDERS_ERROR_INLINE]: true })).toBe(true);
+    expect(suppressesGlobalErrorToast({ [RENDERS_ERROR_INLINE]: false })).toBe(false);
+    expect(suppressesGlobalErrorToast({ other: true })).toBe(false);
+    expect(suppressesGlobalErrorToast(undefined)).toBe(false);
   });
 });
 
@@ -198,5 +239,27 @@ describe("createConnectionStatusReporter (10s-outage acceptance)", () => {
     expect(shown).toHaveLength(2);
     expect(shown[0]?.uniqueID).toBe(shown[1]?.uniqueID);
     expect(shown[0]?.uniqueID).toBe("query-error:Boom");
+  });
+
+  // Regression for issue #53's stuck indicator: the reconnecting toast must use a
+  // collisionBehavior that yields a LIVE dismiss handle. "ignore" would drop a
+  // colliding show and hand back a dead handle (see fakeViewport), so recovery could
+  // never retract the visible toast.
+  test("the reconnecting toast overwrites (never ignores) so its dismiss handle stays live", () => {
+    expect(reconnectingToast().collisionBehavior).toBe("overwrite");
+  });
+
+  test("recovery removes the reconnecting toast from a viewport modelled on Astryx", () => {
+    const viewport = fakeViewport();
+    const reporter = createConnectionStatusReporter({ notify: viewport.show });
+
+    reporter.reportError(statusError(503));
+    expect(viewport.isVisible(CONNECTION_TOAST_ID)).toBe(true);
+
+    reporter.reportSuccess();
+    // The indicator is gone — the reporter dismissed the toast actually on screen,
+    // not a stale/dead handle. With the old "ignore" config a re-show would have
+    // stranded it here.
+    expect(viewport.isVisible(CONNECTION_TOAST_ID)).toBe(false);
   });
 });

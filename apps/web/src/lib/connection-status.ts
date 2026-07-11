@@ -72,6 +72,16 @@ export function isConnectivityError(error: unknown): boolean {
   return error instanceof TypeError || NETWORK_MESSAGE_PATTERN.test(errorMessage(error));
 }
 
+// A query that renders its own error inline (e.g. the issues board's 403 "no Issues
+// access" state) sets this in its react-query `meta` so the global error handler does
+// NOT also fire a toast for it — otherwise the same failure surfaces twice (issue #53:
+// the Xelmar 403 shows the inline P4 state AND a red toast per board visit).
+export const RENDERS_ERROR_INLINE = "rendersErrorInline";
+
+export function suppressesGlobalErrorToast(meta: Record<string, unknown> | undefined): boolean {
+  return meta?.[RENDERS_ERROR_INLINE] === true;
+}
+
 // ---- retry / backoff policy (consumed by the QueryClient defaults) -------------
 
 // Only connectivity blips are worth retrying; a 403 should fail fast and surface its
@@ -143,9 +153,16 @@ export function reconnectingToast(): ToastOptions {
     // Persist until we explicitly dismiss it on recovery.
     isAutoHide: false,
     uniqueID: CONNECTION_TOAST_ID,
-    // Keep the indicator already on screen rather than replacing (and re-animating)
-    // it every time another query fails.
-    collisionBehavior: "ignore",
+    // "overwrite", not "ignore". Astryx's showToast returns a dismiss handle bound to
+    // a freshly-generated toast id; under "ignore" a colliding show is dropped
+    // (ToastViewport `return prev`) yet still hands back a dismiss for that never-added
+    // id — a dead handle. If the reporter ever captures that handle, recovery can't
+    // retract the visible toast and it sticks (issue #53: "manual X works, self-heal
+    // doesn't"). "overwrite" replaces the entry in place, so every show yields a LIVE
+    // handle to the toast that is actually on screen. The reducer, not this flag, is
+    // what keeps a stream of blips to a single indicator, so nothing re-animates in
+    // the common path.
+    collisionBehavior: "overwrite",
   };
 }
 
@@ -178,6 +195,11 @@ export function createConnectionStatusReporter(deps: {
   function apply(effect: ConnectionEffect): void {
     switch (effect.kind) {
       case "show-reconnecting":
+        // Never strand a prior indicator: retract any handle we still hold before
+        // showing a fresh one. The reducer already guards against a duplicate show in
+        // the common path; this is the belt to that suspenders so a desync between the
+        // phase and the viewport can never leave two (or an undismissable) indicator.
+        dismissReconnecting?.();
         dismissReconnecting = deps.notify(reconnectingToast());
         return;
       case "clear-reconnecting":
