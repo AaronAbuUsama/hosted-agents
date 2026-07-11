@@ -31,6 +31,11 @@ export const env = createEnv({
     GITHUB_CODER_APP_SLUG: z.string().min(1).optional(),
     GITHUB_CODER_APP_PRIVATE_KEY: z.string().min(1).optional(),
     GITHUB_CODER_APP_PRIVATE_KEY_PATH: z.string().min(1).optional(),
+    // C7 auto-merge allow-list: exact `owner/name` full names the Coder may
+    // squash-merge on approval. Comma-/whitespace-separated; case-insensitive.
+    // Unset or empty means nothing auto-merges (the safe default) — every other
+    // repository only gets a "ready to merge" comment. Ships = AaronAbuUsama/test-repo.
+    CODER_AUTOMERGE_REPOS: z.string().optional(),
     GITHUB_CLIENT_ID: z.string().min(1).optional(),
     GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
     GITHUB_WEBHOOK_SECRET: z.string().min(16).optional(),
