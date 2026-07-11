@@ -132,8 +132,10 @@ export async function runNextQueuedImplementation({
       owner: repository.owner,
       repo: repository.name,
       defaultBranch: repository.defaultBranch ?? run.baseBranch ?? "main",
-      // Issue linkage (issueNumber/title/body) is populated once kick-off (C4)
-      // adds it to the run; unset here so the seam stays forward-compatible.
+      // The issue this run implements — kick-off (C4) stamps it on the run. Title
+      // and body stay unset here; the write-capable runner (C5) reads the live
+      // issue + comments itself, so the seam only needs the number to link them.
+      issueNumber: run.issueNumber ?? undefined,
       onEvent: (event) => recordRunnerEvent(database, run.id, event),
     });
 
