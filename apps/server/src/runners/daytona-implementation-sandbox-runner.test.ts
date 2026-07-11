@@ -1,0 +1,321 @@
+import { describe, expect, test } from "bun:test";
+
+process.env.SKIP_ENV_VALIDATION = "true";
+process.env.DATABASE_URL = ":memory:";
+process.env.BETTER_AUTH_SECRET = "test-better-auth-secret-32-bytes";
+process.env.BETTER_AUTH_URL = "http://localhost:3000";
+process.env.CORS_ORIGIN = "http://localhost:3000";
+process.env.NODE_ENV = "test";
+
+import type { SandboxLifecycleEvent } from "./sandbox-lifecycle-event";
+import type { ImplementationSandboxRunInput } from "./implementation-sandbox-runner";
+import type {
+  ImplementationDaytonaClient,
+  ImplementationSandbox,
+  RunImplementationAgent,
+} from "./daytona-implementation-sandbox-runner";
+import type { ImplementationGitHubClient } from "./github-implementation-tools";
+
+// Value import is dynamic (after the env vars above) because the runner module
+// imports the validated server env at load; a static import would be hoisted ahead
+// of the env setup and fail validation.
+const { DaytonaImplementationSandboxRunner } =
+  await import("./daytona-implementation-sandbox-runner");
+
+// A fake Daytona sandbox that records every command it is asked to run and returns
+// canned output. `git status --porcelain` reports a dirty tree so the runner commits;
+// everything else succeeds with empty output. The runner never touches a real
+// Daytona or a real model — the git flow is what is under test.
+type RecordedCommand = { command: string; cwd?: string };
+
+function createFakeSandbox(commands: RecordedCommand[], uploads: string[]) {
+  let deleted = false;
+  const sandbox: ImplementationSandbox & { deleted: () => boolean } = {
+    id: "sandbox-under-test",
+    process: {
+      async executeCommand(command, cwd) {
+        commands.push({ command, cwd });
+        if (command.includes("git status --porcelain")) {
+          return { result: " M src/widget.ts\n", exitCode: 0 };
+        }
+        if (command.includes("git rev-parse")) {
+          return { result: "abc123\n", exitCode: 0 };
+        }
+        return { result: "", exitCode: 0 };
+      },
+    },
+    fs: {
+      async uploadFile(_content, path) {
+        uploads.push(path);
+      },
+    },
+    async delete() {
+      deleted = true;
+    },
+    deleted: () => deleted,
+  };
+  return sandbox;
+}
+
+type PullsCreateCall = Record<string, unknown>;
+
+function createFakeGitHubClient(record: {
+  pullsCreate: PullsCreateCall[];
+  issueComments: Record<string, unknown>[];
+}): ImplementationGitHubClient {
+  return {
+    rest: {
+      issues: {
+        async get() {
+          return {
+            data: {
+              number: 42,
+              title: "Add a Widget!",
+              body: "Please add a widget.",
+              state: "open",
+              html_url: "https://github.test/issues/42",
+              user: { login: "maintainer" },
+            },
+          };
+        },
+        async listComments() {
+          return { data: [] };
+        },
+        async createComment(input) {
+          record.issueComments.push(input);
+          return { data: { id: 900, html_url: "https://github.test/comment/900" } };
+        },
+      },
+      pulls: {
+        async create(input) {
+          record.pullsCreate.push(input);
+          return { data: { number: 7, html_url: "https://github.test/pull/7", state: "open" } };
+        },
+      },
+    },
+  };
+}
+
+function createInput(
+  events: SandboxLifecycleEvent[],
+  overrides: Partial<ImplementationSandboxRunInput> = {},
+): ImplementationSandboxRunInput {
+  return {
+    agentRunId: "impl-run-1",
+    organizationId: "org-1",
+    workerRole: "implementation",
+    workerDisplayName: "The Coder",
+    githubInstallationId: "installation-record-1",
+    githubRepositoryId: "repository-record-1",
+    installationId: "654321",
+    installationAccessToken: "secret-coder-token",
+    appSlug: "localhost-the-coder",
+    owner: "octo-org",
+    repo: "widgets",
+    defaultBranch: "main",
+    issueNumber: 42,
+    onEvent: async (event) => {
+      events.push(event);
+    },
+    ...overrides,
+  };
+}
+
+describe("DaytonaImplementationSandboxRunner (to the model step, stub agent)", () => {
+  test("checks out, branches, commits, scrubs the pushed remote, and opens a Closes-# PR", async () => {
+    const commands: RecordedCommand[] = [];
+    const uploads: string[] = [];
+    const sandbox = createFakeSandbox(commands, uploads);
+    const client: ImplementationDaytonaClient = {
+      async create() {
+        return sandbox;
+      },
+    };
+    const record = {
+      pullsCreate: [] as PullsCreateCall[],
+      issueComments: [] as Record<string, unknown>[],
+    };
+    const githubClient = createFakeGitHubClient(record);
+
+    // The stub agent stands in for the Flue/model call — it makes no assertions
+    // about the model; the git flow around it is what is under test.
+    const agentCalls: string[] = [];
+    const runAgent: RunImplementationAgent = async ({ issue, input }) => {
+      agentCalls.push(`${input.agentRunId}:${issue.number}`);
+      return { summary: "Added the widget component and a test." };
+    };
+
+    const runner = new DaytonaImplementationSandboxRunner({
+      createClient: () => client,
+      createGitHubClient: () => githubClient,
+      runAgent,
+    });
+
+    const events: SandboxLifecycleEvent[] = [];
+    const result = await runner.run(createInput(events));
+
+    // Branch named from the live issue title, cut with `git switch -c`.
+    const commandLine = commands.map((entry) => entry.command);
+    expect(
+      commandLine.some((command) =>
+        command.includes("git switch -c 'coder/issue-42-add-a-widget'"),
+      ),
+    ).toBe(true);
+
+    // Full checkout of the default branch (not the review runner's --no-checkout).
+    const cloneCommand = commandLine.find((command) => command.includes("git clone"));
+    expect(cloneCommand).toContain("--single-branch --branch 'main'");
+    // The clone embeds the token, and the remote is scrubbed right after.
+    expect(cloneCommand).toContain("x-access-token:secret-coder-token@github.com");
+
+    // A commit happens because the tree is dirty.
+    expect(commandLine.some((command) => command.startsWith("git commit -m"))).toBe(true);
+
+    // Push flow: re-embed token → push → scrub back to the tokenless remote.
+    const embedIndex = commandLine.findIndex(
+      (command) =>
+        command.includes("git remote set-url origin") &&
+        command.includes("x-access-token:secret-coder-token@github.com"),
+    );
+    const pushIndex = commandLine.findIndex((command) => command.includes("git push"));
+    const isTokenlessRemoteSet = (command: string) =>
+      command.includes("git remote set-url origin") &&
+      command.includes("https://github.com/octo-org/widgets.git") &&
+      !command.includes("x-access-token");
+    const scrubIndexes = commandLine
+      .map((command, index) => (isTokenlessRemoteSet(command) ? index : -1))
+      .filter((index) => index >= 0);
+    expect(embedIndex).toBeGreaterThanOrEqual(0);
+    expect(pushIndex).toBeGreaterThan(embedIndex);
+    // The last thing done to the remote after pushing is scrubbing the token out.
+    const lastScrub = scrubIndexes.at(-1) ?? -1;
+    expect(lastScrub).toBeGreaterThan(pushIndex);
+
+    // The push command itself targets the branch, and the final remote is tokenless.
+    expect(commandLine[pushIndex]).toContain(
+      "git push --set-upstream origin 'coder/issue-42-add-a-widget'",
+    );
+    const lastRemoteCommand = commandLine
+      .filter((command) => command.includes("git remote set-url origin"))
+      .at(-1);
+    expect(lastRemoteCommand).not.toContain("secret-coder-token");
+
+    // pulls.create payload: correct head/base, and a "Closes #42" body.
+    expect(record.pullsCreate).toHaveLength(1);
+    expect(record.pullsCreate[0]).toMatchObject({
+      owner: "octo-org",
+      repo: "widgets",
+      title: "Add a Widget!",
+      head: "coder/issue-42-add-a-widget",
+      base: "main",
+    });
+    expect(record.pullsCreate[0]?.body).toContain("Closes #42");
+
+    // A progress comment was posted on the issue as the Coder, linking the PR.
+    expect(record.issueComments).toHaveLength(1);
+    expect(record.issueComments[0]).toMatchObject({ issue_number: 42 });
+    expect(record.issueComments[0]?.body).toContain("Opened pull request #7");
+
+    // The agent ran once, for this run + issue.
+    expect(agentCalls).toEqual(["impl-run-1:42"]);
+
+    // Result carries the branch + PR back to the worker (which stamps the rows).
+    expect(result).toMatchObject({
+      sandboxProvider: "daytona",
+      sandboxId: "sandbox-under-test",
+      branch: "coder/issue-42-add-a-widget",
+      pullRequestNumber: 7,
+      pullRequestState: "open",
+      pullRequestUrl: "https://github.test/pull/7",
+      summary: "Added the widget component and a test.",
+    });
+
+    // Logs never leak the token; the sandbox is always cleaned up.
+    expect(result.logs).not.toContain("secret-coder-token");
+    expect(result.logs).toContain("[redacted]");
+    expect(sandbox.deleted()).toBe(true);
+    expect(uploads).toContain("coworker-issue-context.md");
+
+    // Lifecycle events narrate the write flow and end with the sandbox deleted.
+    const stageEvents = events
+      .filter(
+        (event): event is Extract<SandboxLifecycleEvent, { type: "stage" }> =>
+          event.type === "stage",
+      )
+      .map((event) => event.stage);
+    expect(stageEvents).toEqual(
+      expect.arrayContaining([
+        "issue_resolving",
+        "repository_cloning",
+        "branch_creating",
+        "flue_implementation",
+        "changes_committing",
+        "branch_pushing",
+        "pull_request_opening",
+      ]),
+    );
+    expect(events.some((event) => event.type === "sandbox.deleted")).toBe(true);
+  });
+
+  test("fails with a clear reason and still cleans up when the agent makes no changes", async () => {
+    const commands: RecordedCommand[] = [];
+    const uploads: string[] = [];
+    // A sandbox whose working tree is clean — `git status --porcelain` returns empty.
+    const sandbox: ImplementationSandbox & { deleted: () => boolean } = (() => {
+      let deleted = false;
+      return {
+        id: "sandbox-clean",
+        process: {
+          async executeCommand(command, cwd) {
+            commands.push({ command, cwd });
+            return { result: "", exitCode: 0 };
+          },
+        },
+        fs: {
+          async uploadFile(_content, path) {
+            uploads.push(path);
+          },
+        },
+        async delete() {
+          deleted = true;
+        },
+        deleted: () => deleted,
+      };
+    })();
+    const record = {
+      pullsCreate: [] as PullsCreateCall[],
+      issueComments: [] as Record<string, unknown>[],
+    };
+    const runner = new DaytonaImplementationSandboxRunner({
+      createClient: () => ({
+        async create() {
+          return sandbox;
+        },
+      }),
+      createGitHubClient: () => createFakeGitHubClient(record),
+      runAgent: async () => ({ summary: "no-op" }),
+    });
+
+    const events: SandboxLifecycleEvent[] = [];
+    await expect(runner.run(createInput(events))).rejects.toThrow(/no file changes/i);
+    // No PR opened, and the sandbox is still deleted on the failure path.
+    expect(record.pullsCreate).toHaveLength(0);
+    expect(sandbox.deleted()).toBe(true);
+  });
+
+  test("fails fast when the run has no linked issue number", async () => {
+    const runner = new DaytonaImplementationSandboxRunner({
+      createClient: () => ({
+        async create() {
+          throw new Error("sandbox should not be created without an issue");
+        },
+      }),
+      createGitHubClient: () => createFakeGitHubClient({ pullsCreate: [], issueComments: [] }),
+      runAgent: async () => ({ summary: "" }),
+    });
+    const events: SandboxLifecycleEvent[] = [];
+    await expect(runner.run(createInput(events, { issueNumber: undefined }))).rejects.toThrow(
+      /missing its issue number/i,
+    );
+  });
+});
