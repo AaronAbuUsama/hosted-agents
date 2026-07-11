@@ -93,6 +93,24 @@ export function normalizeCommentBody(draft: string): string | null {
   return body.length > 0 ? body : null;
 }
 
+// The Coder leads every progress comment with a machine-readable marker embedded as
+// an HTML comment (`<!-- worker-role:… role:progress run:… issue:… -->`) so the
+// webhook sync can attribute it. GitHub hides HTML comments when it renders
+// Markdown, but Astryx's Markdown renderer prints them literally — angle brackets
+// and all — so the marker (and any other authored HTML comment) leaks into the UI
+// (issue #52 QA-B2). Strip HTML comments before rendering so our thread matches
+// GitHub's clean output; the marker stays intact in the stored body server-side, so
+// attribution is unaffected. Handles multi-line and multiple comments, then collapses
+// the blank lines a removed comment leaves behind so the visible body reads clean.
+const HTML_COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
+
+export function stripHtmlComments(markdown: string): string {
+  return markdown
+    .replace(HTML_COMMENT_PATTERN, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // Minimal structural view of Astryx's showToast — a type-only surface so this
 // module stays React-free and unit-testable while the component's real ShowToastFn
 // (body: ReactNode, type?: 'info' | 'error') remains assignable to it.

@@ -44,6 +44,7 @@ import {
   issueStageDotVariant,
   issueStageLabel,
   normalizeCommentBody,
+  stripHtmlComments,
 } from "@/lib/issue-detail-view-model";
 import { createKickOffHandlers } from "@/lib/issue-kickoff";
 import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
@@ -145,6 +146,10 @@ function CommentRow({ comment }: { comment: IssueComment }): ReactElement {
   const kind = classifyIssueAuthor(comment.authorLogin);
   const name = issueAuthorDisplayName(comment.authorLogin);
   const isAgent = kind === "agent";
+  // The Coder's progress comments lead with a machine-readable HTML-comment marker;
+  // strip it (and any other HTML comment) so the thread reads clean, matching how
+  // GitHub renders the same body (issue #52 QA-B2).
+  const body = stripHtmlComments(comment.body);
 
   return (
     <Stack style={isAgent ? agentCommentRowStyle : commentRowStyle}>
@@ -160,7 +165,7 @@ function CommentRow({ comment }: { comment: IssueComment }): ReactElement {
               </Text>
             </HStack>
             <Markdown density="compact" headingLevelStart={4} autolink="gfm">
-              {comment.body}
+              {body}
             </Markdown>
           </VStack>
         </StackItem>
@@ -282,6 +287,8 @@ export default function IssueDetail({
   const { issue, comments } = issueQuery.data;
   const stageLabel = issueStageLabel(issue);
   const authorName = issueAuthorDisplayName(issue.authorLogin);
+  // Match GitHub: HTML comments in the issue body are hidden, not printed literally.
+  const description = stripHtmlComments(issue.body ?? "");
   const canPost = normalizeCommentBody(draft) !== null;
   // The server derives claimable with the store's claim overlay, so once the Coder
   // has claimed the issue (Executing) the button disappears — unlike a labels-only
@@ -389,9 +396,9 @@ export default function IssueDetail({
           <VStack gap={6} style={contentStyle}>
             <VStack gap={3}>
               <Heading level={2}>Description</Heading>
-              {issue.body && issue.body.trim().length > 0 ? (
+              {description.length > 0 ? (
                 <Markdown headingLevelStart={3} autolink="gfm" contentWidth="100%">
-                  {issue.body}
+                  {description}
                 </Markdown>
               ) : (
                 <Text type="body" color="secondary">

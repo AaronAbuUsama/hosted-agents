@@ -12,6 +12,7 @@ import {
   issueStageLabel,
   normalizeCommentBody,
   stageDotVariant,
+  stripHtmlComments,
   type StageDerivable,
 } from "./issue-detail-view-model";
 import type { IssueStage } from "@hosted-agents/api/issues/stage";
@@ -112,6 +113,35 @@ describe("normalizeCommentBody", () => {
   test("returns null for an empty or all-whitespace draft so nothing is posted", () => {
     expect(normalizeCommentBody("")).toBeNull();
     expect(normalizeCommentBody("   \n\t ")).toBeNull();
+  });
+});
+
+describe("stripHtmlComments", () => {
+  test("drops the Coder's leading progress marker so the body renders clean (issue #52)", () => {
+    // The exact shape the Coder posts: marker as an HTML comment, blank line, body.
+    const stored =
+      "<!-- worker-role:implementation role:progress run:run-1 issue:3 -->\n\nOpened pull request #6 with the fix.";
+    expect(stripHtmlComments(stored)).toBe("Opened pull request #6 with the fix.");
+  });
+
+  test("leaves a body with no HTML comments untouched", () => {
+    expect(stripHtmlComments("Just a normal comment.")).toBe("Just a normal comment.");
+  });
+
+  test("strips a multi-line HTML comment", () => {
+    expect(stripHtmlComments("before\n<!--\nhidden\nmeta\n-->\nafter")).toBe("before\n\nafter");
+  });
+
+  test("removes every HTML comment, not just the first", () => {
+    expect(stripHtmlComments("<!-- a -->keep<!-- b -->")).toBe("keep");
+  });
+
+  test("collapses the blank-line run a removed comment leaves behind", () => {
+    expect(stripHtmlComments("line one\n\n<!-- meta -->\n\nline two")).toBe("line one\n\nline two");
+  });
+
+  test("returns an empty string when the body is only a comment", () => {
+    expect(stripHtmlComments("<!-- worker-role:implementation role:progress -->")).toBe("");
   });
 });
 
