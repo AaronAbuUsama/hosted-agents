@@ -24,8 +24,24 @@ type GitHubInstallationResponse = {
 
 type GitHubAppInstallationsResponse = GitHubInstallationResponse[];
 
+// GitHub's create-installation-access-token endpoint reports the permissions the
+// minted token carries — i.e. the installation's granted scopes, keyed by scope
+// name ("issues", "pull_requests", …) → access level ("read" | "write"). We read
+// `issues` from here to catch the board's silent-failure mode: an app with
+// pull_requests:read but no issues:read gets a 200 (only PRs) from GET /issues,
+// which the PR filter empties — masking the real cause behind a "no issues" board.
+export type GitHubInstallationPermissions = Record<string, string>;
+
 type GitHubInstallationTokenResponse = {
   token: string;
+  permissions?: GitHubInstallationPermissions | null;
+};
+
+export type GitHubInstallationToken = {
+  token: string;
+  // Null when GitHub omitted the field. Callers must fail open on null (assume no
+  // scope is missing) rather than block a working board on a response-shape change.
+  permissions: GitHubInstallationPermissions | null;
 };
 
 type GitHubRepositoryResponse = {
@@ -195,7 +211,9 @@ async function fetchGitHubJson<T>(
   return (await response.json()) as T;
 }
 
-export async function createGitHubInstallationAccessToken(installationId: string) {
+export async function createGitHubInstallationAccessTokenWithPermissions(
+  installationId: string,
+): Promise<GitHubInstallationToken> {
   const response = await fetchGitHubJson<GitHubInstallationTokenResponse>(
     `/app/installations/${installationId}/access_tokens`,
     {
@@ -204,7 +222,12 @@ export async function createGitHubInstallationAccessToken(installationId: string
     },
   );
 
-  return response.token;
+  return { token: response.token, permissions: response.permissions ?? null };
+}
+
+export async function createGitHubInstallationAccessToken(installationId: string) {
+  const { token } = await createGitHubInstallationAccessTokenWithPermissions(installationId);
+  return token;
 }
 
 type GitHubPullRequestResponse = {
@@ -344,12 +367,41 @@ function isPullRequest(issue: GitHubIssueResponse): boolean {
   return issue.pull_request != null;
 }
 
+// GitHub's canonical 403 body when an app touches a resource it lacks permission
+// for. The board's client-side error mapper keys off this phrase to name the
+// Issues-access cause and offer a fix CTA (apps/web board-load-error). We reuse it
+// here so the silent 200-with-only-PRs failure — an app with pull_requests:read
+// but no issues:read — surfaces that same named error and CTA instead of an empty
+// "no issues yet" board (the exact scenario the board's error branch targets).
+const ISSUES_ACCESS_FORBIDDEN_MESSAGE =
+  "Resource not accessible by integration: the GitHub App installation is missing Issues (read) access. Grant the app Issues access on the installation, then reload the board.";
+
+// True only when GitHub affirmatively reported the token's permissions and Issues
+// is not among them. A null/absent permissions map fails open — never block a
+// working board on a missing or reshaped response field.
+function issuesReadPermissionMissing(permissions: GitHubInstallationPermissions | null): boolean {
+  if (!permissions) {
+    return false;
+  }
+  const issues = permissions.issues;
+  return issues !== "read" && issues !== "write";
+}
+
 export async function listGitHubIssues(
   installationId: string,
   owner: string,
   repo: string,
 ): Promise<GitHubIssueSummary[]> {
-  const token = await createGitHubInstallationAccessToken(installationId);
+  const { token, permissions } =
+    await createGitHubInstallationAccessTokenWithPermissions(installationId);
+
+  // Gate before fetching: without issues:read, GET /issues answers 200 with only
+  // PRs, so the empty result is indistinguishable from a repo with no issues. The
+  // token's permissions are the one signal that tells the two apart.
+  if (issuesReadPermissionMissing(permissions)) {
+    throw new Error(ISSUES_ACCESS_FORBIDDEN_MESSAGE);
+  }
+
   const response = await fetchGitHubJson<GitHubIssueResponse[]>(
     `/repos/${owner}/${repo}/issues?state=all&per_page=100&sort=updated&direction=desc`,
     { token },

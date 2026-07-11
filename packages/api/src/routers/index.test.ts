@@ -997,6 +997,136 @@ describe("GitHub App router procedures", () => {
   });
 });
 
+describe("listRepositoryIssues router procedure", () => {
+  // Seed a connected installation + selected repository the board can read, then
+  // let each test control the GitHub App HTTP responses.
+  async function seedRepository(options: {
+    slug: string;
+    installationId: string;
+    owner?: string;
+    name?: string;
+  }) {
+    const { slug, installationId } = options;
+    const owner = options.owner ?? "acme";
+    const name = options.name ?? "widgets";
+    await seedUser(`${slug}-user`);
+    await seedSession(`${slug}-user`, `${slug}-org`);
+    await seedOrganization(`${slug}-org`);
+    await seedMembership(`${slug}-user`, `${slug}-org`, "owner");
+    await database.insert(schema.githubInstallation).values({
+      id: `${slug}-installation`,
+      organizationId: `${slug}-org`,
+      installationId,
+      appSlug: "hosted-agents-test",
+      accountLogin: owner,
+      accountType: "Organization",
+      status: "connected",
+    });
+    await database.insert(schema.githubRepository).values({
+      id: `${slug}-repository`,
+      installationId: `${slug}-installation`,
+      githubRepositoryId: `${slug}-github-id`,
+      owner,
+      name,
+      fullName: `${owner}/${name}`,
+      selected: true,
+    });
+    return {
+      context: memberContext(`${slug}-user`, { activeOrganizationId: `${slug}-org` }),
+      repositoryId: `${slug}-repository`,
+      organizationId: `${slug}-org`,
+      owner,
+      name,
+    };
+  }
+
+  // Stub the two GitHub calls the board makes: mint the installation token (with the
+  // given `permissions`) and GET the shared issues endpoint (returns `issuesResponse`).
+  function stubBoardFetch(options: {
+    installationId: string;
+    permissions?: Record<string, string> | null;
+    issuesResponse: unknown[];
+  }) {
+    return (async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (
+        url.pathname === `/app/installations/${options.installationId}/access_tokens` &&
+        method === "POST"
+      ) {
+        const body: Record<string, unknown> = { token: "installation-access-token" };
+        if (options.permissions !== undefined) {
+          body.permissions = options.permissions;
+        }
+        return Response.json(body);
+      }
+
+      if (/^\/repos\/[^/]+\/[^/]+\/issues$/.test(url.pathname) && method === "GET") {
+        return Response.json(options.issuesResponse);
+      }
+
+      return new Response(`unexpected GitHub API request: ${method} ${url.toString()}`, {
+        status: 500,
+      });
+    }) as typeof fetch;
+  }
+
+  test("surfaces the named Issues-access failure when the installation lacks issues:read but has pull_requests:read", async () => {
+    // The documented silent failure (memory: issues-board-github-app-permission):
+    // GET /issues answers 200 with only PRs, which the filter empties. The board
+    // must instead name the cause so its client error branch shows the fix CTA.
+    const seeded = await seedRepository({ slug: "board-forbidden", installationId: "701" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubBoardFetch({
+      installationId: "701",
+      permissions: { pull_requests: "read", metadata: "read" },
+      issuesResponse: [{ number: 8, title: "A PR", state: "open", pull_request: { url: "…" } }],
+    });
+
+    try {
+      const call = createProcedureClient(appRouter.listRepositoryIssues, {
+        context: seeded.context,
+      })({ organizationId: seeded.organizationId, repositoryId: seeded.repositoryId });
+
+      await expectOrpcCode(call, "BAD_REQUEST");
+      // The message the client (apps/web board-load-error) keys off to render the
+      // Issues-access copy + fix CTA rather than a generic "couldn't load" state.
+      await call.catch((error: unknown) => {
+        expect((error as ORPCError<string, unknown>).message.toLowerCase()).toContain(
+          "resource not accessible by integration",
+        );
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("returns the board with pull requests filtered out when the installation has Issues access", async () => {
+    const seeded = await seedRepository({ slug: "board-ok", installationId: "702" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubBoardFetch({
+      installationId: "702",
+      permissions: { issues: "read", pull_requests: "read" },
+      issuesResponse: [
+        { number: 7, title: "A real issue", state: "open", labels: [] },
+        { number: 8, title: "A PR", state: "open", pull_request: { url: "…" } },
+      ],
+    });
+
+    try {
+      const board = await createProcedureClient(appRouter.listRepositoryIssues, {
+        context: seeded.context,
+      })({ organizationId: seeded.organizationId, repositoryId: seeded.repositoryId });
+
+      const allIssues = board.flatMap((columnEntry) => columnEntry.issues.map((i) => i.number));
+      expect(allIssues).toEqual([7]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("provider credential router procedures", () => {
   test("owner can list organization provider credential metadata without secret fields", async () => {
     await seedUser("provider-list-owner");
