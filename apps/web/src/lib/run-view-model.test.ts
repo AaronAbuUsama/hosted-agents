@@ -589,12 +589,15 @@ describe("selectIssueRunRows", () => {
   const scope = { issueNumber: 4, repositoryFullName: "test-org/test-repo" };
 
   // The acceptance case: test-repo issue #4 shows its implementation + review
-  // runs as clickable rows.
+  // runs as clickable rows. Both carry issueNumber: 4 as the server persists it —
+  // the implementation run from kick-off, the review run recovered server-side
+  // from its Coder head branch (`coder/issue-4-...`) at insert time.
   const implementationRun = agentRun({
     id: "run-implementation",
     workerRole: "implementation",
     workerDisplayName: "The Coder",
     issueNumber: 4,
+    branch: "coder/issue-4-add-a-widget",
     repositoryOwner: "test-org",
     repositoryName: "test-repo",
     status: "completed",
@@ -607,6 +610,8 @@ describe("selectIssueRunRows", () => {
     workerRole: "code_review",
     workerDisplayName: "Code Review Worker",
     issueNumber: 4,
+    branch: "coder/issue-4-add-a-widget",
+    pullRequestHeadRef: "coder/issue-4-add-a-widget",
     repositoryOwner: "test-org",
     repositoryName: "test-repo",
     status: "completed",

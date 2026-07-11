@@ -7,6 +7,7 @@ import { createFlueContext, resolveModel } from "@flue/runtime/internal";
 import { IMPLEMENTATION_WORKER_DISPLAY_NAME } from "@hosted-agents/db/schema/agent-runs";
 import * as v from "valibot";
 
+import { coderBranchName } from "@hosted-agents/api/coder-branch";
 import {
   DEFAULT_CODEX_MODEL,
   resolveReasoningEffort,
@@ -15,7 +16,6 @@ import {
 
 import { registerOpenAICodexCredentialModel } from "../lib/provider-credential-model";
 import { daytona } from "../sandboxes/daytona";
-import { coderBranchName } from "./coder-branch";
 import {
   assertGitHubName,
   executeSandboxCommand,

@@ -678,6 +678,63 @@ describe("GitHub webhook admission", () => {
     });
   }
 
+  test("stamps the review run with the issue its Coder PR closes so the issue detail links it (issue #54)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+
+      const acceptedResponse = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-review-coder-branch",
+        // A Coder PR's head branch is `coder/issue-<n>-<slug>`; the review run must
+        // recover issue #4 from it (the acceptance case) rather than storing null.
+        payload: pullRequestPayload("opened", { headRef: "coder/issue-4-add-a-widget" }),
+      });
+
+      expect(acceptedResponse.status).toBe(202);
+      const admission = (await acceptedResponse.json()) as GitHubWebhookAdmission;
+      const [run] = await database.select().from(schema.agentRun);
+      expect(run).toMatchObject({
+        id: admission.agentRunId,
+        workerRole: "code_review",
+        runType: "github.pull_request_review",
+        pullRequestHeadRef: "coder/issue-4-add-a-widget",
+        issueNumber: 4,
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("leaves the review run's issue number null when the PR is not a Coder branch", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+
+      const acceptedResponse = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-review-human-branch",
+        // A human PR (default head ref `feature/slice-1`) has no issue linkage, so
+        // it must never appear under any issue's Runs block.
+        payload: pullRequestPayload("opened"),
+      });
+
+      expect(acceptedResponse.status).toBe(202);
+      const [run] = await database.select().from(schema.agentRun);
+      expect(run).toMatchObject({
+        workerRole: "code_review",
+        pullRequestHeadRef: "feature/slice-1",
+        issueNumber: null,
+      });
+    } finally {
+      client.close();
+    }
+  });
+
   test("ignores a suspended linked installation without creating an agent run", async () => {
     const { client, database } = await createTestDatabase();
     try {

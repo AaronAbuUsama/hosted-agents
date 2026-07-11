@@ -18,9 +18,11 @@ export type AgentRunApiRecord = {
   repositoryUrl: string | null;
   branch: string | null;
   baseBranch: string | null;
-  // The issue an implementation run implements (null for review runs, which are
-  // keyed by pull request). The issue detail's Runs block filters on this to show
-  // only the runs that worked a given issue (QA-B4, issue #54).
+  // The issue a run worked. Implementation runs carry the issue they implement;
+  // review runs carry the issue their PR closes, recovered server-side from the
+  // Coder head branch (`coder/issue-<n>-<slug>`). Null when the run's PR is not a
+  // Coder PR (a human PR has no issue linkage). The issue detail's Runs block
+  // filters on this to show the runs that worked a given issue (QA-B4, issue #54).
   issueNumber: number | null;
   pullRequestNumber: number | null;
   pullRequestBaseRef: string | null;

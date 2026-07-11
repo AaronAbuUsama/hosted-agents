@@ -5,6 +5,10 @@
 // collapsed to single hyphens, trimmed, and length-capped. When a title has no
 // usable characters (emoji-only, CJK-only, empty) the slug falls back to `issue`
 // so the branch is always a valid, predictable ref.
+//
+// Lives in the shared api package (not apps/server) so both the webhook admission
+// and the manual review router can recover an issue number from a review run's
+// head branch and stamp `agent_run.issue_number` on it (QA-B4, issue #54).
 
 const MAX_SLUG_LENGTH = 50;
 
@@ -26,8 +30,14 @@ export function coderBranchName(issueNumber: number, title: string): string {
 // ref so the babysit admission (C6) can match a `pull_request_review` to the issue
 // its PR closes, even before/without the linked-PR stamp. Only matches the exact
 // `coder/issue-<n>-<slug>` shape this module produces; any other ref (a human's
-// branch, a differently-named branch) returns null so it is never babysat.
-export function parseCoderIssueBranch(ref: string): number | null {
+// branch, a differently-named branch) returns null so it is never babysat — and so
+// a review run whose PR is not a Coder PR is left unlinked to any issue. Accepts a
+// nullish ref (GitHub PR head refs are frequently `string | null`) and treats it
+// as unmatched, so callers can stamp `issue_number` without a null guard.
+export function parseCoderIssueBranch(ref: string | null | undefined): number | null {
+  if (!ref) {
+    return null;
+  }
   const match = /^coder\/issue-(\d+)-/.exec(ref.trim());
   if (!match) {
     return null;
