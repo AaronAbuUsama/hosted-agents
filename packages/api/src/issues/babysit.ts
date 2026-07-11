@@ -11,15 +11,21 @@ import { githubIssue } from "@hosted-agents/db/schema/issues";
 // The babysit half of the issues deep module (see issue #19, spec #21 stories
 // 7–9, C6). When the Reviewer requests changes on a Coder-owned pull request, the
 // signed webhook wakes the Coder for a fresh fix round on the same branch — up to
-// a hard cap — then stops. Humans always win: a human review, push, or comment on
-// the pull request ends babysitting immediately.
+// a hard cap — then stops. Humans always win (spec #21 story 8): a human review, a
+// human push (`pull_request.synchronize`), or a human pull-request comment ends
+// babysitting immediately — no further fix rounds, the issue drops to
+// human-in-the-loop handling.
 //
 // The transport (the signed webhook) resolves the installation + repository and
-// the review's actor/state, then asks this module: which issue does this review
-// belong to, and what should happen. The pure decision (`decideBabysitReview`) is
-// unit-tested directly; the query + write helpers keep the round counter and the
+// the actor/state, then asks this module which issue the event belongs to and what
+// should happen. A `pull_request_review` runs through the pure decision
+// (`decideBabysitReview`, unit-tested directly). A human push or comment arrives on
+// a different installation's copy than the one the claim is bound to, so those
+// yields match the claim across installations by (org, repo full name, PR/branch)
+// via `findCoderClaimedIssueByRepositoryName`, then set the same stop flag through
+// `recordBabysitStopped`. The query + write helpers keep the round counter and the
 // stop flag as data on the claim, so the board's Failed / Blocked lane and every
-// later review agree on when the Coder has yielded.
+// later event agree on when the Coder has yielded.
 
 // The maximum number of review-driven fix rounds the Coder is dispatched on one
 // pull request before the issue is parked as Failed / Blocked. Three rounds.
@@ -102,13 +108,32 @@ export function decideBabysitReview(input: BabysitReviewInput): BabysitReviewDec
   return { action: "babysit", round: input.babysitRound + 1 };
 }
 
-// Find the Coder-claimed issue a pull-request review belongs to. A review is
-// babysat only when its pull request is one the Coder owns: the issue must be
-// claimed for the implementation role AND either carry this pull request as its
-// linked PR (stamped when the Coder opened it) or be the issue the Coder branch is
-// named for (`coder/issue-<n>-*`, parsed by the transport into `branchIssueNumber`).
-// Returns null when no Coder-claimed issue matches, so a review on a human's PR (or
-// an unclaimed issue's PR) is never babysat.
+// The claim columns the babysit decision reads, shared by both finders.
+const babysitClaimColumns = {
+  issueId: githubIssue.id,
+  number: githubIssue.number,
+  babysitRound: githubIssue.babysitRound,
+  babysitBlockedReason: githubIssue.babysitBlockedReason,
+};
+
+// A pull request is the Coder's iff its issue carries the PR as its linked PR
+// (stamped when the Coder opened it) OR is the issue the Coder branch is named for
+// (`coder/issue-<n>-*`, parsed by the transport into `branchIssueNumber`). The
+// branch match is what lets a push/review match before the linked-PR stamp lands.
+function pullRequestOrBranchMatch(pullRequestNumber: number, branchIssueNumber: number | null) {
+  const pullRequestMatch = eq(githubIssue.linkedPullRequestNumber, pullRequestNumber);
+  return branchIssueNumber == null
+    ? pullRequestMatch
+    : or(pullRequestMatch, eq(githubIssue.number, branchIssueNumber));
+}
+
+// Find the Coder-claimed issue a pull-request review belongs to, scoped to the
+// installation's own repository row. A review is babysat only when its pull request
+// is one the Coder owns: the issue must be claimed for the implementation role AND
+// match the PR (see `pullRequestOrBranchMatch`). Returns null when no Coder-claimed
+// issue matches, so a review on a human's PR (or an unclaimed issue's PR) is never
+// babysat. Used by the `pull_request_review` path, which resolves the repository
+// under the Coder app's own installation (the one the claim is bound to).
 export async function findCoderClaimedIssueForBabysit(
   database: BabysitDatabase,
   params: {
@@ -117,25 +142,47 @@ export async function findCoderClaimedIssueForBabysit(
     branchIssueNumber: number | null;
   },
 ): Promise<BabysitClaim | null> {
-  const pullRequestMatch = eq(githubIssue.linkedPullRequestNumber, params.pullRequestNumber);
-  const match =
-    params.branchIssueNumber == null
-      ? pullRequestMatch
-      : or(pullRequestMatch, eq(githubIssue.number, params.branchIssueNumber));
-
   const [row] = await database
-    .select({
-      issueId: githubIssue.id,
-      number: githubIssue.number,
-      babysitRound: githubIssue.babysitRound,
-      babysitBlockedReason: githubIssue.babysitBlockedReason,
-    })
+    .select(babysitClaimColumns)
     .from(githubIssue)
     .where(
       and(
         eq(githubIssue.githubRepositoryId, params.githubRepositoryId),
         eq(githubIssue.claimedByWorkerRole, IMPLEMENTATION_WORKER_ROLE),
-        match,
+        pullRequestOrBranchMatch(params.pullRequestNumber, params.branchIssueNumber),
+      ),
+    )
+    .limit(1);
+
+  return row ?? null;
+}
+
+// Find the Coder-claimed issue a pull request belongs to WITHOUT a repository-row
+// id — matched by (organization, repository full name) instead. Humans-always-win
+// yields for a push (`pull_request.synchronize`) or a pull-request comment arrive
+// on the Reviewer app's installation, whose `github_repository` row is a different
+// id than the Coder app's (each installation has its own repo row), so those paths
+// cannot reuse the repo-id finder above. The claim only ever lives on the Coder
+// app's row, and both installations share the org + full name, so scoping by those
+// (plus the implementation-role filter) finds the one claimed row across apps.
+export async function findCoderClaimedIssueByRepositoryName(
+  database: BabysitDatabase,
+  params: {
+    organizationId: string;
+    repositoryFullName: string;
+    pullRequestNumber: number;
+    branchIssueNumber: number | null;
+  },
+): Promise<BabysitClaim | null> {
+  const [row] = await database
+    .select(babysitClaimColumns)
+    .from(githubIssue)
+    .where(
+      and(
+        eq(githubIssue.organizationId, params.organizationId),
+        eq(githubIssue.repositoryFullName, params.repositoryFullName),
+        eq(githubIssue.claimedByWorkerRole, IMPLEMENTATION_WORKER_ROLE),
+        pullRequestOrBranchMatch(params.pullRequestNumber, params.branchIssueNumber),
       ),
     )
     .limit(1);

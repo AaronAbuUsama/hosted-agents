@@ -447,7 +447,11 @@ async function signBody(body: string) {
   return `sha256=${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function pullRequestPayload(action: string) {
+function pullRequestPayload(
+  action: string,
+  overrides: { senderType?: string; headRef?: string; pullRequestNumber?: number } = {},
+) {
+  const login = overrides.senderType === "User" ? "octo-maintainer" : "coworker-coder[bot]";
   return {
     action,
     installation: { id: INSTALLATION_ID },
@@ -461,16 +465,19 @@ function pullRequestPayload(action: string) {
       default_branch: "main",
     },
     pull_request: {
-      number: 42,
+      number: overrides.pullRequestNumber ?? 42,
       base: {
         ref: "main",
         sha: "base-sha-123",
       },
       head: {
-        ref: "feature/slice-1",
+        ref: overrides.headRef ?? "feature/slice-1",
         sha: "head-sha-456",
       },
     },
+    // Only attach a sender when a test opts in — the base pull_request cases assert
+    // the review-run path, which must stay untouched by the human-push yield.
+    ...(overrides.senderType ? { sender: { login, type: overrides.senderType } } : {}),
   };
 }
 
@@ -1351,6 +1358,239 @@ describe("GitHub webhook babysit admission", () => {
       client.close();
     }
   });
+
+  // Humans always win (spec #21 story 8): a human push to a Coder-owned PR ends
+  // babysitting. Without this the Reviewer's re-review of the human push would
+  // dispatch the Coder onto the human's branch for the remaining rounds.
+  test("a human push (synchronize) to a Coder-owned PR yields: no review run, PR dropped to human-in-the-loop", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-human-push",
+        payload: pullRequestPayload("synchronize", {
+          senderType: "User",
+          headRef: BABYSIT_BRANCH,
+          pullRequestNumber: BABYSIT_PR_NUMBER,
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "pull_request",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_in_the_loop",
+      });
+
+      // Humans always win: no Reviewer run is queued for the human's push.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({
+        // The round is untouched; the stop reason records the human takeover.
+        babysitRound: 1,
+        babysitBlockedReason: "human_in_the_loop",
+      });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-human-push"));
+      expect(delivery?.status).toBe("yielded:human_in_the_loop");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("the Coder's own fix push (bot synchronize) still triggers a re-review — the loop is untouched", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-bot-push",
+        payload: pullRequestPayload("synchronize", {
+          senderType: "Bot",
+          headRef: BABYSIT_BRANCH,
+          pullRequestNumber: BABYSIT_PR_NUMBER,
+        }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission.accepted).toBe(true);
+      expect(admission.agentRunId).toBeTruthy();
+
+      // A bot push is the intended re-review trigger — one review run, no yield.
+      const runs = await database.select().from(schema.agentRun);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ workerRole: "code_review" });
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: null });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human push to a PR no Coder-claimed issue owns still queues a review (Reviewer runs freely)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      // No Coder claim for this PR/branch — it is an ordinary human PR.
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "pull_request",
+        deliveryId: "delivery-human-push-no-claim",
+        payload: pullRequestPayload("synchronize", {
+          senderType: "User",
+          headRef: "feature/human-work",
+          pullRequestNumber: 999,
+        }),
+      });
+
+      const admission = (await response.json()) as GitHubWebhookAdmission;
+      expect(admission.accepted).toBe(true);
+      expect(await database.select().from(schema.agentRun)).toHaveLength(1);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human comment on a Coder-owned PR yields babysitting: no run, PR dropped to human-in-the-loop", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, { babysitRound: 1 });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-human-comment",
+        payload: issueCommentPayload("created", {
+          number: BABYSIT_PR_NUMBER,
+          prShaped: true,
+          senderType: "User",
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        event: "issue_comment",
+        issueNumber: BABYSIT_ISSUE_NUMBER,
+        reason: "human_in_the_loop",
+      });
+
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      // A PR comment is never synced to the issues board.
+      expect(await database.select().from(schema.githubIssueComment)).toHaveLength(0);
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue).toMatchObject({ babysitRound: 1, babysitBlockedReason: "human_in_the_loop" });
+
+      const [delivery] = await database
+        .select()
+        .from(schema.githubWebhookDelivery)
+        .where(eq(schema.githubWebhookDelivery.id, "delivery-human-comment"));
+      expect(delivery?.status).toBe("yielded:human_in_the_loop");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human comment once yielded is a no-op (already stopped), never re-recorded", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      await seedCoderInstallationTarget(database);
+      await seedCoderClaimedIssue(database, {
+        babysitRound: 2,
+        babysitBlockedReason: "round_cap_reached",
+      });
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-human-comment-stopped",
+        payload: issueCommentPayload("created", {
+          number: BABYSIT_PR_NUMBER,
+          prShaped: true,
+          senderType: "User",
+        }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "babysit_already_stopped",
+      });
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+
+      // The prior stop reason is left intact — the human comment does not clobber it.
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.number, BABYSIT_ISSUE_NUMBER));
+      expect(issue?.babysitBlockedReason).toBe("round_cap_reached");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a human comment on a PR no Coder-claimed issue owns is off-board (pull_request_shaped, no ledger row)", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      // No Coder claim — an ordinary human PR comment is off the issues board.
+      const app = createWebhookApp(database);
+
+      const response = await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "delivery-human-comment-no-claim",
+        payload: issueCommentPayload("created", {
+          number: BABYSIT_PR_NUMBER,
+          prShaped: true,
+          senderType: "User",
+        }),
+      });
+
+      expect((await response.json()) as GitHubWebhookAdmission).toMatchObject({
+        accepted: false,
+        reason: "pull_request_shaped",
+      });
+      // Same as any other PR comment: nothing synced, no ledger row claimed.
+      expect(await database.select().from(schema.agentRun)).toHaveLength(0);
+      expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
 });
 
 const ISSUE_NODE_GITHUB_ID = 555_000;
@@ -1398,7 +1638,15 @@ function issuePayload(
 
 function issueCommentPayload(
   action: string,
-  overrides: { number?: number; commentId?: number; body?: string; prShaped?: boolean } = {},
+  overrides: {
+    number?: number;
+    commentId?: number;
+    body?: string;
+    prShaped?: boolean;
+    senderType?: string;
+    installationId?: number;
+    repositoryId?: number;
+  } = {},
 ) {
   const number = overrides.number ?? 7;
   const base = issuePayload("opened", { number });
@@ -1412,19 +1660,30 @@ function issueCommentPayload(
       }
     : base.issue;
 
+  const installation =
+    overrides.installationId === undefined ? base.installation : { id: overrides.installationId };
+  const repository =
+    overrides.repositoryId === undefined
+      ? base.repository
+      : { ...base.repository, id: overrides.repositoryId };
+  const login = overrides.senderType === "User" ? "octo-maintainer" : "octocat";
+
   return {
     action,
-    installation: base.installation,
-    repository: base.repository,
+    installation,
+    repository,
     issue,
     comment: {
       id: overrides.commentId ?? 900_100,
       body: overrides.body ?? "A synced comment",
       html_url: `https://github.com/octo-org/widgets/issues/${number}#issuecomment-1`,
-      user: { login: "octocat", avatar_url: "https://avatars.githubusercontent.com/u/1" },
+      user: { login, avatar_url: "https://avatars.githubusercontent.com/u/1" },
       created_at: "2026-07-08T12:00:00Z",
       updated_at: "2026-07-08T12:00:00Z",
     },
+    // Only attach a sender when a test opts in — the base sync cases must keep
+    // routing to the board store, not the human-comment yield.
+    ...(overrides.senderType ? { sender: { login, type: overrides.senderType } } : {}),
   };
 }
 

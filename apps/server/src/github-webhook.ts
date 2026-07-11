@@ -4,7 +4,9 @@ import {
 } from "@hosted-agents/api/github-app";
 import {
   BABYSIT_ROUND_CAP,
+  BABYSIT_STOP_HUMAN,
   decideBabysitReview,
+  findCoderClaimedIssueByRepositoryName,
   findCoderClaimedIssueForBabysit,
   hasActiveBabysitRun,
   recordBabysitRoundEnqueued,
@@ -115,6 +117,10 @@ type PullRequestAdmissionMetadata = RepositoryDescriptor & {
   headRef: string;
   headSha: string;
   action: string;
+  // `sender.type` on the delivery: "User" for a human, "Bot" for the Coder/Reviewer
+  // app. A human `synchronize` (a push to a Coder-owned PR) yields babysitting;
+  // null when absent so the yield only fires on an explicit human sender.
+  senderType: string | null;
 };
 
 // The fields the babysit admission (C6) reads off a `pull_request_review.submitted`
@@ -339,6 +345,7 @@ function pullRequestMetadata(delivery: GitHubWebhookDelivery): PullRequestAdmiss
   const repositoryOwner = payload.repository.owner?.login ?? repositoryFullName.split("/")[0];
   const repositoryName = payload.repository.name;
   const pullRequest = payload.pull_request;
+  const sender = payload.sender as { type?: unknown } | null | undefined;
 
   if (
     typeof action !== "string" ||
@@ -371,14 +378,16 @@ function pullRequestMetadata(delivery: GitHubWebhookDelivery): PullRequestAdmiss
     headRef: pullRequest.head.ref,
     headSha: pullRequest.head.sha,
     action,
+    senderType: typeof sender?.type === "string" ? sender.type : null,
   };
 }
 
 // The webhook channel is one HMAC-verified ingress for several event families.
 // This dispatcher routes each verified delivery to the transport that owns it:
-// pull requests queue a review run, pull-request reviews drive the babysit loop,
-// issues and issue comments sync into the board store, and everything else is
-// acknowledged without side effects.
+// pull requests queue a review run (or, on a human push, yield babysitting),
+// pull-request reviews drive the babysit loop, a human pull-request comment yields
+// babysitting (humans always win), issues and issue comments sync into the board
+// store, and everything else is acknowledged without side effects.
 export async function admitGitHubWebhookDelivery(
   delivery: GitHubWebhookDelivery,
   database: Database = db,
@@ -394,6 +403,11 @@ export async function admitGitHubWebhookDelivery(
   const pullRequestReview = pullRequestReviewMetadata(delivery);
   if (pullRequestReview) {
     return admitPullRequestReviewDelivery(delivery, database, pullRequestReview, action, deps);
+  }
+
+  const pullRequestComment = pullRequestCommentMetadata(delivery);
+  if (pullRequestComment) {
+    return admitPullRequestCommentDelivery(delivery, database, pullRequestComment, action);
   }
 
   const issueSync = issueSyncMetadata(delivery);
@@ -501,6 +515,45 @@ async function admitPullRequestDelivery(
         deliveryId: delivery.deliveryId,
         reason: "repository_not_linked",
       });
+    }
+
+    // Humans always win (spec #21 story 8): a human push to a Coder-owned PR ends
+    // babysitting. Without this, a human `synchronize` queues a Reviewer run whose
+    // eventual `changes_requested` — a Bot review — dispatches the Coder onto the
+    // human's branch. Recording the stop here makes that later review a no-op
+    // (`babysit_already_stopped`) AND skips this re-review, so the whole loop backs
+    // off. A Bot `synchronize` (the Coder's own fix push) is the intended re-review
+    // trigger and falls through untouched. The claim lives on the Coder app's repo
+    // row, not this Reviewer installation's, so it is matched across installations.
+    if (metadata.senderType === "User") {
+      const claim = await findCoderClaimedIssueByRepositoryName(transaction, {
+        organizationId: installation.organizationId,
+        repositoryFullName: metadata.repositoryFullName,
+        pullRequestNumber: metadata.pullRequestNumber,
+        branchIssueNumber: parseCoderIssueBranch(metadata.headRef),
+      });
+      if (claim) {
+        if (claim.babysitBlockedReason == null) {
+          await recordBabysitStopped(transaction, {
+            issueId: claim.issueId,
+            reason: BABYSIT_STOP_HUMAN,
+          });
+        }
+        await transaction
+          .update(githubWebhookDelivery)
+          .set({ status: `yielded:${BABYSIT_STOP_HUMAN}`, updatedAt: new Date() })
+          .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+        return {
+          ok: true,
+          accepted: false,
+          duplicate: false,
+          event: delivery.name,
+          action,
+          deliveryId: delivery.deliveryId,
+          issueNumber: claim.number,
+          reason: BABYSIT_STOP_HUMAN,
+        };
+      }
     }
 
     const providerCredential = await getConnectedOpenAICodexCredential(
@@ -657,8 +710,9 @@ type ReviewAdmissionOutcome = {
 // by the Reviewer on a Coder-owned pull request wakes the Coder for one fix round
 // on the same branch, up to a hard cap; at the cap the issue is parked Failed /
 // Blocked with an explanation comment. A human review yields immediately (humans
-// always win). An `approved` review is the approval path C7 owns — a deliberate
-// no-op here.
+// always win — see also the human-push yield in `admitPullRequestDelivery` and the
+// human-comment yield in `admitPullRequestCommentDelivery`). An `approved` review
+// is the approval path C7 owns — a deliberate no-op here.
 async function admitPullRequestReviewDelivery(
   delivery: GitHubWebhookDelivery,
   database: Database,
@@ -935,6 +989,169 @@ async function admitPullRequestReviewDelivery(
   }
 
   return outcome.admission;
+}
+
+// The fields the babysit human-comment yield reads off an `issue_comment`
+// delivery. GitHub models a pull request as an issue, so a PR conversation comment
+// arrives as `issue_comment` with `issue.pull_request` set; the PR number is the
+// comment's issue number.
+type PullRequestCommentAdmissionMetadata = {
+  deliveryId: string;
+  action: string;
+  installationId: string;
+  repositoryFullName: string;
+  pullRequestNumber: number;
+};
+
+// Parse an `issue_comment` delivery into the human-comment yield fields — but ONLY
+// for a human comment on a pull request. A bot comment (the Coder's own progress /
+// blocked note, a Reviewer's comment) or a comment on a real issue returns null and
+// falls through untouched: bot PR comments to the issue-sync skip
+// (`pull_request_shaped`), human/bot issue comments to the board sync. Only
+// `created` / `edited` (a human authoring content) count; `deleted` is not a
+// takeover signal.
+function pullRequestCommentMetadata(
+  delivery: GitHubWebhookDelivery,
+): PullRequestCommentAdmissionMetadata | null {
+  if (delivery.name !== "issue_comment") {
+    return null;
+  }
+  const { payload } = delivery;
+  if (payload.action !== "created" && payload.action !== "edited") {
+    return null;
+  }
+  // Humans always win — only a human comment yields; bot comments are the loop's
+  // own chatter and must not stop it.
+  if (payload.sender?.type !== "User") {
+    return null;
+  }
+  const installationId = payload.installation?.id;
+  const issue = payload.issue;
+  if (
+    typeof installationId !== "number" ||
+    !issue ||
+    typeof issue.number !== "number" ||
+    issue.pull_request == null
+  ) {
+    return null;
+  }
+  const repository = parseRepositoryDescriptor(payload.repository);
+  if (!repository) {
+    return null;
+  }
+  return {
+    deliveryId: delivery.deliveryId,
+    action: payload.action,
+    installationId: String(installationId),
+    repositoryFullName: repository.repositoryFullName,
+    pullRequestNumber: issue.number,
+  };
+}
+
+// The babysit human-comment yield (spec #21 story 8). A human commenting on a
+// Coder-owned pull request ends babysitting: humans always win. Like the human
+// push yield, the claim lives on the Coder app's repository row, not necessarily
+// the installation that delivered this comment, so it is matched across
+// installations by (org, repo full name, PR number). A comment on any other PR is
+// off the issues board and is skipped exactly like the issue-sync path
+// (`pull_request_shaped`) — no delivery-ledger row, no side effect.
+async function admitPullRequestCommentDelivery(
+  delivery: GitHubWebhookDelivery,
+  database: Database,
+  metadata: PullRequestCommentAdmissionMetadata,
+  action: string | undefined,
+): Promise<GitHubWebhookAdmission> {
+  const pullRequestShaped = (): GitHubWebhookAdmission =>
+    ignoredDelivery({
+      event: delivery.name,
+      action,
+      deliveryId: delivery.deliveryId,
+      reason: "pull_request_shaped",
+    });
+
+  // Resolve the installation (read-only) to get the org the claim is scoped to. An
+  // unlinked or disconnected installation cannot own a Coder claim, so its PR
+  // comments are off-board like any other.
+  const [installation] = await database
+    .select()
+    .from(githubInstallation)
+    .where(eq(githubInstallation.installationId, metadata.installationId))
+    .limit(1);
+  if (!installation || installation.status !== "connected") {
+    return pullRequestShaped();
+  }
+
+  const preCheck = await findCoderClaimedIssueByRepositoryName(database, {
+    organizationId: installation.organizationId,
+    repositoryFullName: metadata.repositoryFullName,
+    pullRequestNumber: metadata.pullRequestNumber,
+    branchIssueNumber: null,
+  });
+  if (!preCheck) {
+    // Not a Coder-owned PR: match the issue-sync skip exactly — no ledger row.
+    return pullRequestShaped();
+  }
+
+  // A human commented on a Coder-owned PR — record the stop transactionally, deduped
+  // by the delivery ledger so a redelivery (or the second app's copy) is a no-op.
+  return database.transaction(async (transaction) => {
+    const claimed = await claimDelivery(transaction, {
+      deliveryId: metadata.deliveryId,
+      event: "issue_comment",
+      action: metadata.action,
+      installationId: metadata.installationId,
+      repositoryFullName: metadata.repositoryFullName,
+      pullRequestNumber: metadata.pullRequestNumber,
+    });
+    if (!claimed) {
+      return getDuplicateAdmission(transaction, delivery);
+    }
+
+    // Re-read inside the transaction so a concurrent yield (another human event on
+    // the same PR) is not clobbered, and an already-stopped PR is a clean no-op.
+    const claim = await findCoderClaimedIssueByRepositoryName(transaction, {
+      organizationId: installation.organizationId,
+      repositoryFullName: metadata.repositoryFullName,
+      pullRequestNumber: metadata.pullRequestNumber,
+      branchIssueNumber: null,
+    });
+    if (!claim) {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "pull_request_shaped");
+      return pullRequestShaped();
+    }
+    if (claim.babysitBlockedReason != null) {
+      await markDeliveryIgnored(transaction, metadata.deliveryId, "babysit_already_stopped");
+      return {
+        ok: true,
+        accepted: false,
+        duplicate: false,
+        event: delivery.name,
+        action,
+        deliveryId: delivery.deliveryId,
+        issueNumber: claim.number,
+        reason: "babysit_already_stopped",
+      };
+    }
+
+    await recordBabysitStopped(transaction, {
+      issueId: claim.issueId,
+      reason: BABYSIT_STOP_HUMAN,
+    });
+    await transaction
+      .update(githubWebhookDelivery)
+      .set({ status: `yielded:${BABYSIT_STOP_HUMAN}`, updatedAt: new Date() })
+      .where(eq(githubWebhookDelivery.id, metadata.deliveryId));
+    return {
+      ok: true,
+      accepted: false,
+      duplicate: false,
+      event: delivery.name,
+      action,
+      deliveryId: delivery.deliveryId,
+      issueNumber: claim.number,
+      reason: BABYSIT_STOP_HUMAN,
+    };
+  });
 }
 
 // GitHub-sourced issue fields, parsed off the payload. Mirrors the columns
