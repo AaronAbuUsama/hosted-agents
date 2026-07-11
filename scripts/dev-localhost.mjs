@@ -88,5 +88,6 @@ if (!args.has("--no-web")) {
 run("server", "bun", ["run", "dev:server"], mergedEnv);
 if (!args.has("--no-worker")) {
   run("review-worker", "bun", ["run", "worker:code-reviews"], mergedEnv);
+  run("implementation-worker", "bun", ["run", "worker:implementations"], mergedEnv);
 }
 run("smee", "npx", ["--yes", "smee-client", "-u", smeeUrl, "-t", targetUrl], mergedEnv);

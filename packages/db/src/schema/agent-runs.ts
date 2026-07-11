@@ -12,10 +12,17 @@ export const LEGACY_CODE_REVIEW_COWORKER_SLUG = "code-review";
 
 // The implementation ("Coder") worker role. Identity follows ADR-0001: one
 // GitHub App per worker role, so the Coder authors its own branches, comments,
-// and pull requests. The role adapter (run type, planner, runner) lands in a
-// later slice; this constant is the shared vocabulary that per-role GitHub App
-// credential lookup keys on today.
+// and pull requests. Per CONTEXT.md the module/event vocabulary is
+// `implementation`; "The Coder" is only a user-facing display name and must not
+// appear in identifiers. This constant is the shared vocabulary that per-role
+// GitHub App credential lookup and the implementation run adapter key on.
 export const IMPLEMENTATION_WORKER_ROLE = "implementation";
+export const IMPLEMENTATION_WORKER_DISPLAY_NAME = "The Coder";
+// One implementation run turns a single ready-for-agent issue into a branch and
+// pull request; the run type sits beside `github.pull_request_review` so the
+// same worker runtime spine drives both roles (one pipeline, not two).
+export const GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE = "github.issue_implementation";
+export const LEGACY_IMPLEMENTATION_COWORKER_SLUG = "implementation";
 
 export const agentRun = sqliteTable(
   "agent_run",

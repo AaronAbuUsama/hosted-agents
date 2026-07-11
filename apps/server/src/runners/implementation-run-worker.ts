@@ -1,19 +1,19 @@
 import { createGitHubInstallationAccessToken } from "@hosted-agents/api/github-app";
 import { db } from "@hosted-agents/db";
 import {
-  CODE_REVIEW_WORKER_DISPLAY_NAME,
-  CODE_REVIEW_WORKER_ROLE,
-  GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
+  GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
+  IMPLEMENTATION_WORKER_DISPLAY_NAME,
+  IMPLEMENTATION_WORKER_ROLE,
   agentRun,
 } from "@hosted-agents/db/schema/agent-runs";
 import { eq } from "drizzle-orm";
 
 import { appendAgentRunEvent, insertAgentRunArtifact } from "./agent-run-events";
-import {
-  CodeReviewSandboxRunError,
-  type CodeReviewSandboxRunner,
-} from "./code-review-sandbox-runner";
 import { cleanupDaytonaSandboxesByLabels } from "./daytona-code-review-sandbox-runner";
+import {
+  ImplementationSandboxRunError,
+  type ImplementationSandboxRunner,
+} from "./implementation-sandbox-runner";
 import {
   type CreateInstallationAccessToken,
   type WorkerDatabase,
@@ -26,10 +26,16 @@ import {
   resolveQueuedGitHubRunContext,
 } from "./queued-github-run-worker";
 
-type AgentRun = typeof agentRun.$inferSelect;
+// The implementation ("Coder") role adapter. It reuses the shared worker-runtime
+// spine (claim → resolve context → run → record) and is capped to one active run
+// at a time by `drainQueuedImplementationRuns({ limit: 1 })` — that limit IS the
+// concurrency cap (spec #21). The write-capable Daytona runner lands in C5; this
+// worker is runner-agnostic and drives whatever runner it is handed to a terminal
+// state.
+
 type CleanupSandboxesByLabels = typeof cleanupDaytonaSandboxesByLabels;
 
-export type RunQueuedCodeReviewResult =
+export type RunQueuedImplementationResult =
   | {
       status: "idle";
     }
@@ -45,65 +51,16 @@ export type RunQueuedCodeReviewResult =
     };
 
 function errorMessage(error: unknown) {
-  return queuedRunErrorMessage(error, "Unknown code review worker failure");
+  return queuedRunErrorMessage(error, "Unknown implementation worker failure");
 }
 
-function requireRunMetadata(run: AgentRun) {
-  const {
-    githubInstallationId,
-    githubRepositoryId,
-    repositoryOwner,
-    repositoryName,
-    pullRequestNumber,
-    pullRequestBaseRef,
-    pullRequestBaseSha,
-    pullRequestHeadRef,
-    pullRequestHeadSha,
-  } = run;
-  const missing = [
-    ["githubInstallationId", githubInstallationId],
-    ["githubRepositoryId", githubRepositoryId],
-    ["repositoryOwner", repositoryOwner],
-    ["repositoryName", repositoryName],
-    ["pullRequestNumber", pullRequestNumber],
-    ["pullRequestBaseRef", pullRequestBaseRef],
-    ["pullRequestBaseSha", pullRequestBaseSha],
-    ["pullRequestHeadRef", pullRequestHeadRef],
-    ["pullRequestHeadSha", pullRequestHeadSha],
-  ]
-    .filter(([, value]) => value === null || value === undefined || value === "")
-    .map(([name]) => name);
-
-  if (
-    !githubInstallationId ||
-    !githubRepositoryId ||
-    !repositoryOwner ||
-    !repositoryName ||
-    !pullRequestNumber ||
-    !pullRequestBaseRef ||
-    !pullRequestBaseSha ||
-    !pullRequestHeadRef ||
-    !pullRequestHeadSha
-  ) {
-    throw new Error(`Queued GitHub agent run is missing metadata: ${missing.join(", ")}`);
-  }
-
-  return {
-    githubInstallationId,
-    githubRepositoryId,
-    workerRole: run.workerRole,
-    workerDisplayName: run.workerDisplayName ?? CODE_REVIEW_WORKER_DISPLAY_NAME,
-    owner: repositoryOwner,
-    repo: repositoryName,
-    pullRequestNumber,
-    baseRef: pullRequestBaseRef,
-    baseSha: pullRequestBaseSha,
-    headRef: pullRequestHeadRef,
-    headSha: pullRequestHeadSha,
-  };
+// Mint a token as the Coder's own GitHub App (ADR-0001), so the branch, commits,
+// pull request, and comments are attributed to the implementation identity.
+function createImplementationInstallationAccessToken(installationId: string) {
+  return createGitHubInstallationAccessToken(installationId, IMPLEMENTATION_WORKER_ROLE);
 }
 
-export async function recoverStaleRunningCodeReviews({
+export async function recoverStaleRunningImplementations({
   database = db,
   staleAfterMs,
   cleanupSandboxesByLabels = cleanupDaytonaSandboxesByLabels,
@@ -114,25 +71,25 @@ export async function recoverStaleRunningCodeReviews({
 } = {}) {
   return recoverStaleRunningGitHubRuns({
     database,
-    runType: GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
-    workerRole: CODE_REVIEW_WORKER_ROLE,
+    runType: GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
+    workerRole: IMPLEMENTATION_WORKER_ROLE,
     staleAfterMs,
     cleanupSandboxesByLabels,
   });
 }
 
-export async function runNextQueuedCodeReview({
+export async function runNextQueuedImplementation({
   runner,
   database = db,
-  createInstallationAccessToken = createGitHubInstallationAccessToken,
+  createInstallationAccessToken = createImplementationInstallationAccessToken,
 }: {
-  runner: CodeReviewSandboxRunner;
+  runner: ImplementationSandboxRunner;
   database?: WorkerDatabase;
   createInstallationAccessToken?: CreateInstallationAccessToken;
-}): Promise<RunQueuedCodeReviewResult> {
+}): Promise<RunQueuedImplementationResult> {
   const run = await claimNextQueuedGitHubRun(database, {
-    runType: GITHUB_PULL_REQUEST_REVIEW_RUN_TYPE,
-    workerRole: CODE_REVIEW_WORKER_ROLE,
+    runType: GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
+    workerRole: IMPLEMENTATION_WORKER_ROLE,
   });
 
   if (!run) {
@@ -144,42 +101,39 @@ export async function runNextQueuedCodeReview({
     category: "worker",
     type: "worker.claimed",
     stage: "worker_claimed",
-    message: "Worker claimed queued GitHub pull request code review run",
+    message: "Worker claimed queued GitHub issue implementation run",
     payload: {
       workerRole: run.workerRole,
-      workerDisplayName: run.workerDisplayName ?? CODE_REVIEW_WORKER_DISPLAY_NAME,
+      workerDisplayName: run.workerDisplayName ?? IMPLEMENTATION_WORKER_DISPLAY_NAME,
     },
   });
 
   try {
-    const metadata = requireRunMetadata(run);
     const context = await resolveQueuedGitHubRunContext(database, run, {
       createInstallationAccessToken,
-      defaultDisplayName: CODE_REVIEW_WORKER_DISPLAY_NAME,
+      defaultDisplayName: IMPLEMENTATION_WORKER_DISPLAY_NAME,
     });
-    const { configuration, workerDisplayName } = context;
+    const { configuration, installation, repository, workerDisplayName } = context;
 
     const result = await runner.run({
       agentRunId: run.id,
       organizationId: run.organizationId,
-      workerRole: metadata.workerRole,
+      workerRole: run.workerRole,
       workerDisplayName,
       configuredModel: configuration?.model ?? undefined,
       configuredReasoningEffort: configuration?.reasoningEffort ?? undefined,
       configuredInstructions: configuration?.instructions ?? undefined,
       skills: context.skills,
       providerCredentialId: run.providerCredentialId ?? undefined,
-      githubInstallationId: metadata.githubInstallationId,
-      githubRepositoryId: metadata.githubRepositoryId,
-      installationId: context.installation.installationId,
+      githubInstallationId: installation.id,
+      githubRepositoryId: repository.id,
+      installationId: installation.installationId,
       installationAccessToken: context.installationAccessToken,
-      owner: metadata.owner,
-      repo: metadata.repo,
-      pullRequestNumber: metadata.pullRequestNumber,
-      baseRef: metadata.baseRef,
-      baseSha: metadata.baseSha,
-      headRef: metadata.headRef,
-      headSha: metadata.headSha,
+      owner: repository.owner,
+      repo: repository.name,
+      defaultBranch: repository.defaultBranch ?? run.baseBranch ?? "main",
+      // Issue linkage (issueNumber/title/body) is populated once kick-off (C4)
+      // adds it to the run; unset here so the seam stays forward-compatible.
       onEvent: (event) => recordRunnerEvent(database, run.id, event),
     });
 
@@ -210,7 +164,11 @@ export async function runNextQueuedCodeReview({
         currentStage: "completed",
         lastHeartbeatAt: now,
         summary: result.summary,
-        findingsJson: result.findingsJson,
+        // Stamp the branch + pull request the Coder opened so the board's In PR
+        // lane is immediate (C5 populates these; nulls leave the run untouched).
+        branch: result.branch ?? run.branch,
+        pullRequestNumber: result.pullRequestNumber ?? run.pullRequestNumber,
+        pullRequestHeadRef: result.branch ?? run.pullRequestHeadRef,
         errorMessage: null,
         completedAt: now,
         updatedAt: now,
@@ -222,13 +180,14 @@ export async function runNextQueuedCodeReview({
       category: "result",
       type: "result.completed",
       stage: "completed",
-      message: "Code review completed",
+      message: "Issue implementation completed",
       payload: {
         sandboxId: result.sandboxId,
         model: result.model,
-        workerRole: metadata.workerRole,
+        workerRole: run.workerRole,
         workerDisplayName,
-        findingsCount: JSON.parse(result.findingsJson || "[]").length,
+        branch: result.branch ?? null,
+        pullRequestNumber: result.pullRequestNumber ?? null,
       },
     });
 
@@ -240,8 +199,8 @@ export async function runNextQueuedCodeReview({
   } catch (error) {
     const message = errorMessage(error);
     await failQueuedGitHubRun(database, run.id, message, {
-      logs: error instanceof CodeReviewSandboxRunError ? error.logs : undefined,
-      sandboxId: error instanceof CodeReviewSandboxRunError ? error.sandboxId : undefined,
+      logs: error instanceof ImplementationSandboxRunError ? error.logs : undefined,
+      sandboxId: error instanceof ImplementationSandboxRunError ? error.sandboxId : undefined,
     });
 
     return {
@@ -252,22 +211,27 @@ export async function runNextQueuedCodeReview({
   }
 }
 
-export async function drainQueuedCodeReviews({
+// `limit: 1` is the concurrency cap: each drain pass processes at most one run,
+// and because the pass awaits each run to a terminal state before claiming the
+// next, queued runs execute strictly serially.
+export async function drainQueuedImplementationRuns({
   runner,
   database = db,
-  createInstallationAccessToken = createGitHubInstallationAccessToken,
+  createInstallationAccessToken = createImplementationInstallationAccessToken,
   limit = 1,
   recoverStaleRuns = true,
 }: {
-  runner: CodeReviewSandboxRunner;
+  runner: ImplementationSandboxRunner;
   database?: WorkerDatabase;
   createInstallationAccessToken?: CreateInstallationAccessToken;
   limit?: number;
   recoverStaleRuns?: boolean;
 }) {
-  return drainQueuedGitHubRuns<RunQueuedCodeReviewResult>({
+  return drainQueuedGitHubRuns<RunQueuedImplementationResult>({
     limit,
-    recoverStale: recoverStaleRuns ? () => recoverStaleRunningCodeReviews({ database }) : undefined,
-    runOne: () => runNextQueuedCodeReview({ runner, database, createInstallationAccessToken }),
+    recoverStale: recoverStaleRuns
+      ? () => recoverStaleRunningImplementations({ database })
+      : undefined,
+    runOne: () => runNextQueuedImplementation({ runner, database, createInstallationAccessToken }),
   });
 }

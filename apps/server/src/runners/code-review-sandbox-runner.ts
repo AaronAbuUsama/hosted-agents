@@ -1,3 +1,5 @@
+import type { SandboxLifecycleEvent } from "./sandbox-lifecycle-event";
+
 // A skill bundle: a directory of markdown files with a SKILL.md entry file.
 // Mirrors Flue's PackagedSkillDirectory and Eve's skills/ directory layout,
 // so the shape survives the runtime migration.
@@ -55,46 +57,9 @@ export interface CodeReviewSandboxRunner {
   run(input: CodeReviewSandboxRunInput): Promise<CodeReviewSandboxRunResult>;
 }
 
-export type CodeReviewSandboxLifecycleEvent =
-  | {
-      type: "sandbox.created";
-      sandboxProvider: string;
-      sandboxId: string;
-      labels: Record<string, string>;
-    }
-  | {
-      type: "sandbox.deleted";
-      sandboxId: string;
-    }
-  | {
-      type: "sandbox.delete_failed";
-      sandboxId: string;
-      errorMessage: string;
-    }
-  | {
-      type: "stage";
-      stage: string;
-      message: string;
-      payload?: unknown;
-    }
-  | {
-      type: "flue.event";
-      event: unknown;
-    }
-  | {
-      type: "github.tool";
-      toolName: string;
-      status: "started" | "completed" | "failed";
-      message: string;
-      payload?: unknown;
-    }
-  | {
-      type: "github.artifact";
-      name: string;
-      contentType: string;
-      content?: string;
-      payload?: unknown;
-    };
+// The lifecycle event vocabulary is now shared across worker roles; kept as an
+// alias so existing code-review imports keep working.
+export type CodeReviewSandboxLifecycleEvent = SandboxLifecycleEvent;
 
 export class CodeReviewSandboxRunError extends Error {
   readonly logs?: string;

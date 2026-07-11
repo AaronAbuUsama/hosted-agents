@@ -1,3 +1,5 @@
+import { IMPLEMENTATION_WORKER_ROLE } from "@/lib/github-installations";
+
 export type AgentRunApiStatus = "queued" | "running" | "completed" | "failed" | (string & {});
 
 export type AgentRunApiRecord = {
@@ -334,14 +336,22 @@ function timelineStatusForEvent(event: AgentRunEventApiRecord): RunTimelineEvent
   return "accent";
 }
 
+// The verb reflects the run's role: the Reviewer reviews a pull request, the
+// implementation ("Coder") run implements an issue. Keyed off workerRole so a new
+// role's runs never mislabel themselves as reviews in the Runs tab.
+function verbForRun(run: AgentRunApiRecord): string {
+  return run.workerRole === IMPLEMENTATION_WORKER_ROLE ? "Implement" : "Review";
+}
+
 function titleForRun(run: AgentRunApiRecord): string {
+  const verb = verbForRun(run);
   if (typeof run.pullRequestNumber === "number") {
-    return `Review PR #${run.pullRequestNumber}`;
+    return `${verb} PR #${run.pullRequestNumber}`;
   }
 
   const repo = repositoryLabel(run);
   if (repo !== "Unknown repository") {
-    return `Review ${repo}`;
+    return `${verb} ${repo}`;
   }
 
   return `Run ${run.id.slice(0, 8)}`;

@@ -95,6 +95,41 @@ describe("run view model mapper", () => {
     });
   });
 
+  test("renders an implementation run with its own role, verb, and stage", () => {
+    const withPr = mapAgentRunToRunRow(
+      agentRun({
+        workerRole: "implementation",
+        workerDisplayName: "The Coder",
+        runType: "github.issue_implementation",
+        repositoryOwner: "coworker",
+        repositoryName: "web",
+        pullRequestNumber: 512,
+        currentStage: "worker_claimed",
+      }),
+    );
+    expect(withPr).toMatchObject({
+      coworkerName: "The Coder",
+      title: "Implement PR #512",
+      runType: "github.issue_implementation",
+      currentStage: "worker_claimed",
+    });
+
+    // Before the Coder opens a pull request the run still reads as implementation,
+    // never as a review, and falls back to its display name via the role token.
+    const beforePr = mapAgentRunToRunRow(
+      agentRun({
+        workerRole: "implementation",
+        workerDisplayName: "",
+        runType: "github.issue_implementation",
+        repositoryOwner: "coworker",
+        repositoryName: "web",
+        pullRequestNumber: null,
+      }),
+    );
+    expect(beforePr.title).toBe("Implement coworker/web");
+    expect(beforePr.coworkerName).toBe("Implementation");
+  });
+
   test("maps backend lifecycle statuses to explicit UI statuses without fixture-only review states", () => {
     const cases: Array<{
       backendStatus: AgentRunApiRecord["status"];

@@ -43,6 +43,7 @@
     "dev:web": "vp run --filter web dev",
     "dev:server": "vp run --filter server dev",
     "worker:code-reviews": "bun scripts/run-code-review-worker.mjs",
+    "worker:implementations": "bun scripts/run-implementation-worker.mjs",
     "proof:preflight": "bun scripts/proof-preflight.mjs",
     "proof:real-pr": "bun scripts/proof-real-pr-e2e.mjs",
     "db:push": "vp run --filter @hosted-agents/db db:push",
