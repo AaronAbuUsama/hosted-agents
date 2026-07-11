@@ -79,25 +79,32 @@ export function resolveLocalEnvPath(value, { root = process.cwd(), base = "apps/
   return resolve(root, base, value);
 }
 
-export function checkGitHubAppPrivateKey(env, { root = process.cwd() } = {}) {
-  if (env.GITHUB_APP_PRIVATE_KEY) {
-    return { ok: true, source: "GITHUB_APP_PRIVATE_KEY" };
+export function checkGitHubAppPrivateKey(
+  env,
+  {
+    root = process.cwd(),
+    keyVar = "GITHUB_APP_PRIVATE_KEY",
+    pathVar = "GITHUB_APP_PRIVATE_KEY_PATH",
+  } = {},
+) {
+  if (env[keyVar]) {
+    return { ok: true, source: keyVar };
   }
 
-  if (!env.GITHUB_APP_PRIVATE_KEY_PATH) {
+  if (!env[pathVar]) {
     return {
       ok: false,
-      reason: "GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH is required.",
+      reason: `${keyVar} or ${pathVar} is required.`,
     };
   }
 
-  const privateKeyPath = resolveLocalEnvPath(env.GITHUB_APP_PRIVATE_KEY_PATH, { root });
+  const privateKeyPath = resolveLocalEnvPath(env[pathVar], { root });
 
   try {
     readFileSync(privateKeyPath, "utf8");
     return {
       ok: true,
-      source: "GITHUB_APP_PRIVATE_KEY_PATH",
+      source: pathVar,
       path: privateKeyPath,
     };
   } catch (error) {
@@ -106,7 +113,7 @@ export function checkGitHubAppPrivateKey(env, { root = process.cwd() } = {}) {
       path: privateKeyPath,
       reason:
         error instanceof Error
-          ? `${error.message}. Move the key to a terminal-readable path or set GITHUB_APP_PRIVATE_KEY.`
+          ? `${error.message}. Move the key to a terminal-readable path or set ${keyVar}.`
           : "GitHub App private key is not readable.",
     };
   }
