@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import CoworkerPage from "@/components/coworker/coworker-page";
 import FeatureNotEnabled from "@/components/coworker/feature-not-enabled";
 import RepositoryWorkspaceClient from "@/components/coworker/repository-workspace-client";
+import { githubInstallationSettingsUrl } from "@/lib/board-load-error";
 import { isReviewerInstallation } from "@/lib/github-installations";
 import { APP_LANDING_PATH } from "@/lib/organization-routing";
 import { client } from "@/utils/orpc";
@@ -26,15 +27,18 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
   const installations = await client.githubInstallations({
     organizationId: activeOrganization.id,
   });
-  // The workspace reads issues/PRs with a code_review installation token, so it
-  // resolves against reviewer-app installations only. A Coder-installation repo
-  // id would be a distinct copy of the same repo that 404s on every read.
-  const repository = installations
+  // Resolve the repository together with the installation that owns it — the
+  // installation carries the account identity the board's error CTA needs to
+  // link its settings page. The workspace reads issues/PRs with a code_review
+  // installation token, so it resolves against reviewer-app installations only:
+  // a Coder-installation repo id would be a distinct copy of the same repo that
+  // 404s on every read.
+  const installation = installations
     .filter(isReviewerInstallation)
-    .flatMap((installation) => installation.repositories)
-    .find((repo) => repo.id === projectId);
+    .find((candidate) => candidate.repositories.some((repo) => repo.id === projectId));
+  const repository = installation?.repositories.find((repo) => repo.id === projectId);
 
-  if (!repository) {
+  if (!installation || !repository) {
     return (
       <FeatureNotEnabled
         featureName="This project"
@@ -43,12 +47,19 @@ export default async function ProjectPage({ params }: ProjectPageProps): Promise
     );
   }
 
+  const installationSettingsUrl = githubInstallationSettingsUrl({
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType,
+    installationId: installation.installationId,
+  });
+
   return (
     <CoworkerPage variant="workspace" width="full">
       <RepositoryWorkspaceClient
         fullName={repository.fullName}
         repositoryId={repository.id}
         organizationId={activeOrganization.id}
+        installationSettingsUrl={installationSettingsUrl}
       />
     </CoworkerPage>
   );

@@ -1,0 +1,1 @@
+ALTER TABLE `worker_config` ADD `reasoning_effort` text;

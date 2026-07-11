@@ -251,6 +251,7 @@ async function createTables(testClient: TestClient) {
       "worker_role" text NOT NULL,
       "display_name" text,
       "model" text,
+      "reasoning_effort" text,
       "instructions" text,
       "created_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
       "updated_at" integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
@@ -1000,6 +1001,136 @@ describe("GitHub App router procedures", () => {
   });
 });
 
+describe("listRepositoryIssues router procedure", () => {
+  // Seed a connected installation + selected repository the board can read, then
+  // let each test control the GitHub App HTTP responses.
+  async function seedRepository(options: {
+    slug: string;
+    installationId: string;
+    owner?: string;
+    name?: string;
+  }) {
+    const { slug, installationId } = options;
+    const owner = options.owner ?? "acme";
+    const name = options.name ?? "widgets";
+    await seedUser(`${slug}-user`);
+    await seedSession(`${slug}-user`, `${slug}-org`);
+    await seedOrganization(`${slug}-org`);
+    await seedMembership(`${slug}-user`, `${slug}-org`, "owner");
+    await database.insert(schema.githubInstallation).values({
+      id: `${slug}-installation`,
+      organizationId: `${slug}-org`,
+      installationId,
+      appSlug: "hosted-agents-test",
+      accountLogin: owner,
+      accountType: "Organization",
+      status: "connected",
+    });
+    await database.insert(schema.githubRepository).values({
+      id: `${slug}-repository`,
+      installationId: `${slug}-installation`,
+      githubRepositoryId: `${slug}-github-id`,
+      owner,
+      name,
+      fullName: `${owner}/${name}`,
+      selected: true,
+    });
+    return {
+      context: memberContext(`${slug}-user`, { activeOrganizationId: `${slug}-org` }),
+      repositoryId: `${slug}-repository`,
+      organizationId: `${slug}-org`,
+      owner,
+      name,
+    };
+  }
+
+  // Stub the two GitHub calls the board makes: mint the installation token (with the
+  // given `permissions`) and GET the shared issues endpoint (returns `issuesResponse`).
+  function stubBoardFetch(options: {
+    installationId: string;
+    permissions?: Record<string, string> | null;
+    issuesResponse: unknown[];
+  }) {
+    return (async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (
+        url.pathname === `/app/installations/${options.installationId}/access_tokens` &&
+        method === "POST"
+      ) {
+        const body: Record<string, unknown> = { token: "installation-access-token" };
+        if (options.permissions !== undefined) {
+          body.permissions = options.permissions;
+        }
+        return Response.json(body);
+      }
+
+      if (/^\/repos\/[^/]+\/[^/]+\/issues$/.test(url.pathname) && method === "GET") {
+        return Response.json(options.issuesResponse);
+      }
+
+      return new Response(`unexpected GitHub API request: ${method} ${url.toString()}`, {
+        status: 500,
+      });
+    }) as typeof fetch;
+  }
+
+  test("surfaces the named Issues-access failure when the installation lacks issues:read but has pull_requests:read", async () => {
+    // The documented silent failure (memory: issues-board-github-app-permission):
+    // GET /issues answers 200 with only PRs, which the filter empties. The board
+    // must instead name the cause so its client error branch shows the fix CTA.
+    const seeded = await seedRepository({ slug: "board-forbidden", installationId: "701" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubBoardFetch({
+      installationId: "701",
+      permissions: { pull_requests: "read", metadata: "read" },
+      issuesResponse: [{ number: 8, title: "A PR", state: "open", pull_request: { url: "…" } }],
+    });
+
+    try {
+      const call = createProcedureClient(appRouter.listRepositoryIssues, {
+        context: seeded.context,
+      })({ organizationId: seeded.organizationId, repositoryId: seeded.repositoryId });
+
+      await expectOrpcCode(call, "BAD_REQUEST");
+      // The message the client (apps/web board-load-error) keys off to render the
+      // Issues-access copy + fix CTA rather than a generic "couldn't load" state.
+      await call.catch((error: unknown) => {
+        expect((error as ORPCError<string, unknown>).message.toLowerCase()).toContain(
+          "resource not accessible by integration",
+        );
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("returns the board with pull requests filtered out when the installation has Issues access", async () => {
+    const seeded = await seedRepository({ slug: "board-ok", installationId: "702" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubBoardFetch({
+      installationId: "702",
+      permissions: { issues: "read", pull_requests: "read" },
+      issuesResponse: [
+        { number: 7, title: "A real issue", state: "open", labels: [] },
+        { number: 8, title: "A PR", state: "open", pull_request: { url: "…" } },
+      ],
+    });
+
+    try {
+      const board = await createProcedureClient(appRouter.listRepositoryIssues, {
+        context: seeded.context,
+      })({ organizationId: seeded.organizationId, repositoryId: seeded.repositoryId });
+
+      const allIssues = board.flatMap((columnEntry) => columnEntry.issues.map((i) => i.number));
+      expect(allIssues).toEqual([7]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("provider credential router procedures", () => {
   test("owner can list organization provider credential metadata without secret fields", async () => {
     await seedUser("provider-list-owner");
@@ -1298,5 +1429,50 @@ describe("agentRunArtifacts router procedure", () => {
       callAgentRunArtifacts("artifact-user-3")({ runId: "artifact-outside-run-3" }),
       "FORBIDDEN",
     );
+  });
+});
+
+describe("worker configuration procedures", () => {
+  test("round-trips the reasoning-effort override and exposes the policy default", async () => {
+    await seedUser("wc-user-1");
+    await seedOrganization("wc-org-1");
+    await seedMembership("wc-user-1", "wc-org-1", "owner");
+    await seedSession("wc-user-1", "wc-org-1");
+
+    const context = memberContext("wc-user-1", { activeOrganizationId: "wc-org-1" });
+    const update = createProcedureClient(appRouter.updateWorkerConfiguration, { context });
+    const read = createProcedureClient(appRouter.workerConfiguration, { context });
+
+    const saved = await update({
+      organizationId: "wc-org-1",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+    });
+    expect(saved.model).toBe("gpt-5.4");
+    expect(saved.reasoningEffort).toBe("high");
+
+    const config = await read({ organizationId: "wc-org-1" });
+    expect(config.defaults.model).toBe("gpt-5.5");
+    expect(config.defaults.reasoningEffort).toBe("minimal");
+    expect(config.config?.reasoningEffort).toBe("high");
+
+    // Clearing only the effort persists null and leaves the model untouched.
+    const cleared = await update({ organizationId: "wc-org-1", reasoningEffort: null });
+    expect(cleared.reasoningEffort).toBeNull();
+    expect(cleared.model).toBe("gpt-5.4");
+  });
+
+  test("rejects an unrecognized reasoning-effort value", async () => {
+    await seedUser("wc-user-2");
+    await seedOrganization("wc-org-2");
+    await seedMembership("wc-user-2", "wc-org-2", "admin");
+    await seedSession("wc-user-2", "wc-org-2");
+
+    const context = memberContext("wc-user-2", { activeOrganizationId: "wc-org-2" });
+    const update = createProcedureClient(appRouter.updateWorkerConfiguration, { context });
+
+    await expect(
+      update({ organizationId: "wc-org-2", reasoningEffort: "lowest" as never }),
+    ).rejects.toBeInstanceOf(Error);
   });
 });

@@ -1,9 +1,14 @@
 import { defineAgent } from "@flue/runtime";
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_REASONING_EFFORT,
+} from "@hosted-agents/api/codex-model-policy";
 
 export const description = "Reviews submitted repository and branch context for code issues.";
 
 export default defineAgent(() => ({
-  model: "openai-codex/gpt-5.5",
+  model: DEFAULT_CODEX_MODEL,
+  thinkingLevel: DEFAULT_CODEX_REASONING_EFFORT,
   instructions: [
     "You are a code review agent for a hosted review service.",
     "Review only the repository, branch, and review context supplied by the workflow.",

@@ -4,20 +4,15 @@ import { useState, type ReactElement } from "react";
 
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
-import {
-  HStack,
-  Layout,
-  LayoutHeader,
-  StackItem,
-  VStack,
-} from "@astryxdesign/core/Layout";
+import { HStack, Layout, LayoutHeader, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { PlusIcon } from "@heroicons/react/24/outline";
 
 import IssuesBoard from "./issues-board";
-// Runs is the secondary tab. The repo-filtered RunsTableView lives on the
-// runs-table-page stack; on this branch the base RunsTable shows the run log.
+// Runs is the secondary tab. Scope it to this project by the repository's
+// "owner/name" label (the run view-model's group key) so project A's Runs tab
+// never shows project B's runs (spec #19, story 27).
 import RunsTable from "./runs-table";
 
 // Issue-centric: opening a repository lands on its issues board; runs are the
@@ -31,6 +26,9 @@ type RepositoryWorkspaceProps = {
   // github_repository.id + the active organization — the board queries by these.
   repositoryId: string;
   organizationId: string;
+  // The installation's GitHub settings page, forwarded to the board's error
+  // branch so an Issues-access failure can link the fix. Null when unavailable.
+  installationSettingsUrl?: string | null;
 };
 
 const REVIEWER_PATH = "/app/reviewer";
@@ -39,6 +37,7 @@ export default function RepositoryWorkspace({
   fullName,
   repositoryId,
   organizationId,
+  installationSettingsUrl = null,
 }: RepositoryWorkspaceProps): ReactElement {
   const [view, setView] = useState<ProjectView>("issues");
 
@@ -77,9 +76,13 @@ export default function RepositoryWorkspace({
       }
       content={
         view === "issues" ? (
-          <IssuesBoard organizationId={organizationId} repositoryId={repositoryId} />
+          <IssuesBoard
+            organizationId={organizationId}
+            repositoryId={repositoryId}
+            installationSettingsUrl={installationSettingsUrl}
+          />
         ) : (
-          <RunsTable />
+          <RunsTable repoFilter={fullName} />
         )
       }
     />

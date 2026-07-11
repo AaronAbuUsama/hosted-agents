@@ -41,6 +41,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useRouter } from "next/navigation";
 
 import { agentRunsCollection } from "@/lib/collections/agent-runs";
+import { filterRunsByRepository } from "@/lib/run-view-model";
 import type { RunViewModelRow, RunViewModelStatus } from "@/lib/run-view-model";
 
 type RowsByStatus = Record<RunViewModelStatus, RunViewModelRow[]>;
@@ -106,14 +107,22 @@ function groupRowsByStatus(runRows: RunViewModelRow[]): RowsByStatus {
   return grouped;
 }
 
-export default function RunsTable(): ReactElement {
+type RunsTableProps = {
+  // When set, scope the table to a single repository by its "owner/name" label,
+  // so a project's Runs tab shows only that project's runs. Absent on the global
+  // Runs page, which lists every repository's runs.
+  repoFilter?: string;
+};
+
+export default function RunsTable({ repoFilter }: RunsTableProps = {}): ReactElement {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<RunViewModelStatus>>(
     () => new Set(statusOrder),
   );
   const isCompact = useMediaQuery("(max-width: 1360px)");
-  const { data: rows, isError, isLoading } = useLiveQuery(agentRunsCollection);
+  const { data: allRows, isError, isLoading } = useLiveQuery(agentRunsCollection);
+  const rows = repoFilter ? filterRunsByRepository(allRows, repoFilter) : allRows;
 
   const query = search.trim().toLowerCase();
   const filteredRows = query

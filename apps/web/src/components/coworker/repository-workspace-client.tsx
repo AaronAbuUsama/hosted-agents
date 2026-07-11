@@ -35,16 +35,19 @@ export default function RepositoryWorkspaceClient({
   fullName,
   repositoryId,
   organizationId,
+  installationSettingsUrl = null,
 }: {
   fullName: string;
   repositoryId: string;
   organizationId: string;
+  installationSettingsUrl?: string | null;
 }): ReactElement {
   return (
     <RepositoryWorkspace
       fullName={fullName}
       repositoryId={repositoryId}
       organizationId={organizationId}
+      installationSettingsUrl={installationSettingsUrl}
     />
   );
 }

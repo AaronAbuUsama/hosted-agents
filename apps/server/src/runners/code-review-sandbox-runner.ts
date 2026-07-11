@@ -17,6 +17,7 @@ export type CodeReviewSandboxRunInput = {
   workerRole: string;
   workerDisplayName: string;
   configuredModel?: string;
+  configuredReasoningEffort?: string;
   configuredInstructions?: string;
   skills?: CodeReviewWorkerSkill[];
   providerCredentialId?: string;

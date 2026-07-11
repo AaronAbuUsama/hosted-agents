@@ -189,6 +189,7 @@ async function createTables(client: TestClient) {
       "worker_role" text NOT NULL,
       "display_name" text,
       "model" text,
+      "reasoning_effort" text,
       "instructions" text,
       "created_at" integer DEFAULT 0 NOT NULL,
       "updated_at" integer DEFAULT 0 NOT NULL
@@ -416,6 +417,60 @@ describe("code review run worker", () => {
           "sandbox-execution.log",
         ]),
       );
+    } finally {
+      client.close();
+    }
+  });
+
+  test("threads the worker config's model and reasoning effort into the runner", async () => {
+    const { client, database } = await createTestDatabase();
+    const calls: CodeReviewSandboxRunInput[] = [];
+    const runner: CodeReviewSandboxRunner = {
+      async run(input) {
+        calls.push(input);
+        await input.onEvent?.({ type: "sandbox.deleted", sandboxId: "sandbox-cfg" });
+        return {
+          sandboxProvider: "fake-sandbox",
+          sandboxId: "sandbox-cfg",
+          model: "openai-codex/gpt-5.4",
+          summary: "Review completed.",
+          findingsJson: "[]",
+          artifacts: [],
+          logs: "fake logs",
+        };
+      },
+    };
+
+    try {
+      await seedGithubRun(database);
+      await database.insert(schema.workerConfig).values({
+        id: "worker-config-1",
+        organizationId: "org-1",
+        workerRole: "code_review",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+      });
+
+      await runNextQueuedCodeReview({
+        runner,
+        database,
+        createInstallationAccessToken: createFakeTokenFactory(),
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        configuredModel: "gpt-5.4",
+        configuredReasoningEffort: "high",
+      });
+
+      const [configLoaded] = await database
+        .select()
+        .from(schema.agentRunEvent)
+        .where(eq(schema.agentRunEvent.type, "worker.config_loaded"));
+      expect(JSON.parse(configLoaded?.payloadJson ?? "{}")).toMatchObject({
+        configuredModel: "gpt-5.4",
+        configuredReasoningEffort: "high",
+      });
     } finally {
       client.close();
     }

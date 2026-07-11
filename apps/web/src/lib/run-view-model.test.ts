@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  filterRunsByRepository,
   mapAgentRunEventToTimelineRow,
   mapAgentRunEventsToTranscriptRows,
   sortRunTimelineEvents,
@@ -507,5 +508,42 @@ describe("run transcript event mapper", () => {
 
     expect(rows.map((row) => row.id)).toEqual(["event-first", "event-second", "event-third"]);
     expect(rows.map((row) => row.sequence)).toEqual([10, 20, 30]);
+  });
+});
+
+describe("run repository scope filter", () => {
+  const projectA = mapAgentRunToRunRow(
+    agentRun({ id: "run-a-1", repositoryOwner: "octo-org", repositoryName: "widgets" }),
+  );
+  const projectAClone = mapAgentRunToRunRow(
+    agentRun({ id: "run-a-2", repositoryOwner: "octo-org", repositoryName: "widgets" }),
+  );
+  const projectB = mapAgentRunToRunRow(
+    agentRun({ id: "run-b-1", repositoryOwner: "octo-org", repositoryName: "gadgets" }),
+  );
+
+  test("keeps only runs whose repository label matches the project's full name", () => {
+    const scoped = filterRunsByRepository([projectA, projectB, projectAClone], "octo-org/widgets");
+
+    expect(scoped.map((row) => row.id)).toEqual(["run-a-1", "run-a-2"]);
+    expect(scoped.every((row) => row.repo === "octo-org/widgets")).toBe(true);
+  });
+
+  test("never shows another project's runs on a project's Runs tab", () => {
+    const projectAView = filterRunsByRepository(
+      [projectA, projectAClone, projectB],
+      "octo-org/widgets",
+    );
+    const projectBView = filterRunsByRepository(
+      [projectA, projectAClone, projectB],
+      "octo-org/gadgets",
+    );
+
+    expect(projectAView.map((row) => row.id)).not.toContain("run-b-1");
+    expect(projectBView.map((row) => row.id)).toEqual(["run-b-1"]);
+  });
+
+  test("returns no runs when a project has none of its own, without borrowing others", () => {
+    expect(filterRunsByRepository([projectA, projectB], "octo-org/nothing-here")).toEqual([]);
   });
 });
