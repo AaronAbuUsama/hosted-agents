@@ -1979,6 +1979,36 @@ export const appRouter = {
     const runId = crypto.randomUUID();
     const baseBranch = repository.defaultBranch ?? "main";
 
+    // Execution identity: implementation runs mint tokens against the Coder
+    // app's installation. When the board's repo record belongs to the reviewer
+    // app (a repo installed under both apps), resolve the Coder-app
+    // installation covering the same repository — claims and lanes stay keyed
+    // to the transport's repo record.
+    const coderAppSlug = getGitHubAppSlug(IMPLEMENTATION_WORKER_ROLE);
+    let runInstallationRowId = installation.id;
+    // Without a configured Coder app (single-app environments), fall back to
+    // the transport installation — token minting degrades to the reviewer app.
+    if (coderAppSlug && installation.appSlug !== coderAppSlug) {
+      const [coderLink] = await db
+        .select({ installationRowId: githubInstallation.id })
+        .from(githubRepository)
+        .innerJoin(githubInstallation, eq(githubRepository.installationId, githubInstallation.id))
+        .where(
+          and(
+            eq(githubInstallation.organizationId, organizationId),
+            eq(githubInstallation.appSlug, coderAppSlug),
+            eq(githubRepository.fullName, repository.fullName),
+          ),
+        )
+        .limit(1);
+      if (!coderLink) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Install the Coder GitHub App on this repository before kicking off an agent.",
+        });
+      }
+      runInstallationRowId = coderLink.installationRowId;
+    }
+
     const claim = await db.transaction(async (transaction) => {
       // Ensure the issue is synced (kick-off can precede any issue webhook) so
       // the claim has a row to stamp; the upsert never clobbers an existing claim.
@@ -2029,7 +2059,7 @@ export const appRouter = {
           branch: null,
           baseBranch,
           issueNumber: issue.number,
-          githubInstallationId: installation.id,
+          githubInstallationId: runInstallationRowId,
           githubRepositoryId: repository.id,
           status: "queued",
           currentStage: "queued",
