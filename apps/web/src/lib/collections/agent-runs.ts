@@ -10,11 +10,10 @@ import {
 } from "@/lib/run-view-model";
 import { client, queryClient } from "@/utils/orpc";
 
-const RUN_COLLECTION_REFETCH_INTERVAL_MS = 5_000;
-
-function refetchRunCollectionInterval(query: { state: { error: unknown } }): number | false {
-  return query.state.error ? false : RUN_COLLECTION_REFETCH_INTERVAL_MS;
-}
+import {
+  RUN_COLLECTION_REFETCH_INTERVAL_MS,
+  refetchRunCollectionInterval,
+} from "@/lib/run-collection-poll";
 
 export const agentRunsCollection = createCollection(
   queryCollectionOptions<RunViewModelRow, Error, ["agent-runs"], string>({

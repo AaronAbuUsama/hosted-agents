@@ -9,6 +9,7 @@ import {
   connectionRetry,
   connectionRetryDelay,
   createConnectionStatusReporter,
+  suppressesGlobalErrorToast,
 } from "@/lib/connection-status";
 import { notify } from "@/lib/toast-bridge";
 
@@ -18,7 +19,16 @@ export function createQueryClient() {
   const connection = createConnectionStatusReporter({ notify });
   return new QueryClient({
     queryCache: new QueryCache({
-      onError: (error) => connection.reportError(error),
+      onError: (error, query) => {
+        // A query that renders its own error inline (the issues board's 403 "no Issues
+        // access" state) opts out of the global toast — otherwise the same failure
+        // shows twice (issue #53). Connectivity is still covered by its sibling queries
+        // (e.g. the revision poll), which keep driving the reconnecting indicator.
+        if (suppressesGlobalErrorToast(query.meta)) {
+          return;
+        }
+        connection.reportError(error);
+      },
       // Any success while we were reconnecting means the API is back — clears the
       // indicator so the board self-heals without a manual reload.
       onSuccess: () => connection.reportSuccess(),

@@ -33,6 +33,7 @@ import { useRouter } from "next/navigation";
 import { mapBoardLoadError } from "@/lib/board-load-error";
 import { createKickOffHandlers } from "@/lib/issue-kickoff";
 import { isLaneExpanded, toggleLaneCollapsed } from "@/lib/issues-board-lanes";
+import { RENDERS_ERROR_INLINE } from "@/lib/connection-status";
 import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
 import { countRunsByIssue } from "@/lib/run-view-model";
 import { orpc } from "@/utils/orpc";
@@ -184,6 +185,10 @@ export default function IssuesBoard({
       // Keep the current lanes on screen while a watermark-triggered refetch runs,
       // so a background refresh never flashes the loading state.
       placeholderData: keepPreviousData,
+      // This surface renders its own load errors inline (mapBoardLoadError → the 403
+      // "no Issues access" P4 state), so the global handler must not also toast them
+      // (issue #53: the Xelmar 403 double-surfaced as inline state + a red toast).
+      meta: { [RENDERS_ERROR_INLINE]: true },
     }),
   );
 
