@@ -38,20 +38,46 @@ describe("deriveStage", () => {
 
   test("an issue with an open linked pull request is In PR", () => {
     expect(
-      deriveStage(
-        input({ claimed: true, linkedPullRequest: { state: "open", merged: false } }),
-      ),
+      deriveStage(input({ claimed: true, linkedPullRequest: { state: "open", merged: false } })),
     ).toBe("in_pr");
   });
 
   test("an issue whose linked pull request merged is Merged", () => {
-    expect(
-      deriveStage(input({ linkedPullRequest: { state: "closed", merged: true } })),
-    ).toBe("merged");
+    expect(deriveStage(input({ linkedPullRequest: { state: "closed", merged: true } }))).toBe(
+      "merged",
+    );
   });
 
   test("an issue closed by a merge is Merged even without a linked PR record", () => {
     expect(deriveStage(input({ issueState: "closed", closedByMerge: true }))).toBe("merged");
+  });
+
+  test("a closed issue that did not merge is Closed, not Backlog", () => {
+    expect(deriveStage(input({ issueState: "closed" }))).toBe("closed");
+  });
+
+  test("a closed, ready-labelled issue is Closed, not Ready for agent", () => {
+    expect(deriveStage(input({ issueState: "closed", labels: [READY_FOR_AGENT_LABEL] }))).toBe(
+      "closed",
+    );
+  });
+
+  test("a closed, claimed issue with no PR is Closed, not Executing", () => {
+    expect(deriveStage(input({ issueState: "closed", claimed: true }))).toBe("closed");
+  });
+
+  test("a closed issue with an open linked PR stays In PR (the PR is still live)", () => {
+    expect(
+      deriveStage(
+        input({ issueState: "closed", linkedPullRequest: { state: "open", merged: false } }),
+      ),
+    ).toBe("in_pr");
+  });
+
+  test("a closed issue whose run failed is Failed / Blocked, not Closed", () => {
+    expect(deriveStage(input({ issueState: "closed", runStatus: "failed" }))).toBe(
+      "failed_blocked",
+    );
   });
 
   test("a failed run is Failed / Blocked from any stage", () => {
@@ -62,9 +88,7 @@ describe("deriveStage", () => {
 
   test("an explicitly blocked issue is Failed / Blocked", () => {
     expect(
-      deriveStage(
-        input({ linkedPullRequest: { state: "open", merged: false }, blocked: true }),
-      ),
+      deriveStage(input({ linkedPullRequest: { state: "open", merged: false }, blocked: true })),
     ).toBe("failed_blocked");
   });
 
@@ -80,7 +104,9 @@ describe("deriveStage", () => {
   test("Merged wins over an open-PR signal when the PR is merged", () => {
     // closed+merged PR must resolve to Merged, not In PR.
     expect(
-      deriveStage(input({ issueState: "closed", linkedPullRequest: { state: "closed", merged: true } })),
+      deriveStage(
+        input({ issueState: "closed", linkedPullRequest: { state: "closed", merged: true } }),
+      ),
     ).toBe("merged");
   });
 });
@@ -102,5 +128,13 @@ describe("isAgentClaimable", () => {
 
   test("an already-claimed (executing) issue is not re-claimable", () => {
     expect(isAgentClaimable(input({ labels: [READY_FOR_AGENT_LABEL], claimed: true }))).toBe(false);
+  });
+
+  test("a closed issue is never claimable, even with the ready label", () => {
+    // The closed issue sits in the Closed lane, not ready_for_agent, so kick-off is
+    // never offered on a resolved issue.
+    expect(isAgentClaimable(input({ issueState: "closed", labels: [READY_FOR_AGENT_LABEL] }))).toBe(
+      false,
+    );
   });
 });

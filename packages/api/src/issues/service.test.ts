@@ -28,7 +28,7 @@ function column(board: ReturnType<typeof buildBoard>, stage: string) {
 }
 
 describe("buildBoard", () => {
-  test("always returns all six stage columns, even when empty", () => {
+  test("always returns all seven stage columns, even when empty", () => {
     const board = buildBoard([]);
     expect(board.map((c) => c.stage)).toEqual([
       "backlog",
@@ -36,9 +36,16 @@ describe("buildBoard", () => {
       "executing",
       "in_pr",
       "merged",
+      "closed",
       "failed_blocked",
     ]);
     expect(board.every((c) => c.issues.length === 0)).toBe(true);
+  });
+
+  test("a closed issue that did not merge groups into the Closed lane, not Backlog", () => {
+    const board = buildBoard([issue({ number: 7, state: "closed" })]);
+    expect(column(board, "backlog")?.issues).toHaveLength(0);
+    expect(column(board, "closed")?.issues.map((i) => i.number)).toEqual([7]);
   });
 
   test("groups issues into the derived stage columns", () => {

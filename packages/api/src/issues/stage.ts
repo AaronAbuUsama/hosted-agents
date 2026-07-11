@@ -9,15 +9,19 @@ export type IssueStage =
   | "executing"
   | "in_pr"
   | "merged"
+  | "closed"
   | "failed_blocked";
 
-// Board column order, Failed / Blocked last.
+// Board column order, the two non-actionable terminals (Merged, Closed) after the
+// pipeline and Failed / Blocked last (#19: Failed / Blocked is the from-any-stage
+// terminal). "Closed" holds issues resolved without a merge — see deriveStage.
 export const ISSUE_STAGES: readonly IssueStage[] = [
   "backlog",
   "ready_for_agent",
   "executing",
   "in_pr",
   "merged",
+  "closed",
   "failed_blocked",
 ] as const;
 
@@ -28,6 +32,7 @@ export const ISSUE_STAGE_LABELS: Record<IssueStage, string> = {
   executing: "Executing",
   in_pr: "In PR",
   merged: "Merged",
+  closed: "Closed",
   failed_blocked: "Failed / Blocked",
 };
 
@@ -61,7 +66,10 @@ export type StageInput = {
 // and a tracker's "ready-for-agent" / "ready_for_agent" all count as the same
 // gating label (the exact string is configurable per #19).
 function normalizeLabel(label: string): string {
-  return label.trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ");
 }
 
 function hasLabel(labels: readonly string[], target: string): boolean {
@@ -70,7 +78,8 @@ function hasLabel(labels: readonly string[], target: string): boolean {
 }
 
 // Order matters: Failed / Blocked wins from any stage, then terminal PR states,
-// then in-flight, then the gating label, then the default.
+// then a plain closed issue, then in-flight, then the gating label, then the
+// default.
 export function deriveStage(input: StageInput): IssueStage {
   if (input.runStatus === "failed" || input.blocked) {
     return "failed_blocked";
@@ -82,6 +91,16 @@ export function deriveStage(input: StageInput): IssueStage {
   }
   if (pr && pr.state === "open") {
     return "in_pr";
+  }
+  // A closed issue that did not merge (closed manually, or "not planned") is done,
+  // not backlog. It lands in its own terminal Closed lane — after Merged/In PR win,
+  // but ahead of the claim/label/backlog fall-throughs — so resolved work stays
+  // visible and is never mistaken for actionable backlog (#19: closed-not-merged
+  // must not sit in Backlog). This also keeps a closed, ready-labelled issue out of
+  // the claimable path (isAgentClaimable below only ever returns true for the
+  // ready_for_agent stage), so kick-off is never offered on a closed issue.
+  if (input.issueState === "closed") {
+    return "closed";
   }
   if (input.claimed) {
     return "executing";

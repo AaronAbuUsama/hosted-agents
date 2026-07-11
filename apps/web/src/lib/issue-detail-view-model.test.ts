@@ -74,6 +74,12 @@ describe("issueStage / issueStageLabel", () => {
   test("matches the gating label tolerant of separators", () => {
     expect(issueStage({ state: "open", labels: ["ready-for-agent"] })).toBe("ready_for_agent");
   });
+
+  test("a closed issue that did not merge reads as the Closed lane", () => {
+    const closed: StageDerivable = { state: "closed", labels: [] };
+    expect(issueStage(closed)).toBe("closed");
+    expect(issueStageLabel(closed)).toBe("Closed");
+  });
 });
 
 describe("stageDotVariant", () => {
@@ -84,6 +90,7 @@ describe("stageDotVariant", () => {
       executing: "warning",
       in_pr: "accent",
       merged: "success",
+      closed: "neutral",
       failed_blocked: "warning",
     };
     for (const [stage, variant] of Object.entries(expected)) {
