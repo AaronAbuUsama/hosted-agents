@@ -100,6 +100,9 @@ function createFakeGitHubClient(record: {
         async listReviewComments() {
           return { data: [] };
         },
+        async merge() {
+          return { data: { merged: true, sha: "merge-sha-7" } };
+        },
       },
     },
   };

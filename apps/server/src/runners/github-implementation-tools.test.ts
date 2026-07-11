@@ -106,6 +106,10 @@ function createFakeClient(calls: Call[]): ImplementationGitHubClient {
             ],
           };
         },
+        async merge(input) {
+          calls.push({ method: "pulls.merge", input });
+          return { data: { merged: true, sha: "merge-sha-7" } };
+        },
       },
     },
   };
