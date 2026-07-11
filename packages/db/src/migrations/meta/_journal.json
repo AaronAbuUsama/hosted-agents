@@ -57,6 +57,13 @@
       "when": 1783725286946,
       "tag": "0007_worker_config_reasoning_effort",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783733331812,
+      "tag": "0008_agent_run_issue_number",
+      "breakpoints": true
     }
   ]
 }
