@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, type CSSProperties, type ReactElement } from "react";
+import { Fragment, useState, type CSSProperties, type ReactElement } from "react";
 
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
@@ -21,12 +21,18 @@ import type { TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Token } from "@astryxdesign/core/Token";
-import { ArrowTopRightOnSquareIcon, PlayCircleIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowTopRightOnSquareIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  PlayCircleIcon,
+} from "@heroicons/react/24/outline";
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
 import { mapBoardLoadError } from "@/lib/board-load-error";
 import { createKickOffHandlers } from "@/lib/issue-kickoff";
+import { isLaneExpanded, toggleLaneCollapsed } from "@/lib/issues-board-lanes";
 import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
 import { orpc } from "@/utils/orpc";
 
@@ -50,6 +56,7 @@ const columns: TableColumn<Record<string, unknown>>[] = [
 ];
 
 const groupHeaderCell: CSSProperties = {
+  cursor: "pointer",
   backgroundColor: "var(--color-background-muted)",
   padding: "var(--spacing-3) var(--spacing-4)",
 };
@@ -91,6 +98,14 @@ export default function IssuesBoard({
   const router = useRouter();
   const showToast = useToast();
   const input = { organizationId, repositoryId };
+
+  // Which stage lanes the user has collapsed. Empty means every lane is expanded
+  // (the default), matching the Runs table's collapsible groups (runs-table.tsx).
+  const [collapsedLanes, setCollapsedLanes] = useState<Set<string>>(() => new Set());
+
+  function toggleLane(stage: string): void {
+    setCollapsedLanes((current) => toggleLaneCollapsed(current, stage));
+  }
 
   // Poll our own store's change-watermark (never GitHub). The board's live GitHub
   // read is keyed on this watermark, so when a webhook syncs an issue/comment
@@ -212,77 +227,101 @@ export default function IssuesBoard({
             DOM-nesting validation (a dev-only console error) — mirroring the Runs
             table. */}
         <tbody>
-          {board_.map((column) => (
-            <Fragment key={column.stage}>
-              <TableRow>
-                <TableCell colSpan={colCount} style={groupHeaderCell}>
-                  <HStack gap={2} vAlign="center">
-                    <StatusDot variant={stageDotVariant(column.stage)} label={column.label} />
-                    <Text type="body" weight="bold">
-                      {column.label}
-                    </Text>
-                    <Badge variant="neutral" label={String(column.issues.length)} />
-                  </HStack>
-                </TableCell>
-              </TableRow>
-              {column.issues.map((issue) => (
+          {board_.map((column) => {
+            const expanded = isLaneExpanded(collapsedLanes, column.stage);
+
+            return (
+              <Fragment key={column.stage}>
                 <TableRow
-                  key={issue.number}
-                  onClick={() =>
-                    router.push(`/app/projects/${repositoryId}/issues/${issue.number}`)
-                  }
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleLane(column.stage)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleLane(column.stage);
+                    }
+                  }}
                 >
-                  <TableCell>
-                    <Center axis="horizontal">
-                      <StatusDot variant={stageDotVariant(issue.stage)} label={column.label} />
-                    </Center>
-                  </TableCell>
-                  <TableCell>
+                  <TableCell colSpan={colCount} style={groupHeaderCell}>
                     <HStack gap={2} vAlign="center">
-                      <Text type="supporting" color="secondary">
-                        #{issue.number}
+                      <Icon
+                        icon={expanded ? ChevronDownIcon : ChevronRightIcon}
+                        size="sm"
+                        color="secondary"
+                      />
+                      <StatusDot variant={stageDotVariant(column.stage)} label={column.label} />
+                      <Text type="body" weight="bold">
+                        {column.label}
                       </Text>
-                      <Text type="body" maxLines={1}>
-                        {issue.title}
-                      </Text>
-                      {issue.claimable ? (
-                        <Button
-                          label="Kick off"
-                          variant="secondary"
-                          size="sm"
-                          icon={<Icon icon={PlayCircleIcon} size="sm" />}
-                          clickAction={(event) => startKickOff(event, issue.number)}
-                        />
-                      ) : null}
+                      <Badge variant="neutral" label={String(column.issues.length)} />
                     </HStack>
-                  </TableCell>
-                  <TableCell>
-                    <HStack gap={1} wrap="wrap">
-                      {issue.labels.length === 0 ? (
-                        <Text type="supporting" color="secondary">
-                          —
-                        </Text>
-                      ) : (
-                        issue.labels
-                          .slice(0, 3)
-                          .map((label) => <Token key={label} label={label} size="sm" />)
-                      )}
-                    </HStack>
-                  </TableCell>
-                  <TableCell>
-                    <Text type="supporting" color="secondary">
-                      {issue.commentCount > 0 ? String(issue.commentCount) : "—"}
-                    </Text>
-                  </TableCell>
-                  <TableCell>
-                    <Text type="supporting" color="secondary">
-                      {formatUpdated(issue.updatedAt)}
-                    </Text>
                   </TableCell>
                 </TableRow>
-              ))}
-            </Fragment>
-          ))}
+                {expanded
+                  ? column.issues.map((issue) => (
+                      <TableRow
+                        key={issue.number}
+                        onClick={() =>
+                          router.push(`/app/projects/${repositoryId}/issues/${issue.number}`)
+                        }
+                      >
+                        <TableCell>
+                          <Center axis="horizontal">
+                            <StatusDot
+                              variant={stageDotVariant(issue.stage)}
+                              label={column.label}
+                            />
+                          </Center>
+                        </TableCell>
+                        <TableCell>
+                          <HStack gap={2} vAlign="center">
+                            <Text type="supporting" color="secondary">
+                              #{issue.number}
+                            </Text>
+                            <Text type="body" maxLines={1}>
+                              {issue.title}
+                            </Text>
+                            {issue.claimable ? (
+                              <Button
+                                label="Kick off"
+                                variant="secondary"
+                                size="sm"
+                                icon={<Icon icon={PlayCircleIcon} size="sm" />}
+                                clickAction={(event) => startKickOff(event, issue.number)}
+                              />
+                            ) : null}
+                          </HStack>
+                        </TableCell>
+                        <TableCell>
+                          <HStack gap={1} wrap="wrap">
+                            {issue.labels.length === 0 ? (
+                              <Text type="supporting" color="secondary">
+                                —
+                              </Text>
+                            ) : (
+                              issue.labels
+                                .slice(0, 3)
+                                .map((label) => <Token key={label} label={label} size="sm" />)
+                            )}
+                          </HStack>
+                        </TableCell>
+                        <TableCell>
+                          <Text type="supporting" color="secondary">
+                            {issue.commentCount > 0 ? String(issue.commentCount) : "—"}
+                          </Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text type="supporting" color="secondary">
+                            {formatUpdated(issue.updatedAt)}
+                          </Text>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  : null}
+              </Fragment>
+            );
+          })}
         </tbody>
       </Table>
     </LayoutContent>
