@@ -1,4 +1,5 @@
 import { createGitHubInstallationAccessToken } from "@hosted-agents/api/github-app";
+import { stampLinkedPullRequest } from "@hosted-agents/api/issues/sync";
 import { db } from "@hosted-agents/db";
 import {
   GITHUB_ISSUE_IMPLEMENTATION_RUN_TYPE,
@@ -129,6 +130,8 @@ export async function runNextQueuedImplementation({
       githubRepositoryId: repository.id,
       installationId: installation.installationId,
       installationAccessToken: context.installationAccessToken,
+      // The Coder App slug attributes the commit to the Coder bot identity.
+      appSlug: installation.appSlug ?? undefined,
       owner: repository.owner,
       repo: repository.name,
       defaultBranch: repository.defaultBranch ?? run.baseBranch ?? "main",
@@ -176,6 +179,20 @@ export async function runNextQueuedImplementation({
         updatedAt: now,
       })
       .where(eq(agentRun.id, run.id));
+
+    // Stamp the linked PR onto the issue row so the board's In PR lane populates
+    // immediately, before the `pull_request.opened` webhook round-trips. Requires
+    // the issue number (kick-off stamps it) and the repository the run targets;
+    // webhook sync keeps the linked-PR state fresh thereafter.
+    if (result.pullRequestNumber != null && run.issueNumber != null && run.githubRepositoryId) {
+      await stampLinkedPullRequest(database, {
+        githubRepositoryId: run.githubRepositoryId,
+        issueNumber: run.issueNumber,
+        pullRequestNumber: result.pullRequestNumber,
+        pullRequestState: result.pullRequestState === "closed" ? "closed" : "open",
+        merged: false,
+      });
+    }
 
     await appendAgentRunEvent(database, {
       runId: run.id,

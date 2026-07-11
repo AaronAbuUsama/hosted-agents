@@ -213,6 +213,36 @@ async function createTables(client: TestClient) {
       "created_at" integer DEFAULT 0 NOT NULL,
       "updated_at" integer DEFAULT 0 NOT NULL
     );
+
+    CREATE TABLE "github_issue" (
+      "id" text PRIMARY KEY,
+      "organization_id" text NOT NULL,
+      "github_installation_id" text,
+      "github_repository_id" text NOT NULL,
+      "repository_full_name" text NOT NULL,
+      "number" integer NOT NULL,
+      "github_issue_id" text,
+      "node_id" text,
+      "title" text NOT NULL,
+      "body" text,
+      "state" text DEFAULT 'open' NOT NULL,
+      "author_login" text,
+      "author_avatar_url" text,
+      "labels_json" text DEFAULT '[]' NOT NULL,
+      "html_url" text,
+      "comment_count" integer DEFAULT 0 NOT NULL,
+      "linked_pull_request_number" integer,
+      "linked_pull_request_state" text,
+      "linked_pull_request_merged" integer,
+      "closed_by_merge" integer DEFAULT 0 NOT NULL,
+      "claimed_by_worker_role" text,
+      "claimed_by_run_id" text,
+      "claimed_at" integer,
+      "github_created_at" integer,
+      "github_updated_at" integer,
+      "created_at" integer DEFAULT 0 NOT NULL,
+      "updated_at" integer DEFAULT 0 NOT NULL
+    );
   `);
 }
 
@@ -271,6 +301,27 @@ async function seedImplementationRun(
     githubInstallationId: "installation-record-1",
     githubRepositoryId: "repository-record-1",
     status: "queued",
+    ...overrides,
+  });
+}
+
+async function seedIssueRow(
+  database: TestDatabase,
+  overrides: Partial<typeof schema.githubIssue.$inferInsert> = {},
+) {
+  await database.insert(schema.githubIssue).values({
+    id: "issue-row-1",
+    organizationId: "org-1",
+    githubInstallationId: "installation-record-1",
+    githubRepositoryId: "repository-record-1",
+    repositoryFullName: "octo-org/widgets",
+    number: 42,
+    title: "Add a widget",
+    state: "open",
+    // Kick-off (C4) claims the issue before the run; the linked PR is unset until
+    // the Coder opens it — this row is what C5 stamps.
+    claimedByWorkerRole: "implementation",
+    claimedByRunId: "impl-run-1",
     ...overrides,
   });
 }
@@ -401,6 +452,79 @@ describe("implementation run worker", () => {
 
       const artifacts = await database.select().from(schema.agentRunArtifact);
       expect(artifacts.map((artifact) => artifact.name)).toContain("sandbox-execution.log");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("stamps the linked pull request onto the issue row so the In PR lane is immediate", async () => {
+    const { client, database } = await createTestDatabase();
+    const runner: ImplementationSandboxRunner = {
+      async run() {
+        return completedResult({
+          branch: "coder/issue-42-add-a-widget",
+          pullRequestNumber: 7,
+          pullRequestState: "open",
+          pullRequestUrl: "https://github.test/pull/7",
+        });
+      },
+    };
+
+    try {
+      // The run carries the issue number (kick-off stamps it); the issue row exists
+      // and is claimed, with no linked PR yet.
+      await seedImplementationRun(database, { issueNumber: 42 });
+      await seedIssueRow(database);
+
+      const result = await runNextQueuedImplementation({
+        runner,
+        database,
+        createInstallationAccessToken: createFakeTokenFactory(),
+      });
+      expect(result.status).toBe("completed");
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.id, "issue-row-1"));
+      expect(issue).toMatchObject({
+        linkedPullRequestNumber: 7,
+        linkedPullRequestState: "open",
+        linkedPullRequestMerged: false,
+        // The claim is untouched by the stamp.
+        claimedByRunId: "impl-run-1",
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("leaves the issue row untouched when the run opens no pull request", async () => {
+    const { client, database } = await createTestDatabase();
+    const runner: ImplementationSandboxRunner = {
+      async run() {
+        // A completed run that produced no PR (should not happen in the happy path,
+        // but the worker must not stamp a null PR onto the issue).
+        return completedResult();
+      },
+    };
+
+    try {
+      await seedImplementationRun(database, { issueNumber: 42 });
+      await seedIssueRow(database);
+
+      await runNextQueuedImplementation({
+        runner,
+        database,
+        createInstallationAccessToken: createFakeTokenFactory(),
+      });
+
+      const [issue] = await database
+        .select()
+        .from(schema.githubIssue)
+        .where(eq(schema.githubIssue.id, "issue-row-1"));
+      expect(issue?.linkedPullRequestNumber).toBeNull();
+      expect(issue?.linkedPullRequestState).toBeNull();
     } finally {
       client.close();
     }
