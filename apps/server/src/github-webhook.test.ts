@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import type { GitHubWebhookDelivery as FlueGitHubWebhookDelivery } from "@flue/github";
 import type { db as productionDb } from "@hosted-agents/db";
 import * as schema from "@hosted-agents/db/schema/index";
+import { loadRepositoryIssuesRevision } from "@hosted-agents/api/issues/sync";
 import type { GitHubWebhookAdmission } from "./github-webhook";
 
 process.env.SKIP_ENV_VALIDATION = "true";
@@ -1089,6 +1090,100 @@ describe("GitHub webhook issue sync", () => {
       // A PR comment is off the issues board: nothing synced, no ledger row claimed.
       expect(await database.select().from(schema.githubIssueComment)).toHaveLength(0);
       expect(await database.select().from(schema.githubWebhookDelivery)).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  // P5 (issue #26): the board/detail refresh themselves off this store-only
+  // watermark, polled on an interval instead of polling GitHub. It must flip on
+  // every kind of synced change so no change is missed between polls.
+  test("the store-only revision watermark flips on every synced issue + comment change", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+      const repositoryId = "repository-record-1";
+
+      // Empty store: the stable baseline the board polls before anything syncs.
+      const empty = await loadRepositoryIssuesRevision(database, repositoryId);
+
+      // issues.opened → a new row → the watermark moves (row count up).
+      await postGitHubWebhook({
+        app,
+        event: "issues",
+        deliveryId: "rev-issue-opened",
+        payload: issuePayload("opened", { number: 7 }),
+      });
+      const afterOpen = await loadRepositoryIssuesRevision(database, repositoryId);
+      expect(afterOpen).not.toBe(empty);
+
+      // issues.labeled → the same row re-upserted → the watermark moves (updatedAt up),
+      // so an in-place edit (label / stage change) is caught even though the count is flat.
+      await postGitHubWebhook({
+        app,
+        event: "issues",
+        deliveryId: "rev-issue-labeled",
+        payload: issuePayload("labeled", { number: 7, labels: ["ready for agent"] }),
+      });
+      const afterLabel = await loadRepositoryIssuesRevision(database, repositoryId);
+      expect(afterLabel).not.toBe(afterOpen);
+
+      // issue_comment.created → a new comment row → the watermark moves (comment count up).
+      await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "rev-comment-created",
+        payload: issueCommentPayload("created", { number: 7, commentId: 900, body: "first" }),
+      });
+      const afterComment = await loadRepositoryIssuesRevision(database, repositoryId);
+      expect(afterComment).not.toBe(afterLabel);
+
+      // issue_comment.deleted → the row is removed → the watermark moves (count down),
+      // so a deletion refreshes the board too, not only additions.
+      await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "rev-comment-deleted",
+        payload: issueCommentPayload("deleted", { number: 7, commentId: 900 }),
+      });
+      const afterDelete = await loadRepositoryIssuesRevision(database, repositoryId);
+      expect(afterDelete).not.toBe(afterComment);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("the issue-scoped revision isolates one issue from another", async () => {
+    const { client, database } = await createTestDatabase();
+    try {
+      await seedLinkedPullRequestTarget(database);
+      const app = createWebhookApp(database);
+      const repositoryId = "repository-record-1";
+
+      for (const number of [7, 8]) {
+        await postGitHubWebhook({
+          app,
+          event: "issues",
+          deliveryId: `rev-scope-open-${number}`,
+          payload: issuePayload("opened", { number }),
+        });
+      }
+
+      const issue7Before = await loadRepositoryIssuesRevision(database, repositoryId, 7);
+      const issue8Before = await loadRepositoryIssuesRevision(database, repositoryId, 8);
+
+      // A comment on #7 moves #7's scoped watermark but leaves #8's untouched, so an
+      // open detail view for #8 never refetches because an unrelated issue changed.
+      await postGitHubWebhook({
+        app,
+        event: "issue_comment",
+        deliveryId: "rev-scope-comment-7",
+        payload: issueCommentPayload("created", { number: 7, commentId: 700, body: "on seven" }),
+      });
+
+      expect(await loadRepositoryIssuesRevision(database, repositoryId, 7)).not.toBe(issue7Before);
+      expect(await loadRepositoryIssuesRevision(database, repositoryId, 8)).toBe(issue8Before);
     } finally {
       client.close();
     }

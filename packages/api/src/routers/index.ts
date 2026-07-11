@@ -53,7 +53,12 @@ import {
 } from "../github-app";
 import { claimIssueForWorker } from "../issues/claim";
 import { deriveIssueStage, listBoard, type GitHubIssuesClient } from "../issues/service";
-import { loadIssueOverlay, loadIssueOverlays, upsertSyncedIssue } from "../issues/sync";
+import {
+  loadIssueOverlay,
+  loadIssueOverlays,
+  loadRepositoryIssuesRevision,
+  upsertSyncedIssue,
+} from "../issues/sync";
 import { protectedProcedure, publicProcedure } from "../index";
 import { encryptJsonCredential } from "../provider-credential-crypto";
 
@@ -615,6 +620,12 @@ const issueScopedInput = repositoryScopedInput.extend({
 
 const postIssueCommentInput = issueScopedInput.extend({
   body: z.string().min(1),
+});
+
+// The board polls repo-wide (no issueNumber); the issue detail scopes to its own
+// number so it only refetches when that issue or its comments change.
+const repositoryIssuesRevisionInput = repositoryScopedInput.extend({
+  issueNumber: z.number().int().positive().optional(),
 });
 
 const triggerCodeReviewRunInput = z.object({
@@ -1683,6 +1694,27 @@ export const appRouter = {
           message: error instanceof Error ? error.message : "Failed to list repository issues.",
         });
       }
+    }),
+  repositoryIssuesRevision: protectedProcedure
+    .input(repositoryIssuesRevisionInput)
+    .handler(async ({ input, context }) => {
+      const organizationId = await requireOrganizationId(context, input.organizationId);
+      const { repository } = await requireOrganizationRepository(
+        organizationId,
+        input.repositoryId,
+      );
+
+      // Store-only watermark: this never calls GitHub, so the board and issue
+      // detail can poll it on an interval to notice webhook-synced changes without
+      // polling GitHub on a timer (issue #26; issue #19 story 22). Authorization is
+      // the same org + repository boundary the board read enforces; connection
+      // status is irrelevant to a read of our own rows.
+      const revision = await loadRepositoryIssuesRevision(
+        db,
+        repository.id,
+        input.issueNumber,
+      );
+      return { revision };
     }),
   getRepositoryIssue: protectedProcedure
     .input(issueScopedInput)

@@ -44,6 +44,9 @@ export default function IssueDetailClient({
 }): ReactElement {
   return (
     <IssueDetail
+      // Remount per issue so the detail's keep-previous-data refresh (issue #26)
+      // only carries data across same-issue refetches, never between two issues.
+      key={`${repositoryId}:${issueNumber}`}
       organizationId={organizationId}
       repositoryId={repositoryId}
       fullName={fullName}
