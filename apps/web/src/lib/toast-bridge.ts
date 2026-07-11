@@ -1,4 +1,4 @@
-import type { ShowToastFn, ToastOptions } from "@astryxdesign/core/Toast";
+import type { ShowToastFn, ToastDismissFn, ToastOptions } from "@astryxdesign/core/Toast";
 
 // Astryx toasts are hook-based (useToast), but a few call sites are outside the
 // React tree — the global react-query error handler in utils/orpc, and imperative
@@ -12,6 +12,9 @@ export function setToastHandler(fn: ShowToastFn | null): void {
   handler = fn;
 }
 
-export function notify(options: ToastOptions): void {
-  handler?.(options);
+// Returns the toast's dismiss handle so callers (e.g. the connection-status reporter)
+// can retract a persistent toast later. When no viewport is mounted yet, the toast is
+// dropped and a no-op dismiss is returned so callers never have to null-check.
+export function notify(options: ToastOptions): ToastDismissFn {
+  return handler?.(options) ?? (() => {});
 }
