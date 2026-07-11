@@ -1,14 +1,12 @@
 "use client";
 
-import { Fragment, useState, type CSSProperties, type ReactElement } from "react";
+import { useState, type CSSProperties, type ReactElement } from "react";
 
 import { Banner } from "@astryxdesign/core/Banner";
 import { Avatar } from "@astryxdesign/core/Avatar";
-import { Badge } from "@astryxdesign/core/Badge";
 import { Center } from "@astryxdesign/core/Center";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
-import { Link } from "@astryxdesign/core/Link";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import {
   HStack,
@@ -31,22 +29,13 @@ import type { TableColumn } from "@astryxdesign/core/Table";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  ExclamationTriangleIcon,
-  PlayCircleIcon,
-} from "@heroicons/react/24/outline";
+import { ExclamationTriangleIcon, PlayCircleIcon } from "@heroicons/react/24/outline";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useRouter } from "next/navigation";
 
 import { agentRunsCollection } from "@/lib/collections/agent-runs";
-import { filterRunsByRepository } from "@/lib/run-view-model";
+import { filterRunsByRepository, sortRunRowsByRecency } from "@/lib/run-view-model";
 import type { RunViewModelRow, RunViewModelStatus } from "@/lib/run-view-model";
-
-type RowsByStatus = Record<RunViewModelStatus, RunViewModelRow[]>;
-
-const statusOrder: RunViewModelStatus[] = ["Queued", "Running", "Completed", "Failed", "Unknown"];
 
 const statusDotVariants: Record<RunViewModelStatus, "accent" | "warning" | "success" | "error"> = {
   Queued: "accent",
@@ -56,6 +45,8 @@ const statusDotVariants: Record<RunViewModelStatus, "accent" | "warning" | "succ
   Unknown: "warning",
 };
 
+// Flat audit list — no status grouping, no trailing "Open" link (the whole row
+// navigates to the run workspace).
 const columns: TableColumn<RunViewModelRow>[] = [
   { key: "status", header: "", width: pixel(44) },
   { key: "title", header: "Run", width: proportional(1.6) },
@@ -64,23 +55,15 @@ const columns: TableColumn<RunViewModelRow>[] = [
   { key: "started", header: "Started", width: pixel(110) },
   { key: "duration", header: "Duration", width: pixel(90) },
   { key: "result", header: "Result", width: proportional(1) },
-  { key: "actions", header: "", width: pixel(72) },
 ];
 
 const compactColumns: TableColumn<RunViewModelRow>[] = [
   { key: "status", header: "", width: pixel(36) },
   { key: "title", header: "Run", width: proportional(1) },
-  { key: "actions", header: "", width: pixel(64) },
 ];
 
 const resolvedColumnWidths = resolveColumnWidths(columns);
 const resolvedCompactColumnWidths = resolveColumnWidths(compactColumns);
-
-const groupHeaderCell: CSSProperties = {
-  cursor: "pointer",
-  backgroundColor: "var(--color-background-muted)",
-  padding: "var(--spacing-3) var(--spacing-4)",
-};
 
 const interactiveRowStyle: CSSProperties = {
   cursor: "pointer",
@@ -90,22 +73,6 @@ const tableContentStyle: CSSProperties = {
   minWidth: 0,
   overflow: "hidden",
 };
-
-function groupRowsByStatus(runRows: RunViewModelRow[]): RowsByStatus {
-  const grouped: RowsByStatus = {
-    Queued: [],
-    Running: [],
-    Completed: [],
-    Failed: [],
-    Unknown: [],
-  };
-
-  for (const run of runRows) {
-    grouped[run.status].push(run);
-  }
-
-  return grouped;
-}
 
 type RunsTableProps = {
   // When set, scope the table to a single repository by its "owner/name" label,
@@ -117,9 +84,6 @@ type RunsTableProps = {
 export default function RunsTable({ repoFilter }: RunsTableProps = {}): ReactElement {
   const router = useRouter();
   const [search, setSearch] = useState("");
-  const [expandedGroups, setExpandedGroups] = useState<Set<RunViewModelStatus>>(
-    () => new Set(statusOrder),
-  );
   const isCompact = useMediaQuery("(max-width: 1360px)");
   const { data: allRows, isError, isLoading } = useLiveQuery(agentRunsCollection);
   const rows = repoFilter ? filterRunsByRepository(allRows, repoFilter) : allRows;
@@ -133,26 +97,13 @@ export default function RunsTable({ repoFilter }: RunsTableProps = {}): ReactEle
           .includes(query),
       )
     : rows;
-  const groupedRows = groupRowsByStatus(filteredRows);
-  const visibleStatusOrder = statusOrder.filter((status) => groupedRows[status].length > 0);
+  const sortedRows = sortRunRowsByRecency(filteredRows);
   const hasLoadedRows = !isError && !isLoading;
   const hasNoRows = hasLoadedRows && rows.length === 0;
   const hasNoSearchResults = hasLoadedRows && rows.length > 0 && filteredRows.length === 0;
   const activeColumns = isCompact ? compactColumns : columns;
   const activeColumnWidths = isCompact ? resolvedCompactColumnWidths : resolvedColumnWidths;
   const showsPaddedState = isError || hasNoRows || hasNoSearchResults;
-
-  function toggleGroup(status: RunViewModelStatus): void {
-    setExpandedGroups((current) => {
-      const next = new Set(current);
-      if (next.has(status)) {
-        next.delete(status);
-      } else {
-        next.add(status);
-      }
-      return next;
-    });
-  }
 
   return (
     <Layout
@@ -225,50 +176,14 @@ export default function RunsTable({ repoFilter }: RunsTableProps = {}): ReactEle
                 ))}
               </colgroup>
               <tbody>
-                {visibleStatusOrder.map((status) => {
-                  const runsForStatus = groupedRows[status];
-                  const isExpanded = expandedGroups.has(status);
-
-                  return (
-                    <Fragment key={status}>
-                      <TableRow
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => toggleGroup(status)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            toggleGroup(status);
-                          }
-                        }}
-                      >
-                        <TableCell colSpan={activeColumns.length} style={groupHeaderCell}>
-                          <HStack gap={2} vAlign="center">
-                            <Icon
-                              icon={isExpanded ? ChevronDownIcon : ChevronRightIcon}
-                              size="sm"
-                              color="secondary"
-                            />
-                            <Text type="body" weight="bold">
-                              {status}
-                            </Text>
-                            <Badge variant="neutral" label={String(runsForStatus.length)} />
-                          </HStack>
-                        </TableCell>
-                      </TableRow>
-                      {isExpanded
-                        ? runsForStatus.map((run) => (
-                            <RunTableRow
-                              key={run.id}
-                              run={run}
-                              isCompact={isCompact}
-                              onOpenRun={() => router.push(`/app/runs/${run.id}`)}
-                            />
-                          ))
-                        : null}
-                    </Fragment>
-                  );
-                })}
+                {sortedRows.map((run) => (
+                  <RunTableRow
+                    key={run.id}
+                    run={run}
+                    isCompact={isCompact}
+                    onOpenRun={() => router.push(`/app/runs/${run.id}`)}
+                  />
+                ))}
               </tbody>
             </Table>
           )}
@@ -342,15 +257,6 @@ function RunTableRow({ run, isCompact, onOpenRun }: RunTableRowProps): ReactElem
           </TableCell>
         </>
       ) : null}
-      <TableCell>
-        <Link
-          href={`/app/runs/${run.id}`}
-          isStandalone
-          onClick={(event) => event.stopPropagation()}
-        >
-          Open
-        </Link>
-      </TableCell>
     </TableRow>
   );
 }
