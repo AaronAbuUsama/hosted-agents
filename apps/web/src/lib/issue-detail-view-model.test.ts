@@ -7,15 +7,12 @@ import {
   createPostCommentHandlers,
   formatIssueDate,
   issueAuthorDisplayName,
-  issueStage,
-  issueStageDotVariant,
-  issueStageLabel,
   normalizeCommentBody,
   stageDotVariant,
+  stageLabel,
   stripHtmlComments,
-  type StageDerivable,
 } from "./issue-detail-view-model";
-import type { IssueStage } from "@hosted-agents/api/issues/stage";
+import { ISSUE_STAGE_LABELS, type IssueStage } from "@hosted-agents/api/issues/stage";
 
 describe("classifyIssueAuthor", () => {
   test("treats a GitHub App's [bot] login as an agent", () => {
@@ -58,28 +55,14 @@ describe("issueAuthorDisplayName", () => {
   });
 });
 
-describe("issueStage / issueStageLabel", () => {
-  const openBacklog: StageDerivable = { state: "open", labels: [] };
-  const readyForAgent: StageDerivable = { state: "open", labels: ["ready for agent"] };
-
-  test("an open, unlabeled issue is backlog", () => {
-    expect(issueStage(openBacklog)).toBe("backlog");
-    expect(issueStageLabel(openBacklog)).toBe("Backlog");
-  });
-
-  test("the gating label moves the issue to ready_for_agent", () => {
-    expect(issueStage(readyForAgent)).toBe("ready_for_agent");
-    expect(issueStageLabel(readyForAgent)).toBe("Ready for agent");
-  });
-
-  test("matches the gating label tolerant of separators", () => {
-    expect(issueStage({ state: "open", labels: ["ready-for-agent"] })).toBe("ready_for_agent");
-  });
-
-  test("a closed issue that did not merge reads as the Closed lane", () => {
-    const closed: StageDerivable = { state: "closed", labels: [] };
-    expect(issueStage(closed)).toBe("closed");
-    expect(issueStageLabel(closed)).toBe("Closed");
+describe("stageLabel", () => {
+  test("labels the server-derived stage (W5: Merged reads Merged, not Closed)", () => {
+    // The detail renders the stage the server derived WITH the store overlay, so a
+    // merged-then-closed issue reads "Merged" here — matching the board lane —
+    // rather than the "Closed" a client-side state+labels derivation produced.
+    expect(stageLabel("merged")).toBe("Merged");
+    expect(stageLabel("closed")).toBe("Closed");
+    expect(stageLabel("in_pr")).toBe(ISSUE_STAGE_LABELS.in_pr);
   });
 });
 
@@ -97,11 +80,6 @@ describe("stageDotVariant", () => {
     for (const [stage, variant] of Object.entries(expected)) {
       expect(stageDotVariant(stage as IssueStage)).toBe(variant);
     }
-  });
-
-  test("derives the dot variant straight from an issue's stage", () => {
-    expect(issueStageDotVariant({ state: "open", labels: [] })).toBe("neutral");
-    expect(issueStageDotVariant({ state: "open", labels: ["ready for agent"] })).toBe("accent");
   });
 });
 

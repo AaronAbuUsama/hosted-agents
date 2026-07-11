@@ -1,4 +1,4 @@
-import { ISSUE_STAGE_LABELS, deriveStage, type IssueStage } from "@hosted-agents/api/issues/stage";
+import { ISSUE_STAGE_LABELS, type IssueStage } from "@hosted-agents/api/issues/stage";
 
 // The issue detail renders live GitHub data — getRepositoryIssue returns
 // { issue, comments } straight from the API. These helpers turn that raw shape
@@ -30,38 +30,20 @@ export function issueAuthorDisplayName(login: string | null | undefined): string
   return trimmed.replace(BOT_LOGIN_SUFFIX, "");
 }
 
-export type StageDerivable = {
-  state: "open" | "closed";
-  labels: readonly string[];
-};
-
-function stageInput(issue: StageDerivable) {
-  // The detail seam has only the live issue — no claim/PR overlay — so we derive
-  // stage from state + labels exactly as the board does in its pure-live path,
-  // keeping the detail's stage consistent with the lane the issue sits in.
-  return {
-    issueState: issue.state,
-    labels: [...issue.labels],
-    claimed: false,
-    runStatus: null,
-    linkedPullRequest: null,
-    closedByMerge: false,
-    blocked: false,
-  } as const;
+// The detail renders the stage the SERVER derived (getRepositoryIssue →
+// deriveIssueStage, which reads the store's claim/linked-PR overlay), so the detail
+// header and sidebar match the lane the board puts the issue in. These map that
+// stage to its label + dot colour. Deriving the stage on the client from state +
+// labels alone was the W5 bug: a merged-then-closed issue read "Closed" on the
+// detail but "Merged" on the board, because the client couldn't see the overlay.
+export function stageLabel(stage: IssueStage): string {
+  return ISSUE_STAGE_LABELS[stage];
 }
 
-export function issueStage(issue: StageDerivable): IssueStage {
-  return deriveStage(stageInput(issue));
-}
-
-export function issueStageLabel(issue: StageDerivable): string {
-  return ISSUE_STAGE_LABELS[issueStage(issue)];
-}
-
-// The StatusDot variant the detail renders per stage. Kept here (not inline in the
-// view) so the stage → dot-colour mapping is exhaustively compiler-checked over
-// IssueStage and unit-tested — a wrong colour for a lane is a render regression the
-// pure view-model tests can catch without standing up the UI.
+// The StatusDot variant per stage. Kept here (not inline in the view) so the
+// stage → dot-colour mapping is exhaustively compiler-checked over IssueStage and
+// unit-tested — a wrong colour for a lane is a render regression the pure
+// view-model tests can catch without standing up the UI.
 export type StageDotVariant = "neutral" | "accent" | "warning" | "success";
 
 const STAGE_DOT_VARIANTS: Record<IssueStage, StageDotVariant> = {
@@ -78,10 +60,6 @@ const STAGE_DOT_VARIANTS: Record<IssueStage, StageDotVariant> = {
 
 export function stageDotVariant(stage: IssueStage): StageDotVariant {
   return STAGE_DOT_VARIANTS[stage];
-}
-
-export function issueStageDotVariant(issue: StageDerivable): StageDotVariant {
-  return stageDotVariant(issueStage(issue));
 }
 
 // The composer trims the draft before posting; an empty or all-whitespace draft
