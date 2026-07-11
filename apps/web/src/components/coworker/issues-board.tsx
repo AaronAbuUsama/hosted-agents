@@ -21,10 +21,11 @@ import type { TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
 import { mapBoardLoadError } from "@/lib/board-load-error";
+import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
 import { orpc } from "@/utils/orpc";
 
 type IssuesBoardProps = {
@@ -86,9 +87,29 @@ export default function IssuesBoard({
   installationSettingsUrl = null,
 }: IssuesBoardProps): ReactElement {
   const router = useRouter();
+  const input = { organizationId, repositoryId };
+
+  // Poll our own store's change-watermark (never GitHub). The board's live GitHub
+  // read is keyed on this watermark, so when a webhook syncs an issue/comment
+  // change the key flips and the board refetches on its own — no manual reload
+  // (issue #26; issue #19 story 21).
+  const revision = useQuery(
+    orpc.repositoryIssuesRevision.queryOptions({
+      input,
+      refetchInterval: issuesRevisionPollInterval,
+    }),
+  );
+
   const board = useQuery(
     orpc.listRepositoryIssues.queryOptions({
-      input: { organizationId, repositoryId },
+      input,
+      queryKey: [
+        ...orpc.listRepositoryIssues.queryKey({ input }),
+        { revision: revision.data?.revision ?? null },
+      ],
+      // Keep the current lanes on screen while a watermark-triggered refetch runs,
+      // so a background refresh never flashes the loading state.
+      placeholderData: keepPreviousData,
     }),
   );
 
@@ -104,10 +125,13 @@ export default function IssuesBoard({
     );
   }
 
-  if (board.error) {
+  if (board.error && board.data === undefined) {
     // Name the cause. A 403 "Resource not accessible by integration" means this
     // installation can't read Issues — a fixable failure with its own copy and a
     // link to the installation's settings. Other failures keep generic copy.
+    // Guarded on `data === undefined` so a transient failure of a background
+    // watermark refetch keeps the last good board (the query cache's onError
+    // already toasts it) instead of blanking populated lanes.
     const errorContent = mapBoardLoadError(board.error, { installationSettingsUrl });
     return (
       <LayoutContent role="main" padding={4}>

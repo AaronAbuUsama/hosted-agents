@@ -34,7 +34,7 @@ import {
   ChatBubbleLeftRightIcon,
   PlayCircleIcon,
 } from "@heroicons/react/24/outline";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 
 import {
   classifyIssueAuthor,
@@ -46,6 +46,7 @@ import {
   issueStageLabel,
   normalizeCommentBody,
 } from "@/lib/issue-detail-view-model";
+import { issuesRevisionPollInterval } from "@/lib/issues-revision-poll";
 import { client, orpc } from "@/utils/orpc";
 
 type IssueDetailProps = {
@@ -179,7 +180,31 @@ export default function IssueDetail({
   const isNarrow = useMediaQuery("(max-width: 1040px)");
 
   const input = { organizationId, repositoryId, issueNumber };
-  const issueQuery = useQuery(orpc.getRepositoryIssue.queryOptions({ input }));
+
+  // Poll our own store's change-watermark for this issue (never GitHub), scoped to
+  // the issue number so it flips only when this issue or its comments change. The
+  // GitHub-backed detail read is keyed on the revision, so a webhook-synced change
+  // (an agent comment, a label, a linked PR) refreshes the view without a manual
+  // reload (issue #26; issue #19 story 21).
+  const revision = useQuery(
+    orpc.repositoryIssuesRevision.queryOptions({
+      input,
+      refetchInterval: issuesRevisionPollInterval,
+    }),
+  );
+
+  const issueQuery = useQuery(
+    orpc.getRepositoryIssue.queryOptions({
+      input,
+      queryKey: [
+        ...orpc.getRepositoryIssue.queryKey({ input }),
+        { revision: revision.data?.revision ?? null },
+      ],
+      // Keep the current issue + thread on screen while a watermark-triggered
+      // refetch runs, so a background refresh never flashes the loading state.
+      placeholderData: keepPreviousData,
+    }),
+  );
 
   const postComment = useMutation(
     orpc.postIssueComment.mutationOptions(
@@ -209,7 +234,10 @@ export default function IssueDetail({
     );
   }
 
-  if (issueQuery.error || !issueQuery.data) {
+  if (!issueQuery.data) {
+    // Only the initial load having no data reaches here. A transient failure of a
+    // background watermark refetch keeps the last good issue on screen (the query
+    // cache's onError already toasts it) rather than replacing it with this state.
     return (
       <Layout
         height="fill"
