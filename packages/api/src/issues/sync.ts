@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, count, eq, max } from "drizzle-orm";
 
 import type { db as productionDb } from "@hosted-agents/db";
 import { githubIssue, githubIssueComment } from "@hosted-agents/db/schema/issues";
@@ -232,6 +232,72 @@ export async function loadIssueOverlays(
     overlays.set(row.number, overlayFromRow(row));
   }
   return overlays;
+}
+
+// `max(updatedAt)` comes back as a Date, an epoch-ms number, a numeric string, or
+// null depending on the driver's aggregate mapping; normalize to a stable number
+// so the revision token is deterministic. `null` (no rows) collapses to 0.
+function toEpochMillis(value: unknown): number {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+// A coarse change-watermark for a repository's synced issues + comments, read only
+// from our store — never from GitHub. The board and issue detail poll this on an
+// interval and refetch their (GitHub-backed) view when it flips, so a webhook-
+// synced change surfaces without a manual reload (issue #26) and without polling
+// GitHub on a timer (issue #19 story 22). Pass `issueNumber` to scope the
+// watermark to a single issue (the detail view); omit it for the whole board.
+//
+// The token combines row counts with the latest `updatedAt` across both tables,
+// so it moves on an insert (count up), an in-place edit or a claim / linked-PR
+// write (updatedAt up), and a comment delete (count down). Two changes that
+// perfectly cancel a count and leave the max untouched within one poll window
+// would be missed, but the next distinct change re-syncs the view.
+export async function loadRepositoryIssuesRevision(
+  database: SyncDatabase,
+  githubRepositoryId: string,
+  issueNumber?: number,
+): Promise<string> {
+  const issueWhere =
+    issueNumber === undefined
+      ? eq(githubIssue.githubRepositoryId, githubRepositoryId)
+      : and(
+          eq(githubIssue.githubRepositoryId, githubRepositoryId),
+          eq(githubIssue.number, issueNumber),
+        );
+  const commentWhere =
+    issueNumber === undefined
+      ? eq(githubIssueComment.githubRepositoryId, githubRepositoryId)
+      : and(
+          eq(githubIssueComment.githubRepositoryId, githubRepositoryId),
+          eq(githubIssueComment.issueNumber, issueNumber),
+        );
+
+  const [issues] = await database
+    .select({ total: count(), latest: max(githubIssue.updatedAt) })
+    .from(githubIssue)
+    .where(issueWhere);
+  const [comments] = await database
+    .select({ total: count(), latest: max(githubIssueComment.updatedAt) })
+    .from(githubIssueComment)
+    .where(commentWhere);
+
+  return [
+    issues?.total ?? 0,
+    toEpochMillis(issues?.latest),
+    comments?.total ?? 0,
+    toEpochMillis(comments?.latest),
+  ].join(":");
 }
 
 // The single-issue overlay for the detail transport; `undefined` when the issue
