@@ -1789,6 +1789,7 @@ async function admitIssueSyncDelivery(
       await upsertSyncedIssueComment(transaction, {
         organizationId: installation.organizationId,
         githubRepositoryId: repository.id,
+        repositoryFullName: metadata.repository.repositoryFullName,
         ...metadata.comment,
       });
     }

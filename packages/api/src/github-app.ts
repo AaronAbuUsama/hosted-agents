@@ -361,8 +361,9 @@ export async function listOpenGitHubPullRequests(
   installationId: string,
   owner: string,
   repo: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubPullRequestSummary[]> {
-  const token = await createGitHubInstallationAccessToken(installationId);
+  const token = await createGitHubInstallationAccessToken(installationId, role);
   const response = await fetchGitHubJson<GitHubPullRequestResponse[]>(
     `/repos/${owner}/${repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`,
     { token },
@@ -376,8 +377,9 @@ export async function getGitHubPullRequest(
   owner: string,
   repo: string,
   pullRequestNumber: number,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubPullRequestSummary> {
-  const token = await createGitHubInstallationAccessToken(installationId);
+  const token = await createGitHubInstallationAccessToken(installationId, role);
   const response = await fetchGitHubJson<GitHubPullRequestResponse>(
     `/repos/${owner}/${repo}/pulls/${pullRequestNumber}`,
     { token },
@@ -479,9 +481,12 @@ export async function listGitHubIssues(
   installationId: string,
   owner: string,
   repo: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubIssueSummary[]> {
-  const { token, permissions } =
-    await createGitHubInstallationAccessTokenWithPermissions(installationId);
+  const { token, permissions } = await createGitHubInstallationAccessTokenWithPermissions(
+    installationId,
+    role,
+  );
 
   // Gate before fetching: without issues:read, GET /issues answers 200 with only
   // PRs, so the empty result is indistinguishable from a repo with no issues. The
@@ -550,8 +555,9 @@ export async function listGitHubIssueComments(
   owner: string,
   repo: string,
   issueNumber: number,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubIssueCommentSummary[]> {
-  const token = await createGitHubInstallationAccessToken(installationId);
+  const token = await createGitHubInstallationAccessToken(installationId, role);
   const response = await fetchGitHubJson<GitHubIssueCommentResponse[]>(
     `/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
     { token },
@@ -566,8 +572,9 @@ export async function createGitHubIssueComment(
   repo: string,
   issueNumber: number,
   body: string,
+  role: GitHubAppWorkerRole = CODE_REVIEW_WORKER_ROLE,
 ): Promise<GitHubIssueCommentSummary> {
-  const token = await createGitHubInstallationAccessToken(installationId);
+  const token = await createGitHubInstallationAccessToken(installationId, role);
   const response = await fetchGitHubJson<GitHubIssueCommentResponse>(
     `/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
     { method: "POST", token, body: { body } },

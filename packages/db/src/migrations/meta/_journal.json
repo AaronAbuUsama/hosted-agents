@@ -71,6 +71,13 @@
       "when": 1783740247943,
       "tag": "0009_github_issue_babysit",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1783752300222,
+      "tag": "0010_github_issue_comment_repository_full_name",
+      "breakpoints": true
     }
   ]
 }
