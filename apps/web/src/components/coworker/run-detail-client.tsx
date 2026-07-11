@@ -4,8 +4,7 @@ import type { ReactElement } from "react";
 
 import dynamic from "next/dynamic";
 
-import type { RunDetailDataIslandProps } from "./run-detail-data-island";
-import { RunDetailLoading } from "./run-detail-data-island";
+import { RunDetailLoading, type RunDetailDataIslandProps } from "./run-detail-data-island";
 
 const RunDetailDataIsland = dynamic(() => import("./run-detail-data-island"), {
   ssr: false,

@@ -6,6 +6,7 @@ import {
   filterRunsByRepository,
   mapAgentRunEventToTimelineRow,
   mapAgentRunEventsToTranscriptRows,
+  selectRunTranscriptFeed,
   selectIssueRunRows,
   sortRunTimelineEvents,
   mapAgentRunToRunRow,
@@ -545,6 +546,83 @@ describe("run transcript event mapper", () => {
 
     expect(rows.map((row) => row.id)).toEqual(["event-first", "event-second", "event-third"]);
     expect(rows.map((row) => row.sequence)).toEqual([10, 20, 30]);
+  });
+});
+
+describe("selectRunTranscriptFeed", () => {
+  test("interleaves curated dividers with transcript rows in sequence order", () => {
+    const feed = selectRunTranscriptFeed([
+      agentRunEvent({
+        id: "event-message",
+        sequence: 20,
+        category: "model",
+        type: "flue.message_end",
+        payload: {
+          type: "message_end",
+          message: { role: "assistant", content: "On it." },
+        },
+        flueEventType: "message_end",
+      }),
+      agentRunEvent({
+        id: "event-clone",
+        sequence: 10,
+        category: "stage",
+        type: "stage.repository_cloning",
+        stage: "repository_cloning",
+        message: "Cloning repository",
+        payload: null,
+        flueEventIndex: null,
+        flueEventType: null,
+      }),
+      agentRunEvent({
+        id: "event-pr",
+        sequence: 30,
+        category: "github",
+        type: "github.tool.create_pull_request.completed",
+        message: "Opened pull request #6",
+        payload: null,
+        flueEventIndex: null,
+        flueEventType: null,
+      }),
+    ]);
+
+    expect(feed).toEqual([
+      { kind: "divider", key: "divider-event-clone", label: "Cloning repository" },
+      { kind: "row", key: "event-message", row: expect.objectContaining({ role: "assistant" }) },
+      { kind: "divider", key: "divider-event-pr", label: "Opened pull request #6" },
+    ]);
+  });
+
+  test("does not treat Flue runtime events as dividers even if the type matches", () => {
+    const feed = selectRunTranscriptFeed([
+      agentRunEvent({
+        id: "event-runtime-result",
+        sequence: 5,
+        category: "result",
+        type: "result.completed",
+        message: "Runtime completion chatter",
+        payload: null,
+        flueEventIndex: 7,
+        flueEventType: "result.completed",
+      }),
+    ]);
+
+    expect(feed).toEqual([]);
+  });
+
+  test("drops runtime noise that is neither a divider nor a transcript row", () => {
+    const feed = selectRunTranscriptFeed([
+      agentRunEvent({
+        id: "event-noise",
+        sequence: 1,
+        category: "model",
+        type: "flue.heartbeat",
+        payload: { type: "heartbeat" },
+        flueEventType: "heartbeat",
+      }),
+    ]);
+
+    expect(feed).toEqual([]);
   });
 });
 

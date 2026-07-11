@@ -1,20 +1,12 @@
-import type { ReactElement } from "react";
+import { redirect } from "next/navigation";
 
-import CoworkerPage from "@/components/coworker/coworker-page";
-import RunWorkspaceClient from "@/components/coworker/run-workspace-client";
-
-type RunWorkspacePageProps = {
-  params: Promise<{ runId: string }>;
-};
-
-export default async function RunWorkspacePage({
+// The workspace is now the run detail page itself (`/app/runs/[runId]`). This
+// legacy route only redirects so old "Open workspace" links keep resolving.
+export default async function RunWorkspaceRedirect({
   params,
-}: RunWorkspacePageProps): Promise<ReactElement> {
+}: {
+  params: Promise<{ runId: string }>;
+}): Promise<never> {
   const { runId } = await params;
-
-  return (
-    <CoworkerPage variant="workspace" width="full">
-      <RunWorkspaceClient runId={runId} />
-    </CoworkerPage>
-  );
+  redirect(`/app/runs/${runId}`);
 }

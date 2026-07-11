@@ -302,6 +302,59 @@ export function mapAgentRunEventsToTranscriptRows(
     .flatMap(mapAgentRunEventToTranscriptRow);
 }
 
+// A curated stage divider in the workspace transcript: a human-meaningful
+// milestone ("Cloning repository", "Opened pull request") rendered as a
+// ChatSystemMessage between chat turns. Derived from the durable event's own
+// message/stage, never from Flue runtime chatter.
+export type RunTranscriptFeedItem =
+  | { kind: "divider"; key: string; label: string }
+  | { kind: "row"; key: string; row: RunTranscriptRow };
+
+// The durable events a person cares to see as timeline milestones. These are
+// the `flue_event_type IS NULL` events (Coder-emitted lifecycle, ~2.1k rows)
+// as opposed to the ~29k Flue runtime events that make up the chat turns. Keep
+// this in lockstep with the events the worker emits at stage boundaries.
+const TRANSCRIPT_DIVIDER_TYPES = new Set([
+  "github.issue.kickoff_requested",
+  "queue.created",
+  "sandbox.created",
+  "stage.repository_cloning",
+  "stage.branch_creating",
+  "github.tool.create_pull_request.completed",
+  "github.tool.post_issue_progress_comment.completed",
+  "result.completed",
+  "result.failed",
+]);
+
+// Build the workspace transcript feed: chat turns (assistant/user/tool rows)
+// interleaved with curated stage dividers, in sequence order. An event becomes
+// EITHER a divider (a curated lifecycle event with no Flue type) OR its
+// transcript rows (a Flue message_end) OR nothing (runtime noise). Pure so the
+// workspace's feed composition is unit-tested without React.
+export function selectRunTranscriptFeed(
+  events: AgentRunEventApiRecord[],
+): RunTranscriptFeedItem[] {
+  const items: RunTranscriptFeedItem[] = [];
+
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    const flueType = nonEmpty(event.flueEventType);
+    if (!flueType && TRANSCRIPT_DIVIDER_TYPES.has(event.type)) {
+      items.push({
+        kind: "divider",
+        key: `divider-${event.id}`,
+        label: nonEmpty(event.message) ?? humanizeStage(nonEmpty(event.stage) ?? event.type),
+      });
+      continue;
+    }
+
+    for (const row of mapAgentRunEventToTranscriptRow(event)) {
+      items.push({ kind: "row", key: row.id, row });
+    }
+  }
+
+  return items;
+}
+
 function mapAgentRunEventToTranscriptRow(event: AgentRunEventApiRecord): RunTranscriptRow[] {
   const payload = asRecord(event.payload);
   if (payload.type !== "message_end" && event.flueEventType !== "message_end") {
