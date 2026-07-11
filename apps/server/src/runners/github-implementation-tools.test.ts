@@ -286,6 +286,13 @@ describe("GitHub implementation tools", () => {
     });
     expect(posted).toEqual({ commentId: 900, commentUrl: "https://github.test/comment/900" });
     const comment = calls.find((call) => call.method === "issues.createComment");
-    expect(comment?.input.body).toContain("Opened pull request #7.");
+    const postedBody = String(comment?.input.body);
+    // The machine-readable marker leads on its own block, separated from the human
+    // body by a blank line, so GitHub hides it and the UI can strip it to a clean
+    // body while the metadata stays recoverable from the stored comment (issue #52).
+    const marker = "<!-- worker-role:implementation role:progress run:agent-run-1 issue:42 -->";
+    expect(postedBody).toBe(`${marker}\n\nOpened pull request #7.`);
+    // Mirror the UI strip: removing the marker leaves exactly the human body.
+    expect(postedBody.replace(marker, "").trim()).toBe("Opened pull request #7.");
   });
 });
