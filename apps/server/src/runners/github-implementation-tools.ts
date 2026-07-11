@@ -136,7 +136,10 @@ function workerDisplayName(input: ImplementationSandboxRunInput) {
 // A leading marker on every Coder-authored comment: it records the worker role, the
 // issue, and the run so the webhook sync can attribute the comment to the Coder
 // (authorKind `worker`) rather than an external human, and so a redelivery is
-// idempotent. Mirrors the review runner's start-comment marker.
+// idempotent. Mirrors the review runner's start-comment marker. It is an HTML
+// comment, so GitHub hides it and the Coworker UI strips it before rendering
+// (stripHtmlComments, issue #52 QA-B2) — the human-visible body stays clean while
+// the metadata remains recoverable from the stored body.
 function coderCommentMarker(input: ImplementationSandboxRunInput, issueNumber: number) {
   return `<!-- worker-role:${input.workerRole} role:progress run:${input.agentRunId} issue:${issueNumber} -->`;
 }
@@ -252,7 +255,10 @@ export async function postIssueComment(
   input: ImplementationSandboxRunInput,
   args: { issueNumber: number; body: string; signal?: AbortSignal },
 ): Promise<{ commentId: number; commentUrl: string | null }> {
-  const body = `${coderCommentMarker(input, args.issueNumber)}\n${trimRequired(
+  // Separate the machine-readable marker from the human body with a blank line so it
+  // sits in its own leading block — GitHub hides it, and once the UI strips it the
+  // remaining body reads clean with no stray leading whitespace (issue #52 QA-B2).
+  const body = `${coderCommentMarker(input, args.issueNumber)}\n\n${trimRequired(
     args.body,
     "Issue comment body",
   ).slice(0, MAX_COMMENT_BODY)}`;
