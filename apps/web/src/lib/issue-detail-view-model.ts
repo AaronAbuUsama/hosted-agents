@@ -70,6 +70,9 @@ const STAGE_DOT_VARIANTS: Record<IssueStage, StageDotVariant> = {
   executing: "warning",
   in_pr: "accent",
   merged: "success",
+  // Closed-without-merge is a quiet terminal — neutral, distinct from Merged's
+  // success green.
+  closed: "neutral",
   failed_blocked: "warning",
 };
 
