@@ -10,10 +10,17 @@
 // the board comfortably inside the ticket's ~10s "appears without a refresh" bar.
 export const ISSUES_REVISION_POLL_INTERVAL_MS = 5_000;
 
-// Stop polling after an error instead of retry-looping, mirroring the runs
-// collection's `refetchRunCollectionInterval`. The board / detail keep their last
-// good view (the query cache's onError already surfaces the failure as a toast).
+// While the poll is erroring (the API is briefly unreachable), keep polling at a
+// slower backoff cadence rather than stopping. Returning `false` here would freeze
+// the board until a manual reload — the exact "doesn't self-heal on API return" bug
+// in issue #53. A slower interval lets the very next successful poll clear the error
+// and resume the normal cadence on its own. This no longer spams: connectivity
+// errors are deduped into one indicator and bounded-retried upstream (utils/orpc).
+export const ISSUES_REVISION_ERROR_POLL_INTERVAL_MS = 10_000;
+
 // Typed structurally like the runs helper so any TanStack Query satisfies it.
 export function issuesRevisionPollInterval(query: { state: { error: unknown } }): number | false {
-  return query.state.error ? false : ISSUES_REVISION_POLL_INTERVAL_MS;
+  return query.state.error
+    ? ISSUES_REVISION_ERROR_POLL_INTERVAL_MS
+    : ISSUES_REVISION_POLL_INTERVAL_MS;
 }
