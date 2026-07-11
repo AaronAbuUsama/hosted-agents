@@ -63,11 +63,15 @@ export const BABYSIT_BLOCKED_LANE_REASONS: readonly string[] = [
 type BabysitDatabase = Pick<typeof productionDb, "select" | "update">;
 
 // What the decision needs to know about a Coder-claimed issue's babysit state.
+// `linkedPullRequestMerged` is read only by C7's auto-merge idempotency guard (a
+// redelivered approval after the merge already landed is a no-op); the babysit
+// decision itself ignores it.
 export type BabysitClaim = {
   issueId: string;
   number: number;
   babysitRound: number;
   babysitBlockedReason: string | null;
+  linkedPullRequestMerged: boolean | null;
 };
 
 // The outcome the transport acts on for one `pull_request_review.submitted`:
@@ -140,12 +144,14 @@ export function decideBabysitReview(input: BabysitReviewInput): BabysitReviewDec
   return { action: "babysit", round: input.babysitRound + 1 };
 }
 
-// The claim columns the babysit decision reads.
+// The claim columns the babysit decision reads (plus `linkedPullRequestMerged`,
+// which only C7's auto-merge idempotency guard consults).
 const babysitClaimColumns = {
   issueId: githubIssue.id,
   number: githubIssue.number,
   babysitRound: githubIssue.babysitRound,
   babysitBlockedReason: githubIssue.babysitBlockedReason,
+  linkedPullRequestMerged: githubIssue.linkedPullRequestMerged,
 };
 
 // A pull request is the Coder's iff its issue carries the PR as its linked PR
