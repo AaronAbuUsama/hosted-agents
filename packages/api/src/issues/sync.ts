@@ -166,6 +166,39 @@ export async function upsertSyncedIssueComment(
     });
 }
 
+// Stamp the linked pull request onto a synced issue row so the board's In PR (and
+// later Merged) lane populates the moment the Coder opens its PR — before the
+// `pull_request` webhook round-trips. Keyed by (repository, number); updates only
+// the linked-PR columns, so it never disturbs the claim or the GitHub-sourced
+// fields. Idempotent: a webhook redelivery of the same PR state is a no-op write.
+export async function stampLinkedPullRequest(
+  // Only needs `update`; typed narrowly so the implementation worker's database
+  // handle (which has no `delete`) can call it without widening SyncDatabase.
+  database: Pick<SyncDatabase, "update">,
+  input: {
+    githubRepositoryId: string;
+    issueNumber: number;
+    pullRequestNumber: number;
+    pullRequestState: "open" | "closed";
+    merged?: boolean;
+  },
+): Promise<void> {
+  await database
+    .update(githubIssue)
+    .set({
+      linkedPullRequestNumber: input.pullRequestNumber,
+      linkedPullRequestState: input.pullRequestState,
+      linkedPullRequestMerged: input.merged ?? false,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(githubIssue.githubRepositoryId, input.githubRepositoryId),
+        eq(githubIssue.number, input.issueNumber),
+      ),
+    );
+}
+
 // Remove a synced comment for an `issue_comment.deleted` delivery. Idempotent — a
 // redelivery of the delete simply matches no row.
 export async function deleteSyncedIssueComment(
